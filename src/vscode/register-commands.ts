@@ -24,6 +24,7 @@ import { commitPromptCommand } from '../core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../core/commands/compare-file-with-revision';
 import { setDescriptionCommand } from '../core/commands/describe';
+import { describeDialogCommand } from '../core/commands/describe-dialog';
 import { describePromptCommand } from '../core/commands/describe-prompt';
 import { showDetailsCommand } from '../core/commands/details';
 import { discardChangeCommand } from '../core/commands/discard-change';
@@ -261,6 +262,7 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             completeSquashRevisionCommand,
         ),
         registerCommandWithPayload('jj-view.setDescription', createSetDescriptionPayload, setDescriptionCommand),
+        registerCommandWithPayload('jj-view.describe', createEditPayload, describeDialogCommand),
         registerCommandWithPayload(
             'jj-view.squashSelectionIntoParent',
             () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor),

@@ -25,6 +25,7 @@ import { commitPromptCommand } from '../../../src/core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../../../src/core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../../../src/core/commands/compare-file-with-revision';
 import { setDescriptionCommand } from '../../../src/core/commands/describe';
+import { describeDialogCommand } from '../../../src/core/commands/describe-dialog';
 import { describePromptCommand } from '../../../src/core/commands/describe-prompt';
 import { showDetailsCommand } from '../../../src/core/commands/details';
 import { discardChangeCommand } from '../../../src/core/commands/discard-change';
@@ -291,6 +292,7 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         squashSelectionIntoParentCommand,
     );
     registerWithPayload('jj-view.squashHunkIntoParent', createSquashHunkIntoParentPayload, squashHunkIntoParentCommand);
+    registerWithPayload('jj-view.describe', createEditPayload, describeDialogCommand);
 
     // 7. Bookmarks & Remote Upload
     registerWithPayload('jj-view.setBookmark', createSetBookmarkPayload, setBookmarkCommand);
