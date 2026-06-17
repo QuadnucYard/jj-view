@@ -267,40 +267,43 @@
                 "command": "jj-view.setDescription",
                 "title": "Set Description",
                 "category": "JJ View",
-                "icon": "$(save)"
+                "icon": "$(edit)"
             },
             {
                 "command": "jj-view.describePrompt",
                 "title": "Set Description (Prompt)",
                 "category": "JJ View",
-                "icon": "$(save)"
+                "icon": "$(sparkle)"
             },
             {
                 "command": "jj-view.focusDescriptionInput",
                 "title": "Focus SCM Description Input",
-                "category": "JJ View"
+                "category": "JJ View",
+                "icon": "$(edit)"
             },
             {
                 "command": "jj-view.commit",
                 "title": "Commit",
                 "category": "JJ View",
-                "icon": "$(check)"
+                "icon": "$(git-commit)"
             },
             {
                 "command": "jj-view.commitPrompt",
                 "title": "Commit (Prompt)",
                 "category": "JJ View",
-                "icon": "$(check)"
+                "icon": "$(sparkle)"
             },
             {
                 "command": "jj-view.compareWithWorkingCopy",
                 "title": "Compare All Files with Revision...",
-                "category": "JJ View"
+                "category": "JJ View",
+                "icon": "$(git-compare)"
             },
             {
                 "command": "jj-view.compareFileWith",
                 "title": "Compare File with Revision...",
-                "category": "JJ View"
+                "category": "JJ View",
+                "icon": "$(git-compare)"
             },
             {
                 "command": "jj-view.viewFileAtRevision",
@@ -358,7 +361,8 @@
             {
                 "command": "jj-view.duplicate",
                 "title": "Duplicate",
-                "category": "JJ View"
+                "category": "JJ View",
+                "icon": "$(copy)"
             },
             {
                 "command": "jj-view.abandon",
@@ -370,29 +374,31 @@
                 "command": "jj-view.edit",
                 "title": "Edit",
                 "category": "JJ View",
-                "icon": "$(edit)"
+                "icon": "$(sign-in)"
             },
             {
                 "command": "jj-view.newBefore",
                 "title": "New Before",
                 "category": "JJ View",
-                "icon": "$(source-control)"
+                "icon": "$(arrow-small-down)"
             },
             {
                 "command": "jj-view.newAfter",
                 "title": "New After",
                 "category": "JJ View",
-                "icon": "$(source-control)"
+                "icon": "$(arrow-small-up)"
             },
             {
                 "command": "jj-view.squashSelectionIntoParent",
                 "title": "Squash Selection into Parent",
-                "category": "JJ View"
+                "category": "JJ View",
+                "icon": "$(arrow-down)"
             },
             {
                 "command": "jj-view.openMergeEditor",
                 "title": "Open Merge Editor",
-                "category": "JJ View"
+                "category": "JJ View",
+                "icon": "$(merge)"
             },
             {
                 "command": "jj-view.completeSquashRevision",
@@ -404,13 +410,13 @@
                 "command": "jj-view.rebaseOntoSelected",
                 "title": "Rebase onto Selected",
                 "category": "JJ View",
-                "icon": "$(git-merge)"
+                "icon": "$(arrow-swap)"
             },
             {
                 "command": "jj-view.showDetails",
                 "title": "Show Details",
                 "category": "JJ View",
-                "icon": "$(list-selection)"
+                "icon": "$(inspect)"
             },
             {
                 "command": "jj-view.discardChange",

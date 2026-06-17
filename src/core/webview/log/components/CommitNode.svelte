@@ -61,7 +61,7 @@ const commentButtonState = $derived.by(() => {
     if (unresolved === 0) {
         const totalDrafts = drafts + responses;
         return {
-            icon: 'codicon-edit',
+            icon: 'codicon-sign-in',
             badge: `${totalDrafts}`,
             title: `${totalDrafts} Draft Comment${totalDrafts === 1 ? '' : 's'} (Click to view)`,
             allDrafted: true,
@@ -278,7 +278,7 @@ const hasActiveBookmarkAlready = $derived(
                 {#if visibleActions.edit}
                     <IconButton
                         title="Edit Commit"
-                        icon="codicon-edit"
+                        icon="codicon-sign-in"
                         onClick={(e) => {
                             e.stopPropagation();
                             onAction('edit', { changeId: commit.change_id });
@@ -694,4 +694,3 @@ const hasActiveBookmarkAlready = $derived(
         height: 12px;
     }
 </style>
-
