@@ -251,6 +251,7 @@ const hasActiveBookmarkAlready = $derived(
                     'jj.editVisible': visibleActions.edit,
                     'jj.squashVisible': visibleActions.squash,
                     'jj.abandonVisible': visibleActions.abandon,
+                    'jj.describeVisible': visibleActions.describe,
                     preventDefaultContextMenuItems: true,
                 })}
                 style:background={isSelected
@@ -259,6 +260,14 @@ const hasActiveBookmarkAlready = $derived(
                       ? 'linear-gradient(color-mix(in srgb, transparent, var(--vscode-charts-red) 20%), color-mix(in srgb, transparent, var(--vscode-charts-red) 20%)), var(--vscode-sideBar-background)'
                       : 'linear-gradient(var(--vscode-list-hoverBackground), var(--vscode-list-hoverBackground)), var(--vscode-sideBar-background)'}
             >
+                {#if visibleActions.describe}
+                    <IconButton
+                        title="Describe"
+                        icon="codicon-edit"
+                        onclick={(e) => { e.stopPropagation(); onAction('describe', { changeId: commit.change_id }); }}
+                        contextData={{ webviewSection: 'commitAction', 'jj.actionId': 'describe', actionTitle: 'Describe' }}
+                    />
+                {/if}
                 {#if visibleActions.newChild}
                     <IconButton
                         title="New Child"
@@ -694,4 +703,3 @@ const hasActiveBookmarkAlready = $derived(
         height: 12px;
     }
 </style>
-

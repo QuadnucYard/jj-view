@@ -572,6 +572,9 @@ export class LogViewController implements Disposable {
                 edit: async (msg) => {
                     await this._host.commands.executeCommand('jj-view.edit', msg);
                 },
+                describe: async (msg) => {
+                    await this._host.commands.executeCommand('jj-view.describe', msg);
+                },
                 select: async (msg) => {
                     if (!this.jj) {
                         return;
