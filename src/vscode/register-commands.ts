@@ -4,6 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { abandonCommand } from '../core/commands/abandon';
+import { abandonDescendantsCommand } from '../core/commands/abandon-descendants';
 import { absorbCommand } from '../core/commands/absorb';
 import { setBookmarkCommand } from '../core/commands/bookmark';
 import { advanceBookmarkCommand } from '../core/commands/bookmark-advance';
@@ -244,6 +245,7 @@ export function registerCommands(options: RegisterCommandsOptions): void {
 
     context.subscriptions.push(
         registerCommandWithPayload('jj-view.abandon', createAbandonPayload, abandonCommand),
+        registerCommandWithPayload('jj-view.abandonDescendants', createAbandonPayload, abandonDescendantsCommand),
         registerCommandWithPayload('jj-view.restore', createRestorePayload, restoreCommand),
         registerCommandWithPayload(
             'jj-view.squashRevisionIntoParent',

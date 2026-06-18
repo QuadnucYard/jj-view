@@ -5,6 +5,7 @@
 
 import type { CodeForgeAuthManager } from '../../../src/core/code-forge-auth';
 import { abandonCommand } from '../../../src/core/commands/abandon';
+import { abandonDescendantsCommand } from '../../../src/core/commands/abandon-descendants';
 import { absorbCommand } from '../../../src/core/commands/absorb';
 import { setBookmarkCommand } from '../../../src/core/commands/bookmark';
 import { advanceBookmarkCommand } from '../../../src/core/commands/bookmark-advance';
@@ -249,6 +250,8 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()),
         abandonCommand,
     );
+    registerWithPayload('jj-view.abandonDescendants',
+        (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()), abandonDescendantsCommand);
     registerWithPayload('jj-view.edit', createEditPayload, editCommand);
     registerWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand);
     registerWithPayload(
