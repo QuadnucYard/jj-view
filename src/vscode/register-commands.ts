@@ -50,7 +50,7 @@ import {
     squashRevisionIntoAncestorCommand,
     squashRevisionIntoParentCommand,
 } from '../core/commands/squash-revision';
-import { squashHunkIntoParentCommand, squashSelectionIntoParentCommand } from '../core/commands/squash-selection';
+import { squashHunkIntoParentCommand, squashSelectionIntoParentCommand, squashSelectionIntoAncestorCommand } from '../core/commands/squash-selection';
 import { undoCommand } from '../core/commands/undo';
 import { uploadCommand } from '../core/commands/upload';
 import { uploadStackCommand } from '../core/commands/upload-stack';
@@ -266,6 +266,8 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor),
             squashSelectionIntoParentCommand,
         ),
+        registerCommandWithPayload('jj-view.squashSelectionIntoAncestor',
+            () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor), squashSelectionIntoAncestorCommand),
         registerCommand('jj-view.refresh', refreshCommand),
         registerCommandWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand),
         registerCommandWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand),

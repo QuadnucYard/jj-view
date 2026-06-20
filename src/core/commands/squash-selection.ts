@@ -5,7 +5,8 @@
 
 import path from 'pathe';
 import type { CommandContext } from '../host/command-context';
-import { showJjError } from '../host/ui-helpers';
+import { promptForRevision, showJjError } from '../host/ui-helpers';
+import { RevisionQuery } from './command-utils';
 import { getFsPathFromUri, getRevisionFromUri, type Uri } from '../uri-utils';
 
 export interface SquashHunkIntoParentPayload {
@@ -18,6 +19,31 @@ export interface SquashSelectionIntoParentPayload {
     uri?: Uri;
     ranges?: { startLine: number; endLine: number }[];
     revision?: string;
+}
+
+export interface SquashSelectionIntoAncestorPayload extends SquashSelectionIntoParentPayload {
+    ancestorRevision?: string;
+}
+
+export async function squashSelectionIntoAncestorCommand(
+    ctx: CommandContext, payload?: SquashSelectionIntoAncestorPayload,
+): Promise<void> {
+    if (!payload?.uri || !payload.ranges?.length) return;
+    const revision = payload.revision || getRevisionFromUri(payload.uri) || '@';
+    try {
+        const ancestor = payload.ancestorRevision ?? await promptForRevision(ctx.host.ui, ctx.repo.jj, {
+            placeHolder: 'Select which ancestor to squash into',
+            revisionQuery: `${RevisionQuery.ancestorsExcluding(revision)} & mutable()`,
+            repoRoot: ctx.repo.rootUri, nav: ctx.host.nav,
+        });
+        if (!ancestor) return;
+        await ctx.host.documents.saveIfDirty(payload.uri);
+        const relPath = path.relative(ctx.repo.jj.workspaceRoot, getFsPathFromUri(payload.uri));
+        await ctx.repo.jj.squashSelectionIntoAncestor(relPath, payload.ranges, revision, ancestor);
+        await ctx.repo.refresh({ reason: 'after squash selection into ancestor' });
+    } catch (error: unknown) {
+        await showJjError(ctx.host.ui, error, 'Failed to squash selection into ancestor', ctx.repo.jj, ctx.log);
+    }
 }
 
 export async function squashHunkIntoParentCommand(

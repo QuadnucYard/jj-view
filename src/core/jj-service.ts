@@ -1367,7 +1367,16 @@ export class JjService {
         ranges: SelectionRange[],
         revision: string = '@',
     ): Promise<void> {
-        const parentRev = `${revision}-`;
+        return this.squashSelectionIntoAncestor(fileRelPath, ranges, revision);
+    }
+
+    async squashSelectionIntoAncestor(
+        fileRelPath: string,
+        ranges: SelectionRange[],
+        revision: string = '@',
+        intoRevision?: string,
+    ): Promise<void> {
+        const parentRev = intoRevision ?? `(${revision})-`;
         const { left: baseContent } = await this.getDiffContent(revision, fileRelPath);
         const diffOutput = await this.getDiff(revision, fileRelPath);
 

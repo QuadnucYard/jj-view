@@ -54,6 +54,7 @@ import {
 import {
     squashHunkIntoParentCommand,
     squashSelectionIntoParentCommand,
+    squashSelectionIntoAncestorCommand,
 } from '../../../src/core/commands/squash-selection';
 import { undoCommand } from '../../../src/core/commands/undo';
 import { uploadCommand } from '../../../src/core/commands/upload';
@@ -291,6 +292,7 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         squashSelectionIntoParentCommand,
     );
     registerWithPayload('jj-view.squashHunkIntoParent', createSquashHunkIntoParentPayload, squashHunkIntoParentCommand);
+    registerWithPayload('jj-view.squashSelectionIntoAncestor', createSquashSelectionIntoParentPayload, squashSelectionIntoAncestorCommand);
 
     // 7. Bookmarks & Remote Upload
     registerWithPayload('jj-view.setBookmark', createSetBookmarkPayload, setBookmarkCommand);
