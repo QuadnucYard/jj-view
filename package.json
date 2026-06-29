@@ -320,6 +320,12 @@
                 "icon": "$(discard)"
             },
             {
+                "command": "jj-view.squashDescendants",
+                "title": "Squash Descendants",
+                "category": "JJ View",
+                "icon": "$(jj-icon-squash-into)"
+            },
+            {
                 "command": "jj-view.squashRevisionIntoParent",
                 "title": "Squash Revision into Parent",
                 "category": "JJ View",
@@ -895,9 +901,14 @@
                     "group": "4_changes@3"
                 },
                 {
+                    "command": "jj-view.squashDescendants",
+                    "when": "webviewSection == 'commit' && jj.canSquashDescendants",
+                    "group": "4_changes@4"
+                },
+                {
                     "command": "jj-view.absorb",
                     "when": "webviewSection == 'commit' && jj.canAbsorb",
-                    "group": "4_changes@4"
+                    "group": "4_changes@5"
                 },
                 {
                     "command": "jj-view.upload",

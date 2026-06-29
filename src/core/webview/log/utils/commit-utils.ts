@@ -64,6 +64,7 @@ export function computeCommitActions(
 
         // Absorb requires at least one mutable parent and single-item context
         'jj.canAbsorb': canAbsorbCommit(commit) && (!isSelected || selectionCount <= 1),
+        'jj.canSquashDescendants': isMutableCommit(commit) && (!isSelected || selectionCount <= 1),
 
         preventDefaultContextMenuItems: true,
     };
