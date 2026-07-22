@@ -2,11 +2,9 @@
  * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
-import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { JjStatusEntry } from '../core/jj-types';
 import { createJjResourceState } from '../core/scm-resource-state';
-import { Uri } from '../core/uri-utils';
 import './vitest-utils';
 
 describe('createJjResourceState', () => {
@@ -140,18 +138,13 @@ describe('createJjResourceState', () => {
             expect(state.command?.command).toBe('vscode.diff');
         });
 
-        it('routes to vscode.open with query stripped if openDiffOnClick is false and not deleted', () => {
+        it('routes to the open-file wrapper if openDiffOnClick is false and not deleted', () => {
             const state = createJjResourceState(entry, 'rev123', root, {
                 openDiffOnClick: false,
             });
 
-            expect(state.command?.command).toBe('vscode.open');
-            const targetUri = state.command?.arguments?.[0];
-            expect(targetUri).toBeInstanceOf(Uri);
-            if (targetUri instanceof Uri) {
-                expect(targetUri.fsPath).toBeSameFsPath(path.resolve(root, 'file.txt'));
-                expect(targetUri.query).toBe('');
-            }
+            expect(state.command?.command).toBe('jj-view.openFile');
+            expect(state.command?.arguments).toEqual([{ resourceUri: state.resourceUri, rightUri: state.rightUri, revision: 'rev123' }]);
         });
     });
 

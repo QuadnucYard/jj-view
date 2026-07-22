@@ -4,7 +4,7 @@
  */
 import { ScmContextValue } from './jj-context-keys';
 import type { JjStatusEntry } from './jj-types';
-import { createDiffUris, isWorkingCopyRevision, toFileUri, type Uri } from './uri-utils';
+import { createDiffUris, isWorkingCopyRevision, type Uri } from './uri-utils';
 
 export interface ResourceCommand {
     command: string;
@@ -68,9 +68,9 @@ export function createJjResourceState(
             : openDiffOnClick || isDeleted
               ? diffCommand
               : {
-                    command: 'vscode.open',
+                    command: 'jj-view.openFile',
                     title: 'Open File',
-                    arguments: [toFileUri(resourceUri)],
+                    arguments: [{ resourceUri, rightUri, revision }],
                 };
 
     const flags: string[] = [];

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import * as vscode from 'vscode';
+import { registerOpenSyncTracking } from './open-sync';
 import { abandonCommand } from '../core/commands/abandon';
 import { absorbCommand } from '../core/commands/absorb';
 import { setBookmarkCommand } from '../core/commands/bookmark';
@@ -139,6 +140,7 @@ export interface RegisterCommandsOptions {
 export function registerCommands(options: RegisterCommandsOptions): void {
     const { context, repositoryManager, scmProviders, outputChannel, commentsManager, logWebviewProvider } = options;
     const host = options.hostEnvironment ?? new VsCodeHostEnvironment({ context });
+    context.subscriptions.push(registerOpenSyncTracking());
 
     function resolveRepositoryLocal(
         args: unknown[],
