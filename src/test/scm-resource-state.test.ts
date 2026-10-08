@@ -144,7 +144,9 @@ describe('createJjResourceState', () => {
             });
 
             expect(state.command?.command).toBe('jj-view.openFile');
-            expect(state.command?.arguments).toEqual([{ resourceUri: state.resourceUri, rightUri: state.rightUri, revision: 'rev123' }]);
+            expect(state.command?.arguments).toEqual([
+                { resourceUri: state.resourceUri, rightUri: state.rightUri, revision: 'rev123' },
+            ]);
         });
     });
 

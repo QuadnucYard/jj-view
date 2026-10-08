@@ -594,7 +594,7 @@ async function handleDiscardFile(): Promise<void> {
 }
 
 async function handleResolveConflict(): Promise<void> {
-    if (!activeTab || activeTab.view.type !== 'diff' || !activeTab.view.resourceState) {
+    if (activeTab?.view.type !== 'diff' || !activeTab.view.resourceState) {
         return;
     }
     if (scmModel) {
@@ -604,7 +604,7 @@ async function handleResolveConflict(): Promise<void> {
 }
 
 async function handleSquashSelection(ranges: { startLine: number; endLine: number }[]): Promise<void> {
-    if (!activeTab || activeTab.view.type !== 'diff' || !activeTab.view.rightUri) {
+    if (activeTab?.view.type !== 'diff' || !activeTab.view.rightUri) {
         return;
     }
     if (activeTab.isDirty && webHostEnv?.documents) {

@@ -3,10 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import * as vscode from 'vscode';
-import { registerOpenSyncTracking } from './open-sync';
 import { abandonCommand } from '../core/commands/abandon';
 import { abandonDescendantsCommand } from '../core/commands/abandon-descendants';
-import { squashDescendantsCommand } from '../core/commands/squash-descendants';
 import { absorbCommand } from '../core/commands/absorb';
 import { setBookmarkCommand } from '../core/commands/bookmark';
 import { advanceBookmarkCommand } from '../core/commands/bookmark-advance';
@@ -44,6 +42,7 @@ import { rebaseOntoSelectedCommand } from '../core/commands/rebase';
 import { redoCommand } from '../core/commands/redo';
 import { refreshCommand } from '../core/commands/refresh';
 import { restoreCommand } from '../core/commands/restore';
+import { squashDescendantsCommand } from '../core/commands/squash-descendants';
 import {
     squashFilesIntoAncestorCommand,
     squashFilesIntoChildCommand,
@@ -54,7 +53,11 @@ import {
     squashRevisionIntoAncestorCommand,
     squashRevisionIntoParentCommand,
 } from '../core/commands/squash-revision';
-import { squashHunkIntoParentCommand, squashSelectionIntoParentCommand, squashSelectionIntoAncestorCommand } from '../core/commands/squash-selection';
+import {
+    squashHunkIntoParentCommand,
+    squashSelectionIntoAncestorCommand,
+    squashSelectionIntoParentCommand,
+} from '../core/commands/squash-selection';
 import { undoCommand } from '../core/commands/undo';
 import { uploadCommand } from '../core/commands/upload';
 import { uploadStackCommand } from '../core/commands/upload-stack';
@@ -70,6 +73,7 @@ import { resolveRepository } from '../core/host/ui-helpers';
 import type { JjRepository } from '../core/jj-repository';
 import type { JjRepositoryManager } from '../core/jj-repository-manager';
 import type { LoggerChannel } from '../utils/output-channel';
+import { registerOpenSyncTracking } from './open-sync';
 import { createAbandonPayload } from './payloads/abandon.payload';
 import { createAbsorbPayload } from './payloads/absorb.payload';
 import { createSetBookmarkPayload } from './payloads/bookmark.payload';
@@ -274,8 +278,11 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor),
             squashSelectionIntoParentCommand,
         ),
-        registerCommandWithPayload('jj-view.squashSelectionIntoAncestor',
-            () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor), squashSelectionIntoAncestorCommand),
+        registerCommandWithPayload(
+            'jj-view.squashSelectionIntoAncestor',
+            () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor),
+            squashSelectionIntoAncestorCommand,
+        ),
         registerCommand('jj-view.refresh', refreshCommand),
         registerCommandWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand),
         registerCommandWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand),

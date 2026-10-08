@@ -136,7 +136,8 @@ describe('LogViewController Domain Unit Tests', () => {
         await controller.handleMessage({ type: 'getDetails', payload: { changeId } });
         await controller.handleMessage({ type: 'getDetails', payload: { changeId, preview: false } });
         expect(fakeHost.nav.commitDetailsOpened.map(({ options }) => options)).toEqual([
-            { preview: true }, { preview: false },
+            { preview: true },
+            { preview: false },
         ]);
     });
 

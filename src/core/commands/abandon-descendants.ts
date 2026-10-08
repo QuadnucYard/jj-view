@@ -11,11 +11,15 @@ export async function abandonDescendantsCommand(ctx: CommandContext, payload?: A
         await ctx.host.ui.showErrorMessage('Select a single revision to abandon with its descendants.');
         return;
     }
-    const revision = payload?.revisions?.[0] ?? await ctx.host.ui.showInputBox({
-        prompt: 'Enter revision to abandon descendants of',
-        placeHolder: 'Revision ID (e.g. @, change_id)',
-    });
-    if (!revision) return;
+    const revision =
+        payload?.revisions?.[0] ??
+        (await ctx.host.ui.showInputBox({
+            prompt: 'Enter revision to abandon descendants of',
+            placeHolder: 'Revision ID (e.g. @, change_id)',
+        }));
+    if (!revision) {
+        return;
+    }
     try {
         const affected = await ctx.repo.jj.getLog({
             revision: `(${revision})::`,
@@ -27,14 +31,21 @@ export async function abandonDescendantsCommand(ctx: CommandContext, payload?: A
             return;
         }
         const descendants = affected.filter((entry) => entry.commit_id !== roots[0].commit_id);
-        const lines = descendants.slice(0, 10).map((entry) =>
-            `  ${entry.change_id_shortest}  ${entry.description.split('\n')[0] || '(no description)'}`,
-        );
-        if (descendants.length > 10) lines.push(`  ...and ${descendants.length - 10} more`);
+        const lines = descendants
+            .slice(0, 10)
+            .map((entry) => `  ${entry.change_id_shortest}  ${entry.description.split('\n')[0] || '(no description)'}`);
+        if (descendants.length > 10) {
+            lines.push(`  ...and ${descendants.length - 10} more`);
+        }
         const label = `${revision} and ${descendants.length} descendant(s)`;
-        const showWarning = ctx.host.ui.showModalWarning?.bind(ctx.host.ui) ?? ctx.host.ui.showWarning.bind(ctx.host.ui);
-        if (await showWarning(`Abandon ${label}?\n\n${lines.join('\n')}`, 'Abandon') !== 'Abandon') return;
-        await ctx.host.ui.withProgress('Abandoning descendants...', () => ctx.repo.jj.abandon(affected.map((entry) => entry.commit_id)));
+        const showWarning =
+            ctx.host.ui.showModalWarning?.bind(ctx.host.ui) ?? ctx.host.ui.showWarning.bind(ctx.host.ui);
+        if ((await showWarning(`Abandon ${label}?\n\n${lines.join('\n')}`, 'Abandon')) !== 'Abandon') {
+            return;
+        }
+        await ctx.host.ui.withProgress('Abandoning descendants...', () =>
+            ctx.repo.jj.abandon(affected.map((entry) => entry.commit_id)),
+        );
         await ctx.repo.refresh({ reason: 'abandon descendants' });
         await ctx.host.commands.executeCommand('jj-view.refreshGraph');
         await ctx.host.ui.showInformation(`Abandoned ${label}.`);

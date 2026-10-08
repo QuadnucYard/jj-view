@@ -8,43 +8,43 @@ import type { PackageJsonContributes } from './menu-types';
 export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
     commands: [
         {
-            "command": "jj-view.describe",
-            "title": "Describe",
-            "category": "JJ View",
-            "icon": "$(edit)"
+            command: 'jj-view.describe',
+            title: 'Describe',
+            category: 'JJ View',
+            icon: '$(edit)',
         },
         {
-            "command": "jj-view.squashDescendants",
-            "title": "Squash Descendants",
-            "category": "JJ View",
-            "icon": "$(jj-icon-squash-into)"
+            command: 'jj-view.squashDescendants',
+            title: 'Squash Descendants',
+            category: 'JJ View',
+            icon: '$(jj-icon-squash-into)',
         },
         {
-            "command": "jj-view.abandonDescendants",
-            "title": "Abandon Descendants",
-            "category": "JJ View",
-            "icon": "$(trash)"
+            command: 'jj-view.abandonDescendants',
+            title: 'Abandon Descendants',
+            category: 'JJ View',
+            icon: '$(trash)',
         },
         {
-            "command": "jj-view.squashSelectionIntoAncestor",
-            "title": "Squash Selection into Ancestor...",
-            "category": "JJ View",
-            "icon": "$(jj-icon-squash-into)"
+            command: 'jj-view.squashSelectionIntoAncestor',
+            title: 'Squash Selection into Ancestor...',
+            category: 'JJ View',
+            icon: '$(jj-icon-squash-into)',
         },
         {
-            "command": "jj-view.hideCommitAction.describe",
-            "title": "Hide 'Describe'",
-            "category": "JJ View"
+            command: 'jj-view.hideCommitAction.describe',
+            title: "Hide 'Describe'",
+            category: 'JJ View',
         },
         {
-            "command": "jj-view.toggleCommitAction.describe.on",
-            "title": "● Describe",
-            "category": "JJ View"
+            command: 'jj-view.toggleCommitAction.describe.on',
+            title: '● Describe',
+            category: 'JJ View',
         },
         {
-            "command": "jj-view.toggleCommitAction.describe.off",
-            "title": "○ Describe",
-            "category": "JJ View"
+            command: 'jj-view.toggleCommitAction.describe.off',
+            title: '○ Describe',
+            category: 'JJ View',
         },
         {
             command: 'jj-view.focusRepository',
@@ -476,16 +476,16 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
     menus: {
         commandPalette: [
             {
-                "command": "jj-view.hideCommitAction.describe",
-                "when": "false"
+                command: 'jj-view.hideCommitAction.describe',
+                when: 'false',
             },
             {
-                "command": "jj-view.toggleCommitAction.describe.on",
-                "when": "false"
+                command: 'jj-view.toggleCommitAction.describe.on',
+                when: 'false',
             },
             {
-                "command": "jj-view.toggleCommitAction.describe.off",
-                "when": "false"
+                command: 'jj-view.toggleCommitAction.describe.off',
+                when: 'false',
             },
             {
                 command: 'jj-view.uploadStack',
@@ -679,14 +679,14 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
         ],
         'scm/resourceGroup/context': [
             {
-                "command": "jj-view.abandonDescendants",
-                "group": "inline@3",
-                "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowAbandon\\b/"
+                command: 'jj-view.abandonDescendants',
+                group: 'inline@3',
+                when: 'scmResourceGroupState =~ /\\bjj\\.group\\.allowAbandon\\b/',
             },
             {
-                "command": "jj-view.describe",
-                "group": "inline@8",
-                "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowDescribe\\b/"
+                command: 'jj-view.describe',
+                group: 'inline@8',
+                when: 'scmResourceGroupState =~ /\\bjj\\.group\\.allowDescribe\\b/',
             },
             {
                 command: 'jj-view.absorb',
@@ -758,34 +758,34 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
         ],
         'webview/context': [
             {
-                "command": "jj-view.describe",
-                "when": "webviewSection == 'commit' && jj.canDescribe",
-                "group": "2_edit@5"
+                command: 'jj-view.describe',
+                when: "webviewSection == 'commit' && jj.canDescribe",
+                group: '2_edit@5',
             },
             {
-                "command": "jj-view.abandonDescendants",
-                "when": "webviewSection == 'commit' && jj.canAbandonDescendants",
-                "group": "4_changes@3"
+                command: 'jj-view.abandonDescendants',
+                when: "webviewSection == 'commit' && jj.canAbandonDescendants",
+                group: '4_changes@3',
             },
             {
-                "command": "jj-view.squashDescendants",
-                "when": "webviewSection == 'commit' && jj.canSquashDescendants",
-                "group": "4_changes@4"
+                command: 'jj-view.squashDescendants',
+                when: "webviewSection == 'commit' && jj.canSquashDescendants",
+                group: '4_changes@4',
             },
             {
-                "command": "jj-view.hideCommitAction.describe",
-                "when": "webviewSection == 'commitAction' && jj.actionId == 'describe' && jj.describeVisible",
-                "group": "9_visibility_1_hide"
+                command: 'jj-view.hideCommitAction.describe',
+                when: "webviewSection == 'commitAction' && jj.actionId == 'describe' && jj.describeVisible",
+                group: '9_visibility_1_hide',
             },
             {
-                "command": "jj-view.toggleCommitAction.describe.on",
-                "when": "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && jj.commitActionVisible.describe",
-                "group": "9_visibility_2_toggle@5"
+                command: 'jj-view.toggleCommitAction.describe.on',
+                when: "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && jj.commitActionVisible.describe",
+                group: '9_visibility_2_toggle@5',
             },
             {
-                "command": "jj-view.toggleCommitAction.describe.off",
-                "when": "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && !jj.commitActionVisible.describe",
-                "group": "9_visibility_2_toggle@5"
+                command: 'jj-view.toggleCommitAction.describe.off',
+                when: "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && !jj.commitActionVisible.describe",
+                group: '9_visibility_2_toggle@5',
             },
             {
                 command: 'jj-view.workspaceForget',
@@ -988,9 +988,9 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
         ],
         'editor/context': [
             {
-                "command": "jj-view.squashSelectionIntoAncestor",
-                "group": "jj-view",
-                "when": "isInDiffEditor && jj.parentMutable"
+                command: 'jj-view.squashSelectionIntoAncestor',
+                group: 'jj-view',
+                when: 'isInDiffEditor && jj.parentMutable',
             },
             {
                 command: 'jj-view.squashSelectionIntoParent',

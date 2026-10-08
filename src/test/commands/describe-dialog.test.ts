@@ -14,15 +14,21 @@ import { createMock } from '../test-utils';
 let repo: TestRepo;
 let ctx: FakeCommandContext;
 beforeEach(() => {
-    repo = new TestRepo(); repo.init();
-    ctx = new FakeCommandContext(createMock<JjRepository>({
-        jj: new JjService(repo.path, NO_OP_LOGGER), rootUri: Uri.file(repo.path),
-        refresh: vi.fn().mockResolvedValue(undefined),
-    }));
+    repo = new TestRepo();
+    repo.init();
+    ctx = new FakeCommandContext(
+        createMock<JjRepository>({
+            jj: new JjService(repo.path, NO_OP_LOGGER),
+            rootUri: Uri.file(repo.path),
+            refresh: vi.fn().mockResolvedValue(undefined),
+        }),
+    );
 });
 afterEach(() => repo.dispose());
 test('edits the requested revision and allows clearing its description', async () => {
-    repo.new([], 'original'); const target = repo.getChangeId('@'); repo.new([], 'working copy');
+    repo.new([], 'original');
+    const target = repo.getChangeId('@');
+    repo.new([], 'working copy');
     ctx.host.ui.setNextInputBoxResponse('');
     await describeDialogCommand(ctx, { revision: target });
     expect(await ctx.repo.jj.getDescription(target)).toBe('');

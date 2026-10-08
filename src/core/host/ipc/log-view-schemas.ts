@@ -5,7 +5,15 @@
 import { z } from 'zod';
 import { JjLogEntrySchema } from '../../jj-schemas';
 
-export const CommitActionSchema = z.enum(['newChild', 'edit', 'squash', 'abandon', 'openCodeForge', 'upload', 'describe']);
+export const CommitActionSchema = z.enum([
+    'newChild',
+    'edit',
+    'squash',
+    'abandon',
+    'openCodeForge',
+    'upload',
+    'describe',
+]);
 export type CommitAction = z.infer<typeof CommitActionSchema>;
 
 export const TOGGLEABLE_COMMIT_ACTIONS = ['newChild', 'edit', 'squash', 'abandon', 'describe'] as const;

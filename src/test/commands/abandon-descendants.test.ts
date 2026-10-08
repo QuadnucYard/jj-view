@@ -17,26 +17,34 @@ describe('abandonDescendantsCommand', () => {
     beforeEach(() => {
         repo = new TestRepo();
         repo.init();
-        ctx = new FakeCommandContext(createMock<JjRepository>({
-            jj: new JjService(repo.path, NO_OP_LOGGER),
-            rootUri: Uri.file(repo.path), refresh: vi.fn().mockResolvedValue(undefined),
-        }));
+        ctx = new FakeCommandContext(
+            createMock<JjRepository>({
+                jj: new JjService(repo.path, NO_OP_LOGGER),
+                rootUri: Uri.file(repo.path),
+                refresh: vi.fn().mockResolvedValue(undefined),
+            }),
+        );
     });
     afterEach(() => repo.dispose());
     test('abandons the root and descendants while preserving siblings', async () => {
         const graph = await buildGraph(repo, [
-            { label: 'A' }, { label: 'B', parents: ['A'] },
-            { label: 'sibling', parents: ['root()'] }, { label: 'C', parents: ['B'], isCurrentWorkingCopy: true },
+            { label: 'A' },
+            { label: 'B', parents: ['A'] },
+            { label: 'sibling', parents: ['root()'] },
+            { label: 'C', parents: ['B'], isCurrentWorkingCopy: true },
         ]);
         ctx.host.ui.setNextWarningResponse('Abandon');
         await abandonDescendantsCommand(ctx, { revisions: [graph.A.changeId] });
         const visible = repo.getLog('all()', 'change_id');
-        for (const label of ['A', 'B', 'C']) expect(visible).not.toContain(graph[label].changeId);
+        for (const label of ['A', 'B', 'C']) {
+            expect(visible).not.toContain(graph[label].changeId);
+        }
         expect(visible).toContain(graph.sibling.changeId);
     });
     test('cancellation preserves all revisions', async () => {
         const graph = await buildGraph(repo, [
-            { label: 'A' }, { label: 'B', parents: ['A'], isCurrentWorkingCopy: true },
+            { label: 'A' },
+            { label: 'B', parents: ['A'], isCurrentWorkingCopy: true },
         ]);
         await abandonDescendantsCommand(ctx, { revisions: [graph.A.changeId] });
         const visible = repo.getLog('all()', 'change_id');
@@ -45,7 +53,8 @@ describe('abandonDescendantsCommand', () => {
     });
     test('rejects multiple selected roots without abandoning either', async () => {
         const graph = await buildGraph(repo, [
-            { label: 'A' }, { label: 'B', parents: ['root()'], isCurrentWorkingCopy: true },
+            { label: 'A' },
+            { label: 'B', parents: ['root()'], isCurrentWorkingCopy: true },
         ]);
         ctx.host.ui.setNextWarningResponse('Abandon');
         await abandonDescendantsCommand(ctx, { revisions: [graph.A.changeId, graph.B.changeId] });
@@ -54,7 +63,8 @@ describe('abandonDescendantsCommand', () => {
         expect(ctx.host.ui.warningMessages).toEqual([]);
     });
     test('rejects an immutable root without prompting or abandoning its mutable descendants', async () => {
-        repo.new([], 'mutable child'); const id = repo.getChangeId('@');
+        repo.new([], 'mutable child');
+        const id = repo.getChangeId('@');
         ctx.host.ui.setNextWarningResponse('Abandon');
         await abandonDescendantsCommand(ctx, { revisions: ['root()'] });
         expect(ctx.host.ui.warningMessages).toEqual([]);

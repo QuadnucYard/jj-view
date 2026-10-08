@@ -187,7 +187,11 @@ suite('JJ SCM Provider Integration Test', () => {
         );
         assert.strictEqual(command.arguments?.length, 1, 'Open command should have 1 argument');
         const openArg = command.arguments?.[0] as JjResourceState;
-        assert.strictEqual(normalize(toFileUri(openArg.resourceUri).fsPath), normalize(filePath), 'Open resource should be the file path');
+        assert.strictEqual(
+            normalize(toFileUri(openArg.resourceUri).fsPath),
+            normalize(filePath),
+            'Open resource should be the file path',
+        );
         assert.ok(openArg.rightUri, 'Open command should include the revision URI');
 
         const { diffTitle } = resourceState as JjResourceState;

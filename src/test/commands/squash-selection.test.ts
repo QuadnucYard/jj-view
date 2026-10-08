@@ -5,7 +5,11 @@
 
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { squashHunkIntoParentCommand, squashSelectionIntoParentCommand, squashSelectionIntoAncestorCommand } from '../../core/commands/squash-selection';
+import {
+    squashHunkIntoParentCommand,
+    squashSelectionIntoAncestorCommand,
+    squashSelectionIntoParentCommand,
+} from '../../core/commands/squash-selection';
 import type { JjRepository } from '../../core/jj-repository';
 import { JjService, NO_OP_LOGGER } from '../../core/jj-service';
 import { Uri } from '../../core/uri-utils';
@@ -40,16 +44,30 @@ describe('squash-selection commands', () => {
         const file = 'file.txt';
         const ids = await buildGraph(repo, [
             { label: 'grandparent', files: { [file]: 'one\nbase\nthree\nfour\nfive\nsix\nseven\neight\n' } },
-            { label: 'parent', parents: ['grandparent'], files: { [file]: 'one\nparent\nthree\nfour\nfive\nsix\nseven\neight\n' } },
-            { label: 'child', parents: ['parent'], files: { [file]: 'one\nparent\nthree\nfour\nfive\nsix\nseven\nchild\n' }, isCurrentWorkingCopy: true },
+            {
+                label: 'parent',
+                parents: ['grandparent'],
+                files: { [file]: 'one\nparent\nthree\nfour\nfive\nsix\nseven\neight\n' },
+            },
+            {
+                label: 'child',
+                parents: ['parent'],
+                files: { [file]: 'one\nparent\nthree\nfour\nfive\nsix\nseven\nchild\n' },
+                isCurrentWorkingCopy: true,
+            },
         ]);
         ctx.host.ui.setNextRevisionPromptResponse(ids.grandparent.changeId);
         await squashSelectionIntoAncestorCommand(ctx, {
             uri: Uri.file(path.join(repo.path, file)),
-            ranges: [{ startLine: 7, endLine: 7 }], revision: ids.child.changeId,
+            ranges: [{ startLine: 7, endLine: 7 }],
+            revision: ids.child.changeId,
         });
-        expect(repo.getFileContent(ids.grandparent.changeId, file)).toBe('one\nbase\nthree\nfour\nfive\nsix\nseven\nchild\n');
-        expect(repo.getFileContent(ids.parent.changeId, file)).toBe('one\nparent\nthree\nfour\nfive\nsix\nseven\nchild\n');
+        expect(repo.getFileContent(ids.grandparent.changeId, file)).toBe(
+            'one\nbase\nthree\nfour\nfive\nsix\nseven\nchild\n',
+        );
+        expect(repo.getFileContent(ids.parent.changeId, file)).toBe(
+            'one\nparent\nthree\nfour\nfive\nsix\nseven\nchild\n',
+        );
         expect(repo.getFileContent('@', file)).toBe('one\nparent\nthree\nfour\nfive\nsix\nseven\nchild\n');
         expect(ctx.host.ui.errorMessages).toEqual([]);
     });
@@ -58,8 +76,14 @@ describe('squash-selection commands', () => {
             { label: 'source', files: { 'file.txt': 'source' } },
             { label: 'sibling', parents: ['root()'], files: { 'file.txt': 'sibling' }, isCurrentWorkingCopy: true },
         ]);
-        await expect(jj.squashSelectionIntoAncestor('file.txt', [{ startLine: 0, endLine: 0 }],
-            ids.source.changeId, ids.sibling.changeId)).rejects.toThrow('mutable ancestor');
+        await expect(
+            jj.squashSelectionIntoAncestor(
+                'file.txt',
+                [{ startLine: 0, endLine: 0 }],
+                ids.source.changeId,
+                ids.sibling.changeId,
+            ),
+        ).rejects.toThrow('mutable ancestor');
         expect(repo.getFileContent(ids.source.changeId, 'file.txt')).toBe('source');
         expect(repo.getFileContent(ids.sibling.changeId, 'file.txt')).toBe('sibling');
     });

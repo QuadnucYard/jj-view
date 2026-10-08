@@ -187,7 +187,10 @@ function getSourceEditorState(args: unknown[]): TrackedEditorState | undefined {
 
 function computeOpenSync(args: unknown[], openUri: vscode.Uri): OpenSync | undefined {
     const source = getSourceEditorState(args);
-    if (!source || path.normalize(getFsPathFromUri(source.document.uri)) !== path.normalize(getFsPathFromUri(openUri))) {
+    if (
+        !source ||
+        path.normalize(getFsPathFromUri(source.document.uri)) !== path.normalize(getFsPathFromUri(openUri))
+    ) {
         return undefined;
     }
 
@@ -206,8 +209,11 @@ export async function openFileWithSync(uri: Uri, sourceUri?: Uri, options?: Host
     const args = sourceUri ? [vscode.Uri.parse(sourceUri.toString())] : [];
     const sync = computeOpenSync(args, targetUri);
     if (!sync) {
-        if (options) await vscode.commands.executeCommand('vscode.open', targetUri, { preview: options.preview });
-        else await vscode.commands.executeCommand('vscode.open', targetUri);
+        if (options) {
+            await vscode.commands.executeCommand('vscode.open', targetUri, { preview: options.preview });
+        } else {
+            await vscode.commands.executeCommand('vscode.open', targetUri);
+        }
         return;
     }
     const editor = options
@@ -235,4 +241,3 @@ export async function openFileWithSync(uri: Uri, sourceUri?: Uri, options?: Host
         editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
     }
 }
-

@@ -10,14 +10,19 @@ import { Uri } from '../../core/uri-utils';
 import { FakeCommandContext } from '../fake-host-environment';
 import { buildGraph, TestRepo } from '../test-repo';
 import { createMock } from '../test-utils';
+
 let repo: TestRepo;
 let ctx: FakeCommandContext;
 beforeEach(() => {
-    repo = new TestRepo(); repo.init();
-    ctx = new FakeCommandContext(createMock<JjRepository>({
-        jj: new JjService(repo.path, NO_OP_LOGGER), rootUri: Uri.file(repo.path),
-        refresh: vi.fn().mockResolvedValue(undefined),
-    }));
+    repo = new TestRepo();
+    repo.init();
+    ctx = new FakeCommandContext(
+        createMock<JjRepository>({
+            jj: new JjService(repo.path, NO_OP_LOGGER),
+            rootUri: Uri.file(repo.path),
+            refresh: vi.fn().mockResolvedValue(undefined),
+        }),
+    );
 });
 afterEach(() => repo.dispose());
 test('squashes descendant content into the root and preserves its description', async () => {
@@ -36,14 +41,16 @@ test('squashes descendant content into the root and preserves its description', 
     expect(repo.getLog('all()', 'change_id')).not.toContain(ids.C.changeId);
 });
 test('a leaf revision does not prompt or mutate', async () => {
-    repo.new([], 'leaf'); const id = repo.getChangeId('@');
+    repo.new([], 'leaf');
+    const id = repo.getChangeId('@');
     ctx.host.ui.setNextWarningResponse('Squash');
     await squashDescendantsCommand(ctx, { revisions: [id] });
     expect(ctx.host.ui.warningMessages).toEqual([]);
     expect(repo.getLog('all()', 'change_id')).toContain(id);
 });
 test('rejects an immutable destination before showing confirmation', async () => {
-    repo.new([], 'mutable child'); const id = repo.getChangeId('@');
+    repo.new([], 'mutable child');
+    const id = repo.getChangeId('@');
     ctx.host.ui.setNextWarningResponse('Squash');
     await squashDescendantsCommand(ctx, { revisions: ['root()'] });
     expect(ctx.host.ui.warningMessages).toEqual([]);

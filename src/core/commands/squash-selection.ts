@@ -6,8 +6,8 @@
 import path from 'pathe';
 import type { CommandContext } from '../host/command-context';
 import { promptForRevision, showJjError } from '../host/ui-helpers';
-import { RevisionQuery } from './command-utils';
 import { getFsPathFromUri, getRevisionFromUri, type Uri } from '../uri-utils';
+import { RevisionQuery } from './command-utils';
 
 export interface SquashHunkIntoParentPayload {
     uri?: Uri;
@@ -26,17 +26,25 @@ export interface SquashSelectionIntoAncestorPayload extends SquashSelectionIntoP
 }
 
 export async function squashSelectionIntoAncestorCommand(
-    ctx: CommandContext, payload?: SquashSelectionIntoAncestorPayload,
+    ctx: CommandContext,
+    payload?: SquashSelectionIntoAncestorPayload,
 ): Promise<void> {
-    if (!payload?.uri || !payload.ranges?.length) return;
+    if (!payload?.uri || !payload.ranges?.length) {
+        return;
+    }
     const revision = payload.revision || getRevisionFromUri(payload.uri) || '@';
     try {
-        const ancestor = payload.ancestorRevision ?? await promptForRevision(ctx.host.ui, ctx.repo.jj, {
-            placeHolder: 'Select which ancestor to squash into',
-            revisionQuery: `${RevisionQuery.ancestorsExcluding(revision)} & mutable()`,
-            repoRoot: ctx.repo.rootUri, nav: ctx.host.nav,
-        });
-        if (!ancestor) return;
+        const ancestor =
+            payload.ancestorRevision ??
+            (await promptForRevision(ctx.host.ui, ctx.repo.jj, {
+                placeHolder: 'Select which ancestor to squash into',
+                revisionQuery: `${RevisionQuery.ancestorsExcluding(revision)} & mutable()`,
+                repoRoot: ctx.repo.rootUri,
+                nav: ctx.host.nav,
+            }));
+        if (!ancestor) {
+            return;
+        }
         await ctx.host.documents.saveIfDirty(payload.uri);
         const relPath = path.relative(ctx.repo.jj.workspaceRoot, getFsPathFromUri(payload.uri));
         await ctx.repo.jj.squashSelectionIntoAncestor(relPath, payload.ranges, revision, ancestor);

@@ -59,7 +59,7 @@ export function isLinearCommitChain(commits: JjLogEntry[]): boolean {
     for (let i = 1; i < commits.length; i++) {
         const commit = commits[i];
         const prev = commits[i - 1];
-        if (!commit.parents || commit.parents.length !== 1 || commit.parents[0].commit_id !== prev.commit_id) {
+        if (commit.parents?.length !== 1 || commit.parents[0].commit_id !== prev.commit_id) {
             return false;
         }
     }

@@ -20,7 +20,7 @@ export async function viewFileAtRevisionCommand(
     try {
         const fileUri = payload?.fileUri;
 
-        if (!fileUri || fileUri.scheme !== 'file') {
+        if (fileUri?.scheme !== 'file') {
             await showJjError(
                 ctx.host.ui,
                 new Error('No workspace file selected.'),
