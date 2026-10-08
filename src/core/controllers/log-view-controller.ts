@@ -601,6 +601,7 @@ export class LogViewController implements Disposable {
                             msg.changeIdShortest,
                             msg.isDivergent,
                             msg.changeIdOffset,
+                            { preview: msg.preview ?? true },
                         );
                     }
                 },

@@ -16,6 +16,7 @@ export const ActionPayloadSchema = z.object({
     isImmutable: z.boolean().optional(),
     url: z.string().optional(),
     multiSelect: z.boolean().optional(),
+    preview: z.boolean().optional(),
     changeIdShortest: z.string().optional(),
     isDivergent: z.boolean().optional(),
     changeIdOffset: z.number().optional(),

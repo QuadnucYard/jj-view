@@ -13,7 +13,7 @@ import DraggableBookmark from './DraggableBookmark.svelte';
 
 interface Props {
     commit: JjLogEntry;
-    onClick: (modifiers: { multiSelect: boolean }) => void;
+    onClick: (modifiers: { multiSelect: boolean; preview?: boolean }) => void;
     onAction: (action: string, payload: ActionPayload) => void;
     isSelected?: boolean;
     isHighlighted?: boolean;
@@ -197,7 +197,7 @@ const hasActiveBookmarkAlready = $derived(
     onclick={(e) => {
         e.stopPropagation();
         const multiSelect = e.ctrlKey || e.metaKey;
-        onClick({ multiSelect });
+        onClick({ multiSelect, preview: e.detail >= 2 ? false : undefined });
     }}
     onkeydown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {

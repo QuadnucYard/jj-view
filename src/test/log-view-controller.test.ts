@@ -131,6 +131,15 @@ describe('LogViewController Domain Unit Tests', () => {
         expect(controller.minChangeIdLength).toBe(8);
     });
 
+    test('opens graph details in preview unless keep open is requested', async () => {
+        const changeId = testRepo.getChangeId('@');
+        await controller.handleMessage({ type: 'getDetails', payload: { changeId } });
+        await controller.handleMessage({ type: 'getDetails', payload: { changeId, preview: false } });
+        expect(fakeHost.nav.commitDetailsOpened.map(({ options }) => options)).toEqual([
+            { preview: true }, { preview: false },
+        ]);
+    });
+
     test('handles RPC messages via handleMessage', async () => {
         testRepo.writeFile('file.txt', 'hello\n');
         testRepo.describe('initial commit');

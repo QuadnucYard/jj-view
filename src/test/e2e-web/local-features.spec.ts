@@ -49,3 +49,49 @@ test('describes a graph revision and persists hover-action visibility', async ({
         await page.screenshot({ path: path.join(ARTIFACT_DIR, 'local-features.png') });
     }, { outputPath: path.join(ARTIFACT_DIR, 'local-features.gif') });
 });
+
+
+test('double-clicking graph items keeps details tabs open', async ({ page, server, testRepo }) => {
+    testRepo.writeFile('first.txt', 'first content\n');
+    testRepo.describe('first graph item');
+    const firstId = testRepo.getChangeId('@');
+    testRepo.new();
+    testRepo.writeFile('second.txt', 'second content\n');
+    testRepo.describe('second graph item');
+    const secondId = testRepo.getChangeId('@');
+    testRepo.new();
+    testRepo.writeFile('third.txt', 'third content\n');
+    testRepo.describe('third graph item');
+    const thirdId = testRepo.getChangeId('@');
+    await page.goto(server.serverUrl);
+    await waitForScmReady(page);
+    const firstRow = page.locator('.commit-row[data-change-id="' + firstId + '"]');
+    const secondRow = page.locator('.commit-row[data-change-id="' + secondId + '"]');
+    const thirdRow = page.locator('.commit-row[data-change-id="' + thirdId + '"]');
+    const tabs = page.locator('[data-testid="tab-bar-container"] .tab');
+    const firstTab = tabs.filter({ hasText: 'Commit ' + firstId.slice(0, 8) });
+    const secondTab = tabs.filter({ hasText: 'Commit ' + secondId.slice(0, 8) });
+    const thirdTab = tabs.filter({ hasText: 'Commit ' + thirdId.slice(0, 8) });
+    await recordGifFlow(page, async (capture) => {
+        await firstRow.getByText('first graph item', { exact: true }).click();
+        await expect(firstTab).toHaveClass(/preview/);
+        await capture();
+        await firstRow.getByText('first graph item', { exact: true }).dblclick();
+        await expect(firstTab).not.toHaveClass(/preview/);
+        await expect(firstRow).toHaveAttribute('aria-selected', 'true');
+        await expect(firstTab).toHaveCount(1);
+        await capture();
+        await secondRow.getByText('second graph item', { exact: true }).click();
+        await expect(secondTab).toHaveClass(/preview/);
+        await expect(firstTab).toBeVisible();
+        await thirdRow.getByText('third graph item', { exact: true }).click();
+        await expect(thirdTab).toHaveClass(/preview/);
+        await expect(secondTab).toHaveCount(0);
+        await expect(firstTab).toBeVisible();
+        await thirdRow.getByText('third graph item', { exact: true }).dblclick();
+        await expect(thirdTab).not.toHaveClass(/preview/);
+        await expect(tabs).toHaveCount(2);
+        await capture();
+        await page.screenshot({ path: path.join(ARTIFACT_DIR, 'graph-keep-open.png') });
+    }, { outputPath: path.join(ARTIFACT_DIR, 'graph-keep-open.gif') });
+});

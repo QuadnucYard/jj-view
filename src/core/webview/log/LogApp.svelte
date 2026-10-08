@@ -179,7 +179,9 @@ $effect(() => {
 function handleGraphAction(action: string, payload: ActionPayload) {
     if (action === 'select') {
         const multiSelect = payload.multiSelect ?? false;
-        const newSelection = calculateNextSelection(selectedCommitIds, payload.changeId, multiSelect);
+        const newSelection = payload.preview === false
+            ? new Set([payload.changeId])
+            : calculateNextSelection(selectedCommitIds, payload.changeId, multiSelect);
         selectedCommitIds = newSelection;
 
         const commitIds = Array.from(newSelection);
