@@ -42,3 +42,11 @@ test('a leaf revision does not prompt or mutate', async () => {
     expect(ctx.host.ui.warningMessages).toEqual([]);
     expect(repo.getLog('all()', 'change_id')).toContain(id);
 });
+test('rejects an immutable destination before showing confirmation', async () => {
+    repo.new([], 'mutable child'); const id = repo.getChangeId('@');
+    ctx.host.ui.setNextWarningResponse('Squash');
+    await squashDescendantsCommand(ctx, { revisions: ['root()'] });
+    expect(ctx.host.ui.warningMessages).toEqual([]);
+    expect(ctx.host.ui.errorMessages).toHaveLength(1);
+    expect(repo.getLog('all()', 'change_id')).toContain(id);
+});

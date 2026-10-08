@@ -53,4 +53,12 @@ describe('abandonDescendantsCommand', () => {
         expect(repo.getLog('all()', 'change_id')).toContain(graph.B.changeId);
         expect(ctx.host.ui.warningMessages).toEqual([]);
     });
+    test('rejects an immutable root without prompting or abandoning its mutable descendants', async () => {
+        repo.new([], 'mutable child'); const id = repo.getChangeId('@');
+        ctx.host.ui.setNextWarningResponse('Abandon');
+        await abandonDescendantsCommand(ctx, { revisions: ['root()'] });
+        expect(ctx.host.ui.warningMessages).toEqual([]);
+        expect(ctx.host.ui.errorMessages).toHaveLength(1);
+        expect(repo.getLog('all()', 'change_id')).toContain(id);
+    });
 });

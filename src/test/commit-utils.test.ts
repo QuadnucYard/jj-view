@@ -57,6 +57,8 @@ describe('computeCommitActions', () => {
         expect(result.visibleActions.describe).toBe(false);
         expect(result.vscodeContext['jj.canEdit']).toBe(false);
         expect(result.vscodeContext['jj.canAbandon']).toBe(false);
+        expect(result.vscodeContext['jj.canDescribe']).toBe(false);
+        expect(result.vscodeContext['jj.canAbandonDescendants']).toBe(false);
     });
 
     it('should respect hiddenActions', async () => {

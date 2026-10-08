@@ -47,6 +47,7 @@ export enum ScmContextValue {
     GroupAllowShowMultiFileDiff = 'jj.group.allowShowMultiFileDiff',
     GroupAllowShowDetails = 'jj.group.allowShowDetails',
     GroupAllowEdit = 'jj.group.allowEdit',
+    GroupAllowDescribe = 'jj.group.allowDescribe',
     GroupAllowSquash = 'jj.group.allowSquash',
     GroupAllowAbsorb = 'jj.group.allowAbsorb',
     GroupAllowAbandon = 'jj.group.allowAbandon',

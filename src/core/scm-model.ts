@@ -287,6 +287,7 @@ export class ScmModel implements Disposable {
         ];
         if (isMutableCommit(parentEntry)) {
             groupFlags.push(ScmContextValue.GroupAllowEdit);
+            groupFlags.push(ScmContextValue.GroupAllowDescribe);
         }
         if (canSquashCommit(parentEntry)) {
             groupFlags.push(ScmContextValue.GroupAllowSquash);
@@ -342,6 +343,7 @@ export class ScmModel implements Disposable {
             ScmContextValue.GroupAllowShowMultiFileDiff,
             ScmContextValue.GroupAllowAbandon,
             ScmContextValue.GroupAllowShowDetails,
+            ScmContextValue.GroupAllowDescribe,
         ];
         if (currentEntry) {
             if (canAbsorbCommit(currentEntry)) {

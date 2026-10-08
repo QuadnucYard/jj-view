@@ -932,7 +932,7 @@
                 },
                 {
                     "command": "jj-view.describe",
-                    "when": "webviewSection == 'commit'",
+                    "when": "webviewSection == 'commit' && jj.canDescribe",
                     "group": "2_edit@5"
                 },
                 {
@@ -947,7 +947,7 @@
                 },
                 {
                     "command": "jj-view.abandonDescendants",
-                    "when": "webviewSection == 'commit' && jj.canAbandon",
+                    "when": "webviewSection == 'commit' && jj.canAbandonDescendants",
                     "group": "4_changes@3"
                 },
                 {
@@ -1147,8 +1147,8 @@
                 },
                 {
                     "command": "jj-view.describe",
-                    "group": "inline@7",
-                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowShowDetails\\b/"
+                    "group": "inline@8",
+                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowDescribe\\b/"
                 }
             ],
             "scm/resourceState/context": [

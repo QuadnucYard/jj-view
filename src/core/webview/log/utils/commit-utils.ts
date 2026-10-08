@@ -49,6 +49,8 @@ export function computeCommitActions(
 
         // Abandon, New Before, and New After supported on multi-selection, but also on unselected items
         'jj.canAbandon': isMutableCommit(commit) && (!isSelected || !hasImmutableSelection),
+        'jj.canAbandonDescendants': isMutableCommit(commit) && (!isSelected || selectionCount <= 1),
+        'jj.canDescribe': isMutableCommit(commit) && (!isSelected || selectionCount <= 1),
         'jj.canNewBefore': isMutableCommit(commit) && (!isSelected || !hasImmutableSelection),
         'jj.canNewAfter': !isSelected || !hasImmutableSelection,
         'jj.canUpload': isMutableCommit(commit) && (!isSelected || !hasImmutableSelection),

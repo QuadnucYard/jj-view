@@ -264,7 +264,7 @@ const hasActiveBookmarkAlready = $derived(
                     <IconButton
                         title="Describe"
                         icon="codicon-edit"
-                        onclick={(e) => { e.stopPropagation(); onAction('describe', { changeId: commit.change_id }); }}
+                        onClick={(e) => { e.stopPropagation(); onAction('describe', { changeId: commit.change_id }); }}
                         contextData={{ webviewSection: 'commitAction', 'jj.actionId': 'describe', actionTitle: 'Describe' }}
                     />
                 {/if}
