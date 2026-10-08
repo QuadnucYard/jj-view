@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { diffArrays } from 'diff';
+import path from 'pathe';
 import * as vscode from 'vscode';
 import type { HostOpenOptions } from '../core/host/host-environment';
 import { getFsPathFromUri, type Uri } from '../core/uri-utils';
@@ -186,7 +187,7 @@ function getSourceEditorState(args: unknown[]): TrackedEditorState | undefined {
 
 function computeOpenSync(args: unknown[], openUri: vscode.Uri): OpenSync | undefined {
     const source = getSourceEditorState(args);
-    if (!source || getFsPathFromUri(source.document.uri) !== getFsPathFromUri(openUri)) {
+    if (!source || path.normalize(getFsPathFromUri(source.document.uri)) !== path.normalize(getFsPathFromUri(openUri))) {
         return undefined;
     }
 

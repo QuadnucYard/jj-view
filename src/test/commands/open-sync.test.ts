@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { openFileWithSync, registerOpenSyncTracking } from '../../vscode/open-sync';
+import { VsCodeHostNavigation } from '../../vscode/vscode-host-environment';
 import { extractFileUri } from '../../core/commands/command-utils';
 import { toFileUri } from '../../core/uri-utils';
 import type { JjResourceState } from '../../core/scm-resource-state';
@@ -107,6 +108,19 @@ describe('openFileCommand', () => {
                 path: '/foo',
                 query: '',
             }),
+        );
+    });
+
+    test('preserves selection through host navigation for a fragment-backed revision uri', async () => {
+        const sourceUri = vscode.Uri.parse('jj-view:///foo').with({ fragment: 'root=%2Frepo&base=revB&side=left' });
+        const targetUri = vscode.Uri.file('/repo/foo');
+        const selection = new vscode.Selection(new vscode.Position(2, 0), new vscode.Position(2, 0));
+        setActiveEditor(sourceUri, 'one\ntwo\nfive', selection, [new vscode.Range(2, 0, 2, 0)]);
+        const target = setOpenTarget(targetUri, 'one\ntwo\nthree\nfour\nfive');
+        await new VsCodeHostNavigation().openFile(targetUri, { sourceUri, preview: false });
+        expect(target.selections).toEqual([new vscode.Selection(new vscode.Position(4, 0), new vscode.Position(4, 0))]);
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(
+            expect.objectContaining({ path: '/repo/foo' }), { preview: false },
         );
     });
 
