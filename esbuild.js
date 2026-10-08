@@ -60,12 +60,12 @@ const browserShimsPlugin = {
 
 function formatFile(filePath, { ignoreUnmatched = false } = {}) {
     try {
-        const pnpmCmd = os.platform() === 'win32' ? 'pnpm.cmd' : 'pnpm';
-        const args = ['biome', 'format', '--write', filePath];
+        const biomeBin = require.resolve('@biomejs/biome/bin/biome');
+        const args = [biomeBin, 'format', '--write', filePath];
         if (ignoreUnmatched) {
             args.push('--no-errors-on-unmatched');
         }
-        execFileSync(pnpmCmd, args, { stdio: 'inherit' });
+        execFileSync(process.execPath, args, { stdio: 'inherit' });
         console.log(`[build] Formatted ${filePath}`);
     } catch (e) {
         console.error(`[build] Failed to format ${filePath}: ${e.message}`);

@@ -5,6 +5,7 @@
 
 import * as cp from 'node:child_process';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 
 interface PropertySchema {
@@ -121,14 +122,8 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = ${JSON.stringify(d
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, fileContent, 'utf8');
 
-    const biomeBin = path.join(rootDir, 'node_modules', '.bin', 'biome');
-    if (fs.existsSync(biomeBin)) {
-        try {
-            cp.execFileSync(biomeBin, ['check', '--write', outputPath], { stdio: 'ignore' });
-        } catch {
-            // Ignore format errors if biome fails
-        }
-    }
+    const biomeBin = createRequire(import.meta.url).resolve('@biomejs/biome/bin/biome');
+    cp.execFileSync(process.execPath, [biomeBin, 'check', '--write', outputPath], { stdio: 'inherit' });
     console.log(`Generated settings schema with ${definitions.length} settings to ${outputPath}`);
 }
 
