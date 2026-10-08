@@ -26,7 +26,7 @@ describe('abandonDescendantsCommand', () => {
     test('abandons the root and descendants while preserving siblings', async () => {
         const graph = await buildGraph(repo, [
             { label: 'A' }, { label: 'B', parents: ['A'] },
-            { label: 'sibling' }, { label: 'C', parents: ['B'], isCurrentWorkingCopy: true },
+            { label: 'sibling', parents: ['root()'] }, { label: 'C', parents: ['B'], isCurrentWorkingCopy: true },
         ]);
         ctx.host.ui.setNextWarningResponse('Abandon');
         await abandonDescendantsCommand(ctx, { revisions: [graph.A.changeId] });
@@ -42,5 +42,15 @@ describe('abandonDescendantsCommand', () => {
         const visible = repo.getLog('all()', 'change_id');
         expect(visible).toContain(graph.A.changeId);
         expect(visible).toContain(graph.B.changeId);
+    });
+    test('rejects multiple selected roots without abandoning either', async () => {
+        const graph = await buildGraph(repo, [
+            { label: 'A' }, { label: 'B', parents: ['root()'], isCurrentWorkingCopy: true },
+        ]);
+        ctx.host.ui.setNextWarningResponse('Abandon');
+        await abandonDescendantsCommand(ctx, { revisions: [graph.A.changeId, graph.B.changeId] });
+        expect(repo.getLog('all()', 'change_id')).toContain(graph.A.changeId);
+        expect(repo.getLog('all()', 'change_id')).toContain(graph.B.changeId);
+        expect(ctx.host.ui.warningMessages).toEqual([]);
     });
 });
