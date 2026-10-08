@@ -25,6 +25,7 @@ import { commitCommand } from '../../../src/core/commands/commit';
 import { commitPromptCommand } from '../../../src/core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../../../src/core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../../../src/core/commands/compare-file-with-revision';
+import { copyRelativePathCommand, createCopyRelativePathPayload } from '../../../src/core/commands/copy-relative-path';
 import { setDescriptionCommand } from '../../../src/core/commands/describe';
 import { describeDialogCommand } from '../../../src/core/commands/describe-dialog';
 import { describePromptCommand } from '../../../src/core/commands/describe-prompt';
@@ -239,6 +240,7 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     registerWithPayload('jj-view.discardChange', createDiscardChangePayload, discardChangeCommand);
     registerWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand);
     registerWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand);
+    registerWithPayload('jj-view.copyRelativePath', createCopyRelativePathPayload, copyRelativePathCommand);
     registerWithPayload('vscode.diff', createOpenChangesPayload, openChangesCommand);
     registerWithPayload('jj-view.openMergeEditor', createOpenMergeEditorPayload, openMergeEditorCommand);
 

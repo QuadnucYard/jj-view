@@ -4,9 +4,39 @@
  */
 
 import * as path from 'node:path';
-import { ARTIFACT_DIR, expect, test, waitForScmReady } from './standalone-fixture';
+import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
 
 test.describe('Standalone Web Context Menus and Actions', () => {
+    test('should copy the relative path from an SCM item context menu', async ({ page, server, testRepo, context }) => {
+        testRepo.writeFile('src/nested/file name.ts', 'content\n');
+        await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+        await page.goto(server.serverUrl);
+        await waitForScmReady(page);
+
+        const item = page.locator('[data-testid="scm-group-working-copy"] [data-path="src/nested/file name.ts"]');
+        await expect(item).toBeVisible();
+        await expect(item.locator('[data-testid="scm-resource-action-jj-view.copyRelativePath"]')).toHaveCount(0);
+
+        await recordGifFlow(
+            page,
+            async (capture) => {
+                await capture();
+                await item.click({ button: 'right' });
+                const action = page.getByTestId('menu-item-jj-view.copyRelativePath');
+                await expect(action).toHaveText('Copy Relative Path');
+                await capture();
+                await page.screenshot({ path: path.join(ARTIFACT_DIR, 'copy-relative-path.png') });
+                await action.click();
+                await expect(page.getByTestId('context-menu')).not.toBeVisible();
+                await expect
+                    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+                    .toBe('src/nested/file name.ts');
+                await capture();
+            },
+            { outputPath: path.join(ARTIFACT_DIR, 'copy-relative-path.gif') },
+        );
+    });
+
     test('should create a new revision when clicking the New header button', async ({ page, server, testRepo }) => {
         testRepo.writeFile('base.txt', 'base content\n');
         testRepo.describe('first commit');

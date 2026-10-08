@@ -359,6 +359,12 @@
                 "icon": "$(diff)"
             },
             {
+                "command": "jj-view.copyRelativePath",
+                "title": "Copy Relative Path",
+                "category": "JJ View",
+                "icon": "$(copy)"
+            },
+            {
                 "command": "jj-view.undo",
                 "title": "Undo",
                 "category": "JJ View",
@@ -705,6 +711,10 @@
         ],
         "menus": {
             "commandPalette": [
+                {
+                    "command": "jj-view.copyRelativePath",
+                    "when": "false"
+                },
                 {
                     "command": "jj-view.uploadStack",
                     "when": "!config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit'"
@@ -1152,6 +1162,11 @@
                 }
             ],
             "scm/resourceState/context": [
+                {
+                    "command": "jj-view.copyRelativePath",
+                    "group": "clipboard@1",
+                    "when": "scmResourceState =~ /\\bjj\\.resource\\./"
+                },
                 {
                     "command": "jj-view.openFile",
                     "group": "inline@1",

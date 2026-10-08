@@ -148,6 +148,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(diff)',
         },
         {
+            command: 'jj-view.copyRelativePath',
+            title: 'Copy Relative Path',
+            category: 'JJ View',
+            icon: '$(copy)',
+        },
+        {
             command: 'jj-view.undo',
             title: 'Undo',
             category: 'JJ View',
@@ -476,6 +482,10 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
     menus: {
         commandPalette: [
             {
+                command: 'jj-view.copyRelativePath',
+                when: 'false',
+            },
+            {
                 command: 'jj-view.hideCommitAction.describe',
                 when: 'false',
             },
@@ -725,6 +735,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             },
         ],
         'scm/resourceState/context': [
+            {
+                command: 'jj-view.copyRelativePath',
+                group: 'clipboard@1',
+                when: 'scmResourceState =~ /\\bjj\\.resource\\./',
+            },
             {
                 command: 'jj-view.openFile',
                 group: 'inline@1',

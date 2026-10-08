@@ -162,6 +162,7 @@ describe('Generalized Context Menu System', () => {
             const allCommands = groups.flatMap((g) => g.items.map((i) => i.command));
             expect(allCommands).toContain('jj-view.restore');
             expect(allCommands).toContain('jj-view.openFile');
+            expect(allCommands).toContain('jj-view.copyRelativePath');
         });
 
         it('returns tab context actions when menuId is editor/title/context', () => {
