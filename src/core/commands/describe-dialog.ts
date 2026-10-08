@@ -18,6 +18,7 @@ export async function describeDialogCommand(ctx: CommandContext, payload?: Descr
         if (description === undefined) return;
         await ctx.host.ui.withProgress('Setting description...', () => ctx.repo.jj.describe(description, revision));
         await ctx.repo.refresh({ reason: 'after describe' });
+        await ctx.host.commands.executeCommand('jj-view.refreshGraph');
     } catch (error: unknown) {
         await showJjError(ctx.host.ui, error, 'Error setting description', ctx.repo.jj, ctx.log);
     }

@@ -36,6 +36,7 @@ export async function abandonDescendantsCommand(ctx: CommandContext, payload?: A
         if (await showWarning(`Abandon ${label}?\n\n${lines.join('\n')}`, 'Abandon') !== 'Abandon') return;
         await ctx.host.ui.withProgress('Abandoning descendants...', () => ctx.repo.jj.abandon(affected.map((entry) => entry.commit_id)));
         await ctx.repo.refresh({ reason: 'abandon descendants' });
+        await ctx.host.commands.executeCommand('jj-view.refreshGraph');
         await ctx.host.ui.showInformation(`Abandoned ${label}.`);
     } catch (error: unknown) {
         await showJjError(ctx.host.ui, error, 'Failed to abandon descendants', ctx.repo.jj, ctx.log);

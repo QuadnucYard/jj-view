@@ -40,6 +40,7 @@ export async function squashDescendantsCommand(ctx: CommandContext, payload?: Ab
             intoRevision: roots[0].commit_id, useDestinationMessage: true,
         }));
         await ctx.repo.refresh({ reason: 'squash descendants' });
+        await ctx.host.commands.executeCommand('jj-view.refreshGraph');
         await ctx.host.ui.showInformation(`Squashed ${label}.`);
     } catch (error: unknown) {
         await showJjError(ctx.host.ui, error, 'Failed to squash descendants', ctx.repo.jj, ctx.log);

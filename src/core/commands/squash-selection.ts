@@ -41,6 +41,7 @@ export async function squashSelectionIntoAncestorCommand(
         const relPath = path.relative(ctx.repo.jj.workspaceRoot, getFsPathFromUri(payload.uri));
         await ctx.repo.jj.squashSelectionIntoAncestor(relPath, payload.ranges, revision, ancestor);
         await ctx.repo.refresh({ reason: 'after squash selection into ancestor' });
+        await ctx.host.commands.executeCommand('jj-view.refreshGraph');
     } catch (error: unknown) {
         await showJjError(ctx.host.ui, error, 'Failed to squash selection into ancestor', ctx.repo.jj, ctx.log);
     }
