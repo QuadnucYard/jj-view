@@ -507,6 +507,7 @@ const hasActiveBookmarkAlready = $derived(
 
 <style>
     .commit-row {
+        user-select: none;
         min-height: 28px;
         height: auto;
         display: flex;
