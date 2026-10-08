@@ -288,10 +288,13 @@ export class JjService {
                 `--config=merge-tools.${toolName}.edit-args=["/s", "/c", "${escapedScriptPath}", ${quotedArgs.join(', ')}]`,
             ];
         } else {
+            // VSIX packages built on Windows can lose executable bits on shell helpers.
+            // Invoke Bash explicitly rather than relying on the script's file permissions.
+            const shellArgs = [JSON.stringify(normalizedScriptPath), ...quotedArgs].join(', ');
             return [
-                `--config=merge-tools.${toolName}.program="${normalizedScriptPath}"`,
-                `--config=merge-tools.${toolName}.merge-args=[${quotedArgs.join(', ')}]`,
-                `--config=merge-tools.${toolName}.edit-args=[${quotedArgs.join(', ')}]`,
+                `--config=merge-tools.${toolName}.program="bash"`,
+                `--config=merge-tools.${toolName}.merge-args=[${shellArgs}]`,
+                `--config=merge-tools.${toolName}.edit-args=[${shellArgs}]`,
             ];
         }
     }

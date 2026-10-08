@@ -9,6 +9,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { NodeHostProcess, NodeHostSystem } from '../core/host/node-host-system';
 import { JjService, NO_OP_LOGGER } from '../core/jj-service';
 import { buildGraph, TestRepo } from './test-repo';
 
@@ -367,6 +368,39 @@ describe('JjService Diff Tests', () => {
         // Unchanged file should NOT be in the cache (diffedit only shows changes)
         expect(exists('left', 'keep.txt')).toBe(false);
         expect(exists('right', 'keep.txt')).toBe(false);
+    });
+
+    test.skipIf(process.platform === 'win32')('diff and edit helpers work without executable permissions', async () => {
+        const ids = await buildGraph(repo, [
+            { label: 'base', files: { 'nested/file.txt': 'before\n' } },
+            { label: 'child', parents: ['base'], files: { 'nested/file.txt': 'after\n' } },
+        ]);
+        const scriptsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jj helpers without execute '));
+        const processHost = new NodeHostProcess();
+        const system = new NodeHostSystem({
+            process: {
+                execFile: processHost.execFile.bind(processHost),
+                getHelperScriptPath: async (name) => {
+                    const source = await processHost.getHelperScriptPath(name);
+                    const target = path.join(scriptsDir, `${name}.sh`);
+                    await fs.copyFile(source, target);
+                    await fs.chmod(target, 0o644);
+                    return target;
+                },
+            },
+        });
+        const service = new JjService(repo.path, NO_OP_LOGGER, { system });
+        try {
+            expect(await service.getDiffContent(ids.child.changeId, 'nested/file.txt')).toEqual({
+                left: 'before\n',
+                right: 'after\n',
+            });
+            await service.setFilesContent(ids.child.changeId, new Map([['nested/file.txt', 'edited\n']]));
+            expect(repo.getFileContent(ids.child.changeId, 'nested/file.txt')).toBe('edited\n');
+        } finally {
+            await service.clearCache();
+            await fs.rm(scriptsDir, { recursive: true, force: true });
+        }
     });
 
     test('getDiffContent handles multiple files and nested paths', async () => {
