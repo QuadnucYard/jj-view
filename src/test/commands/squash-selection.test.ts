@@ -53,6 +53,16 @@ describe('squash-selection commands', () => {
         expect(repo.getFileContent('@', file)).toBe('one\nparent\nthree\nfour\nfive\nsix\nseven\nchild\n');
         expect(ctx.host.ui.errorMessages).toEqual([]);
     });
+    test('rejects a destination outside the source ancestry without changing files', async () => {
+        const ids = await buildGraph(repo, [
+            { label: 'source', files: { 'file.txt': 'source' } },
+            { label: 'sibling', parents: ['root()'], files: { 'file.txt': 'sibling' }, isCurrentWorkingCopy: true },
+        ]);
+        await expect(jj.squashSelectionIntoAncestor('file.txt', [{ startLine: 0, endLine: 0 }],
+            ids.source.changeId, ids.sibling.changeId)).rejects.toThrow('mutable ancestor');
+        expect(repo.getFileContent(ids.source.changeId, 'file.txt')).toBe('source');
+        expect(repo.getFileContent(ids.sibling.changeId, 'file.txt')).toBe('sibling');
+    });
 
     describe('squashHunkIntoParentCommand', () => {
         test('squashes hunk based on index', async () => {

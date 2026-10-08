@@ -1377,12 +1377,20 @@ export class JjService {
         intoRevision?: string,
     ): Promise<void> {
         const parentRev = intoRevision ?? `(${revision})-`;
+        const sources = await this.getLog({ revision: `(${revision})`, omitChanges: true });
+        const targets = await this.getLog({
+            revision: `(${parentRev}) & (ancestors(${revision}) ~ (${revision})) & mutable()`,
+            omitChanges: true,
+        });
+        if (sources.length !== 1 || sources[0].is_immutable || targets.length !== 1) {
+            throw new Error('Selection squash requires one mutable source and one mutable ancestor.');
+        }
         const { left: baseContent } = await this.getDiffContent(revision, fileRelPath);
         const diffOutput = await this.getDiff(revision, fileRelPath);
 
         const wantedContent = PatchHelper.applySelectedLines(baseContent, diffOutput, ranges);
 
-        await this.runPartialSquash(revision, parentRev, fileRelPath, wantedContent);
+        await this.runPartialSquash(sources[0].commit_id, targets[0].commit_id, fileRelPath, wantedContent);
     }
 
     private async runPartialSquash(
