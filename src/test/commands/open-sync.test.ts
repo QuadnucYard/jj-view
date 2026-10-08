@@ -15,6 +15,9 @@ import { fireDidChangeActiveTextEditor, setActiveTextEditor } from '../vscode-mo
 vi.mock('vscode', async () => {
     const { createVscodeMock } = await import('../vscode-mock');
     return createVscodeMock({
+        workspace: {
+            openTextDocument: vi.fn(),
+        },
         TextEditorRevealType: {
             Default: 0,
             InCenter: 1,
@@ -54,7 +57,8 @@ function setOpenTarget(uri: vscode.Uri, text: string): vscode.TextEditor {
         selections: [],
         revealRange: vi.fn(),
     });
-    (vscode.window.showTextDocument as ReturnType<typeof vi.fn>).mockResolvedValue(editor);
+    vi.mocked(vscode.workspace.openTextDocument).mockResolvedValue(editor.document);
+    vi.mocked(vscode.window.showTextDocument).mockResolvedValue(editor);
     return editor;
 }
 
@@ -119,8 +123,9 @@ describe('openFileCommand', () => {
         const target = setOpenTarget(targetUri, 'one\ntwo\nthree\nfour\nfive');
         await new VsCodeHostNavigation().openFile(targetUri, { sourceUri, preview: false });
         expect(target.selections).toEqual([new vscode.Selection(new vscode.Position(4, 0), new vscode.Position(4, 0))]);
-        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(expect.objectContaining({ path: '/repo/foo' }), {
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(target.document, {
             preview: false,
+            selection: new vscode.Range(4, 0, 4, 0),
         });
     });
 
@@ -143,14 +148,35 @@ describe('openFileCommand', () => {
 
         await openFileCommand(resourceState);
 
-        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(
+        expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith(
             expect.objectContaining({ scheme: 'file', path: '/foo', query: '' }),
         );
         expect(targetEditor.selections).toEqual([primary, secondary]);
-        expect(targetEditor.revealRange).toHaveBeenCalledWith(
-            expect.objectContaining({ start: expect.objectContaining({ line: 7, character: 0 }) }),
-            vscode.TextEditorRevealType.InCenter,
-        );
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+            selection: new vscode.Range(7, 0, 7, 0),
+        });
+        expect(targetEditor.revealRange).not.toHaveBeenCalled();
+    });
+
+    test('opens at the viewport before restoring off-screen reversed selections', async () => {
+        const sourceUri = vscode.Uri.parse('jj-edit:///foo?revision=revB');
+        const content = Array.from({ length: 200 }, (_, line) => `line-${line}`).join('\n');
+        const primary = new vscode.Selection(8, 3, 2, 1);
+        const secondary = new vscode.Selection(190, 2, 190, 2);
+        setActiveEditor(sourceUri, content, primary, [new vscode.Range(90, 0, 110, 0)], [primary, secondary]);
+        const target = setOpenTarget(vscode.Uri.file('/foo'), content);
+        vi.mocked(vscode.window.showTextDocument).mockImplementationOnce(async (document, options) => {
+            expect(document).toBe(target.document);
+            expect(options).toEqual({ selection: new vscode.Range(100, 0, 100, 0) });
+            expect(target.selections).toEqual([]);
+            expect(target.revealRange).not.toHaveBeenCalled();
+            return target;
+        });
+
+        await openFileCommand(sourceUri);
+
+        expect(target.selections).toEqual([primary, secondary]);
+        expect(target.revealRange).not.toHaveBeenCalled();
     });
 
     test('maps cursor and viewport through inserted lines using unchanged anchors', async () => {
@@ -171,10 +197,10 @@ describe('openFileCommand', () => {
         expect(targetEditor.selections).toEqual([
             new vscode.Selection(new vscode.Position(5, 0), new vscode.Position(5, 0)),
         ]);
-        expect(targetEditor.revealRange).toHaveBeenCalledWith(
-            expect.objectContaining({ start: expect.objectContaining({ line: 5, character: 0 }) }),
-            vscode.TextEditorRevealType.InCenter,
-        );
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+            selection: new vscode.Range(5, 0, 5, 0),
+        });
+        expect(targetEditor.revealRange).not.toHaveBeenCalled();
     });
 
     test('remaps from the left side of a working-copy diff', async () => {
@@ -188,10 +214,10 @@ describe('openFileCommand', () => {
         expect(targetEditor.selections).toEqual([
             new vscode.Selection(new vscode.Position(5, 0), new vscode.Position(5, 0)),
         ]);
-        expect(targetEditor.revealRange).toHaveBeenCalledWith(
-            expect.objectContaining({ start: expect.objectContaining({ line: 5, character: 0 }) }),
-            vscode.TextEditorRevealType.InCenter,
-        );
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+            selection: new vscode.Range(5, 0, 5, 0),
+        });
+        expect(targetEditor.revealRange).not.toHaveBeenCalled();
     });
 
     test('remaps stale content from the right side of a working-copy diff', async () => {
@@ -205,10 +231,10 @@ describe('openFileCommand', () => {
         expect(targetEditor.selections).toEqual([
             new vscode.Selection(new vscode.Position(5, 0), new vscode.Position(5, 0)),
         ]);
-        expect(targetEditor.revealRange).toHaveBeenCalledWith(
-            expect.objectContaining({ start: expect.objectContaining({ line: 5, character: 0 }) }),
-            vscode.TextEditorRevealType.InCenter,
-        );
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+            selection: new vscode.Range(5, 0, 5, 0),
+        });
+        expect(targetEditor.revealRange).not.toHaveBeenCalled();
     });
 
     test('maps replacement lines proportionally between unchanged anchors', async () => {
@@ -229,10 +255,10 @@ describe('openFileCommand', () => {
         expect(targetEditor.selections).toEqual([
             new vscode.Selection(new vscode.Position(1, 2), new vscode.Position(2, 2)),
         ]);
-        expect(targetEditor.revealRange).toHaveBeenCalledWith(
-            expect.objectContaining({ start: expect.objectContaining({ line: 2, character: 0 }) }),
-            vscode.TextEditorRevealType.InCenter,
-        );
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+            selection: new vscode.Range(2, 0, 2, 0),
+        });
+        expect(targetEditor.revealRange).not.toHaveBeenCalled();
     });
 
     test('maps deleted lines to the deletion boundary', async () => {
@@ -295,10 +321,10 @@ describe('openFileCommand', () => {
         expect(targetEditor.selections).toEqual([
             new vscode.Selection(new vscode.Position(1, 4), new vscode.Position(1, 4)),
         ]);
-        expect(targetEditor.revealRange).toHaveBeenCalledWith(
-            expect.objectContaining({ start: expect.objectContaining({ line: 1, character: 0 }) }),
-            vscode.TextEditorRevealType.InCenter,
-        );
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+            selection: new vscode.Range(1, 0, 1, 0),
+        });
+        expect(targetEditor.revealRange).not.toHaveBeenCalled();
     });
 
     test('skips remapping when the active editor already shows the target revision', async () => {
@@ -309,6 +335,7 @@ describe('openFileCommand', () => {
         await openFileCommand(createMock<JjResourceState>({ resourceUri: vscode.Uri.file('/foo'), revision: '@' }));
 
         expect(targetEditor.selections).toEqual([selection]);
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, { selection });
     });
 
     test('opens normally without synchronization when the active editor is another file', async () => {
@@ -357,10 +384,10 @@ describe('openFileCommand', () => {
             expect(targetEditor.selections).toEqual([
                 new vscode.Selection(new vscode.Position(5, 0), new vscode.Position(5, 0)),
             ]);
-            expect(targetEditor.revealRange).toHaveBeenCalledWith(
-                expect.objectContaining({ start: expect.objectContaining({ line: 5, character: 0 }) }),
-                vscode.TextEditorRevealType.InCenter,
-            );
+            expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+                selection: new vscode.Range(5, 0, 5, 0),
+            });
+            expect(targetEditor.revealRange).not.toHaveBeenCalled();
         } finally {
             tracking.dispose();
         }
@@ -411,7 +438,7 @@ describe('openFileCommand', () => {
 
         await openFileCommand();
 
-        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(
+        expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith(
             expect.objectContaining({
                 scheme: 'file',
                 path: '/baz/qux.ts',
@@ -419,10 +446,10 @@ describe('openFileCommand', () => {
             }),
         );
         expect(targetEditor.selections).toEqual([selection]);
-        expect(targetEditor.revealRange).toHaveBeenCalledWith(
-            expect.objectContaining({ start: expect.objectContaining({ line: 0, character: 0 }) }),
-            vscode.TextEditorRevealType.InCenter,
-        );
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(targetEditor.document, {
+            selection: new vscode.Range(0, 0, 0, 0),
+        });
+        expect(targetEditor.revealRange).not.toHaveBeenCalled();
     });
 });
 

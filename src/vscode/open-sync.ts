@@ -216,28 +216,37 @@ export async function openFileWithSync(uri: Uri, sourceUri?: Uri, options?: Host
         }
         return;
     }
-    const editor = options
-        ? await vscode.window.showTextDocument(targetUri, { preview: options.preview })
-        : await vscode.window.showTextDocument(targetUri);
-    const targetContent = editor.document.getText();
+    // Resolve content without showing the editor so its initial reveal can be mapped first.
+    // openTextDocument also returns the live document when the target has unsaved edits.
+    const document = await vscode.workspace.openTextDocument(targetUri);
+    const targetContent = document.getText();
     const targetLines = targetContent.split(/\r?\n/);
     const mapping =
         sync.sourceContent === targetContent
             ? undefined
             : computeLineMapping(sync.sourceContent.split(/\r?\n/), targetLines);
-    editor.selections = sync.selections.map((selection) => {
+    const selections = sync.selections.map((selection) => {
         const mappedSelection = mapping === undefined ? selection : mapSelection(mapping, selection, targetLines);
         return new vscode.Selection(
             clampPosition(mappedSelection.anchor, targetLines),
             clampPosition(mappedSelection.active, targetLines),
         );
     });
+    let initialSelection: vscode.Range | undefined = selections[0];
     if (sync.scrollCenterLine !== undefined) {
         const mappedLine =
             mapping === undefined
                 ? sync.scrollCenterLine
                 : mapPosition(mapping, new vscode.Position(sync.scrollCenterLine, 0), targetLines).line;
         const pos = clampPosition(new vscode.Position(mappedLine, 0), targetLines);
-        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+        initialSelection = new vscode.Range(pos, pos);
     }
+    // VS Code centers this range during opening. Setting selections afterward does not reveal
+    // them, preserving the viewport even when the real cursors are off screen. The opening API
+    // only accepts one Range, so restore all cursors and their anchor/active direction here.
+    const editor = await vscode.window.showTextDocument(document, {
+        ...(options ? { preview: options.preview } : {}),
+        selection: initialSelection,
+    });
+    editor.selections = selections;
 }
