@@ -516,6 +516,18 @@ describe('getOriginalResourceUri and getRepoRelativePath', () => {
         expect(getRepoRelativePath(deletedFileUri, root)).toBe('/deleted-file.txt');
     });
 
+    it('maps absolute SCM identities to repository-relative paths and working-copy files', () => {
+        const fileUri = Uri.file(path.join(root, 'src/nested/file.ts'));
+        const scmUri = fileUri.with({
+            scheme: 'jj-scm',
+            fragment: new URLSearchParams({ root, 'jj-revision': 'rev1' }).toString(),
+        });
+        expect(getRepoRelativePath(scmUri, root)).toBe('/src/nested/file.ts');
+        expect(toFileUri(scmUri)).toEqual(fileUri);
+        expect(getRevisionFromUri(scmUri)).toBe('rev1');
+        expect(getOriginalResourceUri(root, scmUri).path).toBe('/src/nested/file.ts');
+    });
+
     it('returns root slash for repo root URI itself', () => {
         const rootUri = Uri.file(root);
         expect(getRepoRelativePath(rootUri, root)).toBe('/');

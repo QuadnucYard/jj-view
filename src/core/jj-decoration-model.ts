@@ -110,7 +110,7 @@ export class JjDecorationModel implements Disposable {
     }
 
     private getScmStatusDecoration(uri: Uri): JjDecoration | undefined {
-        if (uri.scheme === 'jj-edit' || uri.scheme === 'jj-view') {
+        if (uri.scheme === 'jj-edit' || uri.scheme === 'jj-view' || uri.scheme === 'jj-scm') {
             const scmStatus = this.scmStatusDecorations.get(uri.toString());
             if (scmStatus) {
                 return this.createDecoration(scmStatus);

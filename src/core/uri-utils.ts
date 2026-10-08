@@ -318,7 +318,7 @@ function resolveNearestRealPath(fsPath: string): string | undefined {
  * Normalizes leading slash.
  */
 export function getRepoRelativePath(uri: Uri, root: string): string {
-    if (uri.scheme !== 'file') {
+    if (uri.scheme !== 'file' && uri.scheme !== 'jj-scm') {
         return uri.path.startsWith('/') ? uri.path : `/${uri.path}`;
     }
 

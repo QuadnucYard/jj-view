@@ -14,7 +14,7 @@ import type { JjService } from '../../core/jj-service';
 import type { JjStatusEntry } from '../../core/jj-types';
 import { ScmModel, type ScmSnapshot } from '../../core/scm-model';
 import { createJjResourceState, type JjResourceState } from '../../core/scm-resource-state';
-import { getRepoRelativePath, type Uri } from '../../core/uri-utils';
+import { getRepoRelativePath, Uri } from '../../core/uri-utils';
 import type { LoggerChannel } from '../../utils/output-channel';
 import { VsCodeDecorationProvider } from './vscode-decoration-provider';
 import type { VsCodeEditFsProvider } from './vscode-edit-fs-provider';
@@ -24,6 +24,7 @@ export class VsCodeScmProvider implements vscode.Disposable {
     private _disposed = false;
     private readonly disposables: vscode.Disposable[] = [];
     private readonly _sourceControl: vscode.SourceControl;
+    private readonly _scmRootUri: Uri;
     private readonly _workingCopyGroup: vscode.SourceControlResourceGroup;
     private readonly _parentGroups: vscode.SourceControlResourceGroup[] = [];
     private readonly _conflictGroup: vscode.SourceControlResourceGroup;
@@ -79,10 +80,11 @@ export class VsCodeScmProvider implements vscode.Disposable {
 
         const workspaceRoot = repo.rootUri.fsPath;
         const folderName = path.basename(workspaceRoot);
+        this._scmRootUri = repo.rootUri.with({ scheme: 'jj-scm' });
         this._sourceControl = vscode.scm.createSourceControl(
             `jj-${workspaceRoot}`,
             `Jujutsu (${folderName})`,
-            repo.rootUri,
+            this._scmRootUri,
         );
         const decorationModel = new JjDecorationModel(this.jj, workspaceRoot);
         this.decorationProvider = new VsCodeDecorationProvider(decorationModel);
@@ -251,8 +253,16 @@ export class VsCodeScmProvider implements vscode.Disposable {
         revision = '@',
         options: Parameters<typeof createJjResourceState>[3] = {},
     ): JjResourceState {
-        return createJjResourceState(entry, revision, this._sourceControl.rootUri?.fsPath || '', {
+        // SCM identities live under a virtual root. VS Code's tree auto-reveal compares
+        // paths without checking schemes or revisions; disk/editor URIs must therefore
+        // resolve outside this tree while SCM entries retain normal relative file labels.
+        const root = this.jj.workspaceRoot;
+        const resourceUri = Uri.joinPath(this._scmRootUri, entry.path).with({
+            fragment: new URLSearchParams({ root, 'jj-revision': revision }).toString(),
+        });
+        return createJjResourceState(entry, revision, root, {
             ...options,
+            resourceUri,
             workingCopyChangeId: this.scmModel.currentEntry?.change_id,
         });
     }

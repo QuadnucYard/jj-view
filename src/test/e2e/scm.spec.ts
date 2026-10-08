@@ -28,6 +28,67 @@ import {
 } from './e2e-helpers';
 
 test.describe('SCM Pane E2E', () => {
+    for (const viewMode of ['list', 'tree']) {
+        for (const modifiedWorkingCopy of [false, true]) {
+            test(`Open File in Working Copy keeps the selected row in ${viewMode} view with ${modifiedWorkingCopy ? 'modified' : 'empty'} working copy`, async ({
+                vscode,
+            }, testInfo) => {
+                const repo = new TestRepo();
+                repo.init();
+                await buildGraph(repo, [
+                    { label: 'a', description: 'ancestor A', files: { 'file.txt': 'A' } },
+                    {
+                        label: 'b',
+                        parents: ['a'],
+                        description: 'ancestor B',
+                        files: { 'file.txt': 'B' },
+                    },
+                    {
+                        label: 'wc',
+                        parents: ['b'],
+                        files: modifiedWorkingCopy ? { 'file.txt': 'C' } : undefined,
+                        isCurrentWorkingCopy: true,
+                    },
+                ]);
+                // VS Code normalizes Windows drive letters in workspace URIs.
+                const workspacePath =
+                    process.platform === 'win32'
+                        ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase())
+                        : repo.path;
+                const { page } = await vscode.openWorkspace({ path: workspacePath }, { 'scm.autoReveal': true });
+                await focusSCM(page);
+                await vscode.evaluate(async (vscode, _api, mode) => {
+                    await vscode.commands.executeCommand(
+                        mode === 'tree'
+                            ? 'workbench.scm.action.setTreeViewMode'
+                            : 'workbench.scm.action.setListViewMode',
+                    );
+                }, viewMode);
+                for (const group of modifiedWorkingCopy ? [/ancestor B/, /Working Copy/] : [/ancestor B/]) {
+                    const row = await expectFileInScmGroup(page, group, 'file.txt');
+                    await row.click();
+                    await expect(row).toHaveAttribute('aria-selected', 'true');
+                    await hoverAndClick(
+                        row,
+                        row.getByRole('button', { name: 'Open File in Working Copy', exact: true }),
+                    );
+                    await expect(page.locator('.monaco-diff-editor')).not.toBeVisible();
+                    await expect(row).toHaveAttribute('aria-selected', 'true');
+                    await expect(row).toHaveClass(/focused/);
+                    const editor = await vscode.evaluate((vscode) => ({
+                        scheme: vscode.window.activeTextEditor?.document.uri.scheme,
+                        content: vscode.window.activeTextEditor?.document.getText(),
+                    }));
+                    expect(editor).toEqual({ scheme: 'file', content: modifiedWorkingCopy ? 'C' : 'B' });
+                }
+                await testInfo.attach('selection-after-open', {
+                    body: await page.screenshot(),
+                    contentType: 'image/png',
+                });
+            });
+        }
+    }
+
     test('Displays correct groups and populates SCM input', async ({ vscode }) => {
         const repo = new TestRepo();
         repo.init();

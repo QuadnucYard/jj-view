@@ -42,10 +42,13 @@ export function createJjResourceState(
         openDiffOnClick?: boolean;
         hasChild?: boolean;
         inConflictGroup?: boolean;
+        /** Host-specific SCM identity, independent of the URIs opened in editors. */
+        resourceUri?: Uri;
     } = {},
 ): JjResourceState {
     const isCurrentWorkingCopy = isWorkingCopyRevision(revision, options.workingCopyChangeId);
-    const { leftUri, rightUri, resourceUri } = createDiffUris(entry, revision, root, options);
+    const { leftUri, rightUri, resourceUri: diffResourceUri } = createDiffUris(entry, revision, root, options);
+    const resourceUri = options.resourceUri ?? diffResourceUri;
 
     const openDiffOnClick = options.openDiffOnClick ?? true;
     const isDeleted = entry.status === 'deleted';

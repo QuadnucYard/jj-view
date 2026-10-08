@@ -5,12 +5,28 @@
 import { describe, expect, it } from 'vitest';
 import type { JjStatusEntry } from '../core/jj-types';
 import { createJjResourceState } from '../core/scm-resource-state';
+import { Uri } from '../core/uri-utils';
 import './vitest-utils';
 
 describe('createJjResourceState', () => {
     const root = '/root';
 
     describe('Basic Fields and URI construction', () => {
+        it('uses an SCM identity independently of the editor URIs and routes file actions through it', () => {
+            const entry: JjStatusEntry = { path: 'file.txt', status: 'modified' };
+            const resourceUri = Uri.file('/root/file.txt').with({ scheme: 'jj-scm', fragment: 'jj-revision=rev123' });
+            const state = createJjResourceState(entry, 'rev123', root, {
+                editable: true,
+                openDiffOnClick: false,
+                resourceUri,
+            });
+            expect(state.resourceUri).toEqual(resourceUri);
+            expect(state.leftUri?.scheme).toBe('jj-view');
+            expect(state.rightUri?.scheme).toBe('jj-edit');
+            expect(state.rightUri?.path).toBe('/file.txt');
+            expect(state.command?.arguments).toEqual([{ resourceUri, rightUri: state.rightUri, revision: 'rev123' }]);
+        });
+
         it('creates resource state with correct basic fields', () => {
             const entry: JjStatusEntry = {
                 path: 'file.txt',
