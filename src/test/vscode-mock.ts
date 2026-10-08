@@ -8,12 +8,17 @@ import type * as vscode from 'vscode';
 import { Uri } from '../core/uri-utils';
 
 let activeTextEditorState: unknown;
+let fireDidChangeActiveTextEditorState: ((editor: vscode.TextEditor | undefined) => void) | undefined;
 
 /**
  * Helper to set or reset vscode.window.activeTextEditor in tests without type casting.
  */
 export function setActiveTextEditor(editor: Partial<vscode.TextEditor> | undefined): void {
     activeTextEditorState = editor;
+}
+
+export function fireDidChangeActiveTextEditor(editor: vscode.TextEditor | undefined): void {
+    fireDidChangeActiveTextEditorState?.(editor);
 }
 
 /**
@@ -95,8 +100,13 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
     const onDidChangeTabsEmitter = new EventEmitter<unknown>();
     const onDidChangeTabGroupsEmitter = new EventEmitter<unknown>();
     const onDidChangeWindowStateEmitter = new EventEmitter<unknown>();
+    const onDidChangeActiveTextEditorEmitter = new EventEmitter<vscode.TextEditor | undefined>();
+    fireDidChangeActiveTextEditorState = onDidChangeActiveTextEditorEmitter.fire;
+    const onDidChangeTextEditorSelectionEmitter = new EventEmitter<vscode.TextEditorSelectionChangeEvent>();
+    const onDidChangeTextEditorVisibleRangesEmitter = new EventEmitter<vscode.TextEditorVisibleRangesChangeEvent>();
     const onDidChangeConfigurationEmitter = new EventEmitter<unknown>();
     const onDidSaveTextDocumentEmitter = new EventEmitter<unknown>();
+    const onDidCloseTextDocumentEmitter = new EventEmitter<vscode.TextDocument>();
     const onDidChangeWorkspaceFoldersEmitter = new EventEmitter<unknown>();
 
     class FileSystemError extends Error {
@@ -266,6 +276,7 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
             showWarningMessage: vi.fn(),
             showInputBox: vi.fn(),
             showQuickPick: vi.fn(),
+            showTextDocument: vi.fn(),
             createQuickPick: vi.fn().mockReturnValue({
                 items: [],
                 placeholder: '',
@@ -311,6 +322,9 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
                 close: vi.fn(),
             },
             visibleTextEditors: [],
+            onDidChangeActiveTextEditor: onDidChangeActiveTextEditorEmitter.event,
+            onDidChangeTextEditorSelection: onDidChangeTextEditorSelectionEmitter.event,
+            onDidChangeTextEditorVisibleRanges: onDidChangeTextEditorVisibleRangesEmitter.event,
             onDidChangeWindowState: onDidChangeWindowStateEmitter.event,
             state: { focused: true, active: true },
         },
@@ -363,6 +377,7 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
             }),
             onDidChangeConfiguration: onDidChangeConfigurationEmitter.event,
             onDidSaveTextDocument: onDidSaveTextDocumentEmitter.event,
+            onDidCloseTextDocument: onDidCloseTextDocumentEmitter.event,
 
             registerTextDocumentContentProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
             findFiles: vi.fn().mockResolvedValue([]),
@@ -411,8 +426,12 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
             onDidChangeTabs: onDidChangeTabsEmitter,
             onDidChangeTabGroups: onDidChangeTabGroupsEmitter,
             onDidChangeWindowState: onDidChangeWindowStateEmitter,
+            onDidChangeActiveTextEditor: onDidChangeActiveTextEditorEmitter,
+            onDidChangeTextEditorSelection: onDidChangeTextEditorSelectionEmitter,
+            onDidChangeTextEditorVisibleRanges: onDidChangeTextEditorVisibleRangesEmitter,
             onDidChangeConfiguration: onDidChangeConfigurationEmitter,
             onDidSaveTextDocument: onDidSaveTextDocumentEmitter,
+            onDidCloseTextDocument: onDidCloseTextDocumentEmitter,
             onDidChangeWorkspaceFolders: onDidChangeWorkspaceFoldersEmitter,
         },
     };

@@ -221,6 +221,10 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         void sender.edit(payload);
         return;
     }
+    if (action === 'describe') {
+        void sender.describe(payload);
+        return;
+    }
     if (action === 'squash') {
         void sender.squash(payload);
         return;
@@ -355,4 +359,3 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
     }
 </style>
-

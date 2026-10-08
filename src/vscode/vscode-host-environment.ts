@@ -34,6 +34,7 @@ import { createCommitDetailsUri, getFsPathFromUri, getUriParams, toFileUri, type
 import { formatCommitTitle } from '../utils/jj-utils';
 import type { LoggerChannel } from '../utils/output-channel';
 import { getJjViewConfig } from './config-utils';
+import { openFileWithSync } from './open-sync';
 
 export class VsCodeHostUi implements HostUi {
     async showInputBox(options?: {
@@ -349,9 +350,7 @@ export class VsCodeHostNavigation implements HostNavigation {
     }
 
     async openFile(uri: Uri, options?: HostOpenOptions): Promise<void> {
-        await vscode.commands.executeCommand('vscode.open', uri, {
-            preview: options?.preview,
-        });
+        await openFileWithSync(uri, options?.sourceUri, options);
     }
 
     async openFolder(folderUri: Uri, forceNewWindow?: boolean): Promise<void> {

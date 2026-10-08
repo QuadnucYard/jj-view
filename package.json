@@ -276,6 +276,12 @@
                 "icon": "$(sparkle)"
             },
             {
+                "command": "jj-view.describe",
+                "title": "Describe",
+                "category": "JJ View",
+                "icon": "$(edit)"
+            },
+            {
                 "command": "jj-view.focusDescriptionInput",
                 "title": "Focus SCM Description Input",
                 "category": "JJ View",
@@ -321,6 +327,12 @@
                 "title": "Restore",
                 "category": "JJ View",
                 "icon": "$(discard)"
+            },
+            {
+                "command": "jj-view.squashDescendants",
+                "title": "Squash Descendants",
+                "category": "JJ View",
+                "icon": "$(jj-icon-squash-into)"
             },
             {
                 "command": "jj-view.squashRevisionIntoParent",
@@ -371,6 +383,12 @@
                 "icon": "$(trash)"
             },
             {
+                "command": "jj-view.abandonDescendants",
+                "title": "Abandon Descendants",
+                "category": "JJ View",
+                "icon": "$(trash)"
+            },
+            {
                 "command": "jj-view.edit",
                 "title": "Edit",
                 "category": "JJ View",
@@ -393,6 +411,12 @@
                 "title": "Squash Selection into Parent",
                 "category": "JJ View",
                 "icon": "$(arrow-down)"
+            },
+            {
+                "command": "jj-view.squashSelectionIntoAncestor",
+                "title": "Squash Selection into Ancestor...",
+                "category": "JJ View",
+                "icon": "$(jj-icon-squash-into)"
             },
             {
                 "command": "jj-view.openMergeEditor",
@@ -555,6 +579,11 @@
                 "category": "JJ View"
             },
             {
+                "command": "jj-view.hideCommitAction.describe",
+                "title": "Hide 'Describe'",
+                "category": "JJ View"
+            },
+            {
                 "command": "jj-view.toggleCommitAction.newChild.on",
                 "title": "● New Child",
                 "category": "JJ View"
@@ -592,6 +621,16 @@
             {
                 "command": "jj-view.toggleCommitAction.abandon.off",
                 "title": "○ Abandon",
+                "category": "JJ View"
+            },
+            {
+                "command": "jj-view.toggleCommitAction.describe.on",
+                "title": "\u25cf Describe",
+                "category": "JJ View"
+            },
+            {
+                "command": "jj-view.toggleCommitAction.describe.off",
+                "title": "\u25cb Describe",
                 "category": "JJ View"
             },
             {
@@ -789,6 +828,18 @@
                 {
                     "command": "jj-view.toggleCommitAction.abandon.off",
                     "when": "false"
+                },
+                {
+                    "command": "jj-view.hideCommitAction.describe",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.toggleCommitAction.describe.on",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.toggleCommitAction.describe.off",
+                    "when": "false"
                 }
             ],
             "view/title": [
@@ -880,6 +931,11 @@
                     "group": "2_edit@4"
                 },
                 {
+                    "command": "jj-view.describe",
+                    "when": "webviewSection == 'commit'",
+                    "group": "2_edit@5"
+                },
+                {
                     "command": "jj-view.duplicate",
                     "when": "webviewSection == 'commit' && jj.canDuplicate",
                     "group": "4_changes@1"
@@ -890,9 +946,19 @@
                     "group": "4_changes@2"
                 },
                 {
+                    "command": "jj-view.abandonDescendants",
+                    "when": "webviewSection == 'commit' && jj.canAbandon",
+                    "group": "4_changes@3"
+                },
+                {
+                    "command": "jj-view.squashDescendants",
+                    "when": "webviewSection == 'commit' && jj.canSquashDescendants",
+                    "group": "4_changes@4"
+                },
+                {
                     "command": "jj-view.absorb",
                     "when": "webviewSection == 'commit' && jj.canAbsorb",
-                    "group": "4_changes@3"
+                    "group": "4_changes@5"
                 },
                 {
                     "command": "jj-view.upload",
@@ -955,6 +1021,11 @@
                     "group": "9_visibility_1_hide"
                 },
                 {
+                    "command": "jj-view.hideCommitAction.describe",
+                    "when": "webviewSection == 'commitAction' && jj.actionId == 'describe' && jj.describeVisible",
+                    "group": "9_visibility_1_hide"
+                },
+                {
                     "command": "jj-view.toggleCommitAction.newChild.on",
                     "when": "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && jj.commitActionVisible.newChild",
                     "group": "9_visibility_2_toggle@1"
@@ -993,6 +1064,16 @@
                     "command": "jj-view.toggleCommitAction.abandon.off",
                     "when": "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && !jj.commitActionVisible.abandon",
                     "group": "9_visibility_2_toggle@4"
+                },
+                {
+                    "command": "jj-view.toggleCommitAction.describe.on",
+                    "when": "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && jj.commitActionVisible.describe",
+                    "group": "9_visibility_2_toggle@5"
+                },
+                {
+                    "command": "jj-view.toggleCommitAction.describe.off",
+                    "when": "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && !jj.commitActionVisible.describe",
+                    "group": "9_visibility_2_toggle@5"
                 }
             ],
             "scm/title": [
@@ -1040,24 +1121,34 @@
                     "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowAbandon\\b/"
                 },
                 {
-                    "command": "jj-view.squashRevisionIntoAncestor",
+                    "command": "jj-view.abandonDescendants",
                     "group": "inline@3",
-                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowSquash\\b/"
+                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowAbandon\\b/"
                 },
                 {
-                    "command": "jj-view.squashRevisionIntoParent",
+                    "command": "jj-view.squashRevisionIntoAncestor",
                     "group": "inline@4",
                     "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowSquash\\b/"
                 },
                 {
-                    "command": "jj-view.showDetails",
+                    "command": "jj-view.squashRevisionIntoParent",
                     "group": "inline@5",
+                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowSquash\\b/"
+                },
+                {
+                    "command": "jj-view.showDetails",
+                    "group": "inline@6",
                     "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowShowDetails\\b/"
                 },
                 {
                     "command": "jj-view.edit",
-                    "group": "inline@6",
+                    "group": "inline@7",
                     "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowEdit\\b/"
+                },
+                {
+                    "command": "jj-view.describe",
+                    "group": "inline@7",
+                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowShowDetails\\b/"
                 }
             ],
             "scm/resourceState/context": [
@@ -1136,6 +1227,11 @@
             "editor/context": [
                 {
                     "command": "jj-view.squashSelectionIntoParent",
+                    "group": "jj-view",
+                    "when": "isInDiffEditor && jj.parentMutable"
+                },
+                {
+                    "command": "jj-view.squashSelectionIntoAncestor",
                     "group": "jj-view",
                     "when": "isInDiffEditor && jj.parentMutable"
                 },
@@ -1301,6 +1397,7 @@
         "@parcel/watcher": "^2.5.6",
         "@vscode-elements/elements": "^2.4.0",
         "@vscode/codicons": "^0.0.45",
+        "diff": "^9.0.0",
         "parse-diff": "^0.11.1",
         "pathe": "^2.0.3",
         "prettier": "^3.8.1",

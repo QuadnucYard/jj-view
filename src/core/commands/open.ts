@@ -8,6 +8,7 @@ import { toFileUri, type Uri } from '../uri-utils';
 
 export interface OpenFilePayload {
     resourceUri?: Uri;
+    sourceUri?: Uri;
 }
 
 export interface OpenChangesPayload {
@@ -23,7 +24,7 @@ export async function openFileCommand(ctx: CommandContext, payload?: OpenFilePay
         return;
     }
     const uri = toFileUri(resourceUri);
-    await ctx.host.nav.openFile(uri);
+    await ctx.host.nav.openFile(uri, payload?.sourceUri ? { sourceUri: payload.sourceUri } : undefined);
 }
 
 // Opens the diff view for the given resource state.

@@ -341,6 +341,7 @@ export class ScmModel implements Disposable {
             ScmContextValue.WorkingCopyGroup,
             ScmContextValue.GroupAllowShowMultiFileDiff,
             ScmContextValue.GroupAllowAbandon,
+            ScmContextValue.GroupAllowShowDetails,
         ];
         if (currentEntry) {
             if (canAbsorbCommit(currentEntry)) {

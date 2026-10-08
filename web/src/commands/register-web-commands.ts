@@ -5,6 +5,8 @@
 
 import type { CodeForgeAuthManager } from '../../../src/core/code-forge-auth';
 import { abandonCommand } from '../../../src/core/commands/abandon';
+import { abandonDescendantsCommand } from '../../../src/core/commands/abandon-descendants';
+import { squashDescendantsCommand } from '../../../src/core/commands/squash-descendants';
 import { absorbCommand } from '../../../src/core/commands/absorb';
 import { setBookmarkCommand } from '../../../src/core/commands/bookmark';
 import { advanceBookmarkCommand } from '../../../src/core/commands/bookmark-advance';
@@ -25,6 +27,7 @@ import { commitPromptCommand } from '../../../src/core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../../../src/core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../../../src/core/commands/compare-file-with-revision';
 import { setDescriptionCommand } from '../../../src/core/commands/describe';
+import { describeDialogCommand } from '../../../src/core/commands/describe-dialog';
 import { describePromptCommand } from '../../../src/core/commands/describe-prompt';
 import { showDetailsCommand } from '../../../src/core/commands/details';
 import { discardChangeCommand } from '../../../src/core/commands/discard-change';
@@ -54,6 +57,7 @@ import {
 import {
     squashHunkIntoParentCommand,
     squashSelectionIntoParentCommand,
+    squashSelectionIntoAncestorCommand,
 } from '../../../src/core/commands/squash-selection';
 import { undoCommand } from '../../../src/core/commands/undo';
 import { uploadCommand } from '../../../src/core/commands/upload';
@@ -249,6 +253,10 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()),
         abandonCommand,
     );
+    registerWithPayload('jj-view.abandonDescendants',
+        (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()), abandonDescendantsCommand);
+    registerWithPayload('jj-view.squashDescendants',
+        (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()), squashDescendantsCommand);
     registerWithPayload('jj-view.edit', createEditPayload, editCommand);
     registerWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand);
     registerWithPayload(
@@ -291,6 +299,8 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         squashSelectionIntoParentCommand,
     );
     registerWithPayload('jj-view.squashHunkIntoParent', createSquashHunkIntoParentPayload, squashHunkIntoParentCommand);
+    registerWithPayload('jj-view.describe', createEditPayload, describeDialogCommand);
+    registerWithPayload('jj-view.squashSelectionIntoAncestor', createSquashSelectionIntoParentPayload, squashSelectionIntoAncestorCommand);
 
     // 7. Bookmarks & Remote Upload
     registerWithPayload('jj-view.setBookmark', createSetBookmarkPayload, setBookmarkCommand);

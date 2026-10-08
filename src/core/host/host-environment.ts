@@ -61,6 +61,8 @@ export interface HostConfig {
 
 export interface HostOpenOptions {
     preview?: boolean;
+    /** Source editor whose selection and viewport should be preserved when supported. */
+    sourceUri?: Uri;
 }
 
 export interface HostNavigation {

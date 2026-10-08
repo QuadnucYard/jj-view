@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import * as vscode from 'vscode';
+import { registerOpenSyncTracking } from './open-sync';
 import { abandonCommand } from '../core/commands/abandon';
+import { abandonDescendantsCommand } from '../core/commands/abandon-descendants';
+import { squashDescendantsCommand } from '../core/commands/squash-descendants';
 import { absorbCommand } from '../core/commands/absorb';
 import { setBookmarkCommand } from '../core/commands/bookmark';
 import { advanceBookmarkCommand } from '../core/commands/bookmark-advance';
@@ -24,6 +27,7 @@ import { commitPromptCommand } from '../core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../core/commands/compare-file-with-revision';
 import { setDescriptionCommand } from '../core/commands/describe';
+import { describeDialogCommand } from '../core/commands/describe-dialog';
 import { describePromptCommand } from '../core/commands/describe-prompt';
 import { showDetailsCommand } from '../core/commands/details';
 import { discardChangeCommand } from '../core/commands/discard-change';
@@ -50,7 +54,7 @@ import {
     squashRevisionIntoAncestorCommand,
     squashRevisionIntoParentCommand,
 } from '../core/commands/squash-revision';
-import { squashHunkIntoParentCommand, squashSelectionIntoParentCommand } from '../core/commands/squash-selection';
+import { squashHunkIntoParentCommand, squashSelectionIntoParentCommand, squashSelectionIntoAncestorCommand } from '../core/commands/squash-selection';
 import { undoCommand } from '../core/commands/undo';
 import { uploadCommand } from '../core/commands/upload';
 import { uploadStackCommand } from '../core/commands/upload-stack';
@@ -139,6 +143,7 @@ export interface RegisterCommandsOptions {
 export function registerCommands(options: RegisterCommandsOptions): void {
     const { context, repositoryManager, scmProviders, outputChannel, commentsManager, logWebviewProvider } = options;
     const host = options.hostEnvironment ?? new VsCodeHostEnvironment({ context });
+    context.subscriptions.push(registerOpenSyncTracking());
 
     function resolveRepositoryLocal(
         args: unknown[],
@@ -244,6 +249,8 @@ export function registerCommands(options: RegisterCommandsOptions): void {
 
     context.subscriptions.push(
         registerCommandWithPayload('jj-view.abandon', createAbandonPayload, abandonCommand),
+        registerCommandWithPayload('jj-view.abandonDescendants', createAbandonPayload, abandonDescendantsCommand),
+        registerCommandWithPayload('jj-view.squashDescendants', createAbandonPayload, squashDescendantsCommand),
         registerCommandWithPayload('jj-view.restore', createRestorePayload, restoreCommand),
         registerCommandWithPayload(
             'jj-view.squashRevisionIntoParent',
@@ -261,11 +268,14 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             completeSquashRevisionCommand,
         ),
         registerCommandWithPayload('jj-view.setDescription', createSetDescriptionPayload, setDescriptionCommand),
+        registerCommandWithPayload('jj-view.describe', createEditPayload, describeDialogCommand),
         registerCommandWithPayload(
             'jj-view.squashSelectionIntoParent',
             () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor),
             squashSelectionIntoParentCommand,
         ),
+        registerCommandWithPayload('jj-view.squashSelectionIntoAncestor',
+            () => createSquashSelectionIntoParentPayload(vscode.window.activeTextEditor), squashSelectionIntoAncestorCommand),
         registerCommand('jj-view.refresh', refreshCommand),
         registerCommandWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand),
         registerCommandWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand),
