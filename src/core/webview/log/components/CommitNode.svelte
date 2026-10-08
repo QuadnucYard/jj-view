@@ -61,7 +61,7 @@ const commentButtonState = $derived.by(() => {
     if (unresolved === 0) {
         const totalDrafts = drafts + responses;
         return {
-            icon: 'codicon-sign-in',
+            icon: 'codicon-edit',
             badge: `${totalDrafts}`,
             title: `${totalDrafts} Draft Comment${totalDrafts === 1 ? '' : 's'} (Click to view)`,
             allDrafted: true,
