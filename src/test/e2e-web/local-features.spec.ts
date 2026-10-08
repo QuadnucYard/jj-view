@@ -15,16 +15,21 @@ test('describes a graph revision and persists hover-action visibility', async ({
     const row = page.locator(`.commit-row[data-change-id="${changeId}"]`);
     await expect(row).toBeVisible();
     await recordGifFlow(page, async (capture) => {
+        let frame = 0;
+        const captureFrame = async () => {
+            await capture();
+            await page.screenshot({ path: path.join(ARTIFACT_DIR, `local-features-frame-${frame++}.png`) });
+        };
         await row.hover();
         const describeButton = row.getByRole('button', { name: 'Describe', exact: true });
         await expect(describeButton).toBeVisible();
         await expect(row.getByRole('button', { name: 'Edit Commit', exact: true })).toHaveCount(1);
-        await capture();
+        await captureFrame();
         await describeButton.click();
         const input = page.getByTestId('quick-input-text-input');
         await expect(input).toHaveValue('feature to describe');
         await input.fill('updated feature description');
-        await capture();
+        await captureFrame();
         await input.press('Enter');
         await expect.poll(() => testRepo.getDescription(changeId)).toBe('updated feature description');
         await expect(row).toContainText('updated feature description');
@@ -32,7 +37,7 @@ test('describes a graph revision and persists hover-action visibility', async ({
         await describeButton.click({ button: 'right' });
         await page.getByTestId('menu-item-jj-view.hideCommitAction.describe').click();
         await expect(describeButton).toHaveCount(0);
-        await capture();
+        await captureFrame();
         await page.reload();
         await expect(row).toBeVisible();
         await row.hover();

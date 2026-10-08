@@ -228,11 +228,6 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         (args) => createDescribePromptPayload(args, scmModel),
         describePromptCommand,
     );
-    registerWithPayload(
-        'jj-view.describe',
-        (args) => createSetDescriptionPayload(args, scmModel),
-        setDescriptionCommand,
-    );
 
     // 3. Status, Refresh, Undo, Redo
     registerDirect('jj-view.refresh', refreshCommand);
