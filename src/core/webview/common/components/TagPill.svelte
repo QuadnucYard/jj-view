@@ -9,11 +9,17 @@ import BasePill from './BasePill.svelte';
 interface Props {
     tag: JjTag;
     style?: string;
+    syncedRemotes?: readonly string[];
 }
 
-let { tag, style = '' }: Props = $props();
+let { tag, style = '', syncedRemotes = [] }: Props = $props();
 
 const displayName = $derived(tag.remote ? `${tag.name}@${tag.remote}` : tag.name);
+const title = $derived(
+    syncedRemotes.length > 0
+        ? `${displayName}\nRemote tags: ${syncedRemotes.map((remote) => `${tag.name}@${remote}`).join(', ')}`
+        : displayName,
+);
 const accentColor = $derived(tag.remote ? 'var(--vscode-charts-purple)' : 'var(--vscode-charts-green)');
 const backgroundColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 90%)`);
 const borderColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 50%)`);
@@ -29,7 +35,7 @@ const borderColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 50%
     })}
 >
 <BasePill
-    title={displayName}
+    {title}
     style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
 >
     <span aria-hidden="true" class="codicon codicon-tag"></span>

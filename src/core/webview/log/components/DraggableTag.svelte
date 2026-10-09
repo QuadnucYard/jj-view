@@ -10,16 +10,17 @@ import type { DragManager } from '../drag-manager.svelte';
 interface Props {
     tag: JjTag;
     dragManager: DragManager;
+    syncedRemotes?: readonly string[];
 }
 
-let { tag, dragManager }: Props = $props();
+let { tag, dragManager, syncedRemotes = [] }: Props = $props();
 
 const isDragging = $derived(dragManager.activeDragItem?.type === 'tag' && dragManager.activeDragItem.name === tag.name);
 </script>
 
 {#if tag.remote}
     <span use:dragManager.draggable={() => null}>
-        <TagPill {tag} />
+        <TagPill {tag} {syncedRemotes} />
     </span>
 {:else}
 <span
@@ -27,7 +28,7 @@ const isDragging = $derived(dragManager.activeDragItem?.type === 'tag' && dragMa
     class:is-dragging={isDragging}
     use:dragManager.draggable={() => ({ type: 'tag', name: tag.name })}
 >
-    <TagPill {tag} />
+    <TagPill {tag} {syncedRemotes} />
 </span>
 {/if}
 

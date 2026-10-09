@@ -13,7 +13,7 @@ export type JjTemplateField =
     | { type: 'json'; expr: string } // Output with json(): json(value)
     | { type: 'raw'; expr: string } // Output as-is (for booleans, numbers)
     | { type: 'timestamp'; expr: string } // Format as ISO timestamp
-    | { type: 'array'; expr: string; itemSchema: Record<string, JjTemplateField> } // Array with generated item template
+    | { type: 'array'; expr: string | readonly [string, ...string[]]; itemSchema: Record<string, JjTemplateField> } // Array with generated item template
     | { type: 'stringArray'; expr: string; itemExpr: string } // Array of simple strings
     | { type: 'rawArray'; expr: string; itemExpr: string } // Array of raw values (booleans, numbers)
     | { type: 'object'; fields: Record<string, JjTemplateField> } // Nested object
@@ -48,7 +48,16 @@ function buildTemplateExpr(field: JjTemplateField): string {
             return `"\\"" ++ ${field.expr}.local().format("%Y-%m-%dT%H:%M:%S%:z") ++ "\\""`;
         case 'array': {
             const itemTemplate = `"{" ++ ${buildObjectFields(field.itemSchema)} ++ "}"`;
-            return `"[" ++ ${field.expr}.map(|item| ${itemTemplate}).join(",") ++ "]"`;
+            const expressions = typeof field.expr === 'string' ? [field.expr] : field.expr;
+            const lists = expressions.map((expr, index) => {
+                const items = `${expr}.map(|item| ${itemTemplate}).join(",")`;
+                if (index === 0) {
+                    return items;
+                }
+                const previous = expressions.slice(0, index).join(' || ');
+                return `if(${expr} && (${previous}), ",", "") ++ ${items}`;
+            });
+            return `"[" ++ ${lists.join(' ++ ')} ++ "]"`;
         }
         case 'stringArray':
             return `"[" ++ ${field.expr}.map(|item| "\\"" ++ ${field.itemExpr} ++ "\\"").join(",") ++ "]"`;
@@ -120,7 +129,7 @@ export const LOG_ENTRY_SCHEMA: Record<string, JjTemplateField> = {
     },
     bookmarks: {
         type: 'array',
-        expr: 'bookmarks',
+        expr: ['local_bookmarks', 'remote_bookmarks'],
         itemSchema: {
             name: { type: 'string', expr: 'item.name()' },
             remote: { type: 'nullable', expr: 'item.remote()', valueExpr: 'item.remote()' },
@@ -128,7 +137,7 @@ export const LOG_ENTRY_SCHEMA: Record<string, JjTemplateField> = {
     },
     tags: {
         type: 'array',
-        expr: 'tags',
+        expr: ['local_tags', 'remote_tags'],
         itemSchema: {
             name: { type: 'json', expr: 'item.name()' },
             remote: { type: 'nullable', expr: 'item.remote()', valueExpr: 'item.remote()' },

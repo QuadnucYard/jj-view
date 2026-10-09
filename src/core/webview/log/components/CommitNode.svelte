@@ -6,6 +6,7 @@
 import type { ActionPayload, CommitAction } from '../../../host/ipc/log-view-schemas';
 import type { JjLogEntry } from '../../../jj-types';
 import { BookmarkPill, IconButton, TagPill, WorkspacePill } from '../../common/components';
+import { getRefBadges } from '../../common/utils/ref-badges';
 import type { DragManager } from '../drag-manager.svelte';
 import { formatCommitTooltip } from '../utils/commit-tooltip';
 import { computeCommitActions } from '../utils/commit-utils';
@@ -160,6 +161,9 @@ const commitTooltip = $derived(formatCommitTooltip(commit));
 const [idPart, offsetPart] = $derived(commit.change_id.split('/'));
 const shortId = $derived(commit.change_id_shortest);
 const hasShortId = $derived(shortId && idPart.startsWith(shortId));
+
+const bookmarkBadges = $derived(getRefBadges(commit.bookmarks));
+const tagBadges = $derived(getRefBadges(commit.tags));
 
 const activeTag = $derived(dragManager.activeDragItem?.type === 'tag' ? dragManager.activeDragItem.name : null);
 
@@ -364,8 +368,8 @@ const hasActiveBookmarkAlready = $derived(
             <!-- Right-aligned Bookmarks & Pills -->
             <span class="pills-group">
                 {#if !codeForgeChange}
-                    {#each commit.bookmarks || [] as bookmark (`${bookmark.name}-${bookmark.remote || 'local'}`)}
-                        <DraggableBookmark {bookmark} {dragManager} />
+                    {#each bookmarkBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
+                        <DraggableBookmark bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
                     {/each}
                     {#if isOver && isDraggingBookmark && activeBookmark && !hasActiveBookmarkAlready}
                         <BookmarkPill
@@ -377,8 +381,8 @@ const hasActiveBookmarkAlready = $derived(
                 {#each commit.working_copies || [] as workspace (workspace)}
                     <WorkspacePill {workspace} />
                 {/each}
-                {#each commit.tags || [] as tag (JSON.stringify([tag.name, tag.remote ?? null]))}
-                    <DraggableTag {tag} {dragManager} />
+                {#each tagBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
+                    <DraggableTag tag={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
                 {/each}
 
                 {#if isOver && activeTag && !commit.tags?.some((tag) => tag.name === activeTag && !tag.remote)}
@@ -500,8 +504,8 @@ const hasActiveBookmarkAlready = $derived(
 
                 <!-- Right-aligned Bookmarks on second row -->
                 <span class="pills-group" style:margin-left="auto">
-                    {#each commit.bookmarks || [] as bookmark (`${bookmark.name}-${bookmark.remote || 'local'}`)}
-                        <DraggableBookmark {bookmark} {dragManager} />
+                    {#each bookmarkBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
+                        <DraggableBookmark bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
                     {/each}
                     {#if isOver && isDraggingBookmark && activeBookmark && !hasActiveBookmarkAlready}
                         <BookmarkPill

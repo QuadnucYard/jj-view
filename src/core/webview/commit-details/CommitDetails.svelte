@@ -11,6 +11,7 @@ import {
 } from '../../host/ipc/commit-details-schemas';
 import type { JjBookmark, JjStatusEntry, JjTag } from '../../jj-types';
 import { BasePill, BookmarkPill, PersonInfo, TagPill } from '../common/components';
+import { getRefBadges } from '../common/utils/ref-badges';
 import { useRpcReceiver } from '../transport/bridge.svelte';
 
 interface Props {
@@ -410,11 +411,11 @@ function getFileColor(status: string, conflicted?: boolean): string {
                     <span class="pill-label">Conflicted</span>
                 </BasePill>
             {/if}
-            {#each bookmarks as b (`${b.name}-${b.remote}`)}
-                <BookmarkPill bookmark={b} />
+            {#each getRefBadges(bookmarks) as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
+                <BookmarkPill bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} />
             {/each}
-            {#each tags as t (JSON.stringify([t.name, t.remote ?? null]))}
-                <TagPill tag={t} />
+            {#each getRefBadges(tags) as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
+                <TagPill tag={badge.ref} syncedRemotes={badge.syncedRemotes} />
             {/each}
         </div>
 

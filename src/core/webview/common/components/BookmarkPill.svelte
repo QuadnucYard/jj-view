@@ -9,11 +9,17 @@ import BasePill from './BasePill.svelte';
 interface Props {
     bookmark: JjBookmark;
     style?: string;
+    syncedRemotes?: readonly string[];
 }
 
-let { bookmark, style = '' }: Props = $props();
+let { bookmark, style = '', syncedRemotes = [] }: Props = $props();
 
 let displayName = $derived(bookmark.remote ? `${bookmark.name}@${bookmark.remote}` : bookmark.name);
+const title = $derived(
+    syncedRemotes.length > 0
+        ? `${displayName}\nRemote bookmarks: ${syncedRemotes.map((remote) => `${bookmark.name}@${remote}`).join(', ')}`
+        : displayName,
+);
 let accentColor = $derived(bookmark.remote ? 'var(--vscode-charts-purple)' : 'var(--vscode-charts-blue)');
 let backgroundColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 90%)`);
 let borderColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 50%)`);
@@ -33,7 +39,7 @@ let vscodeContext = $derived(
     class="bookmark-wrapper"
 >
     <BasePill
-        title={displayName}
+        {title}
         style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
     >
         <span aria-hidden="true" class="codicon codicon-bookmark"></span>

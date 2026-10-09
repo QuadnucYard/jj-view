@@ -10,9 +10,10 @@ import type { DragManager } from '../drag-manager.svelte';
 interface Props {
     bookmark: JjBookmark;
     dragManager: DragManager;
+    syncedRemotes?: readonly string[];
 }
 
-let { bookmark, dragManager }: Props = $props();
+let { bookmark, dragManager, syncedRemotes = [] }: Props = $props();
 
 const isDragging = $derived(
     dragManager.activeDragItem?.type === 'bookmark' &&
@@ -22,7 +23,9 @@ const isDragging = $derived(
 </script>
 
 {#if bookmark.remote}
-    <BookmarkPill {bookmark} />
+    <span use:dragManager.draggable={() => null}>
+        <BookmarkPill {bookmark} {syncedRemotes} />
+    </span>
 {:else}
     <span
         class="draggable-bookmark"
@@ -33,7 +36,7 @@ const isDragging = $derived(
             remote: bookmark.remote,
         })}
     >
-        <BookmarkPill {bookmark} />
+        <BookmarkPill {bookmark} {syncedRemotes} />
     </span>
 {/if}
 

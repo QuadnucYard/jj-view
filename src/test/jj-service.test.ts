@@ -886,7 +886,7 @@ log = "none()"
         expect(Array.isArray(log.tags)).toBe(true);
         expect(log.tags?.map((tag) => tag.name)).toContain('test-tag-1');
         expect(log.tags?.map((tag) => tag.name)).toContain('test-tag-2');
-        expect(log.tags?.length).toBe(2);
+        expect(log.tags?.filter((tag) => !tag.remote).length).toBe(2);
     });
 
     test('getLog parses author and committer with full details', async () => {
@@ -1425,6 +1425,35 @@ log = "none()"
 
         expect(deleted).toBeDefined();
         expect(deleted?.status).toBe('deleted');
+    });
+
+    test('retains synchronized local and remote bookmark identities for badge collapsing', async () => {
+        using remote = new ScopedTestRepo();
+        remote.init();
+        repo.writeFile('release.txt', 'release');
+        repo.describe('shared bookmark target');
+        const sharedId = repo.getChangeId('@');
+        repo.bookmark('release', '@');
+        repo.addRemote('origin', remote.path);
+        repo.gitPush('release');
+        const [log] = await jjService.getLog({ revision: sharedId });
+        expect(log.bookmarks).toContainEqual({ name: 'release', remote: null });
+        expect(log.bookmarks).toContainEqual({ name: 'release', remote: 'origin' });
+    });
+
+    test('retains synchronized local and remote tag identities for badge collapsing', async () => {
+        using remote = new ScopedTestRepo();
+        remote.init();
+        remote.writeFile('release.txt', 'release');
+        remote.describe('shared tag target');
+        const sharedId = remote.getChangeId('@');
+        remote.tag('release', '@');
+        repo.addRemote('origin', remote.path);
+        repo.fetchTags('origin');
+        repo.trackTag('release', 'origin');
+        const [log] = await jjService.getLog({ revision: sharedId });
+        expect(log.tags).toContainEqual({ name: 'release', remote: null });
+        expect(log.tags).toContainEqual({ name: 'release', remote: 'origin' });
     });
 
     test('preserves remote tag identity separately from a same-name local tag', async () => {

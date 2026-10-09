@@ -23,8 +23,8 @@ describe('CommitDetailsApp SSR Rendering', () => {
                 email: 'author@example.com',
                 timestamp: '2026-09-14T19:00:00Z',
             },
-            bookmarks: [{ name: 'main' }],
-            tags: [{ name: 'v1.0.0' }],
+            bookmarks: [{ name: 'main' }, { name: 'main', remote: 'origin' }],
+            tags: [{ name: 'v1.0.0' }, { name: 'v1.0.0', remote: 'origin' }],
             minChangeIdLength: 4,
         };
 
@@ -37,7 +37,11 @@ describe('CommitDetailsApp SSR Rendering', () => {
         expect(html).toContain('Test Author');
         expect(html).toContain('author@example.com');
         expect(html).toContain('main');
+        expect(html.match(/class="bookmark-wrapper/g)).toHaveLength(1);
+        expect(html).toContain('Remote bookmarks: main@origin');
         expect(html).toContain('v1.0.0');
+        expect(html.match(/class="tag-wrapper/g)).toHaveLength(1);
+        expect(html).toContain('Remote tags: v1.0.0@origin');
     });
 
     it('successfully renders empty description and empty commit without errors', () => {
