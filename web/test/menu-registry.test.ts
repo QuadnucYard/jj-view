@@ -3,9 +3,46 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ContextKeyService } from '../src/menu/context-key-service';
 import { MenuRegistry, parseMenuGroup, resolveIconClass } from '../src/menu/menu-registry';
+import type { PackageJsonContributes } from '../src/menu/menu-types';
+
+describe('Native SCM folder menus', () => {
+    const manifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+        contributes: PackageJsonContributes;
+    };
+    const registry = new MenuRegistry(manifest.contributes);
+
+    it.each([
+        'jj.group.workingCopy',
+        'ancestor-0',
+    ])('offers restore and three squash actions for %s folders', (group) => {
+        // Folder menus have provider/group IDs, but no resource or group capability context.
+        const context = new ContextKeyService(undefined, { scmProvider: 'jj-/repo', scmResourceGroup: group });
+        expect(
+            registry.getInlineActions('scm/resourceFolder/context', context).map((action) => action.command),
+        ).toEqual([
+            'jj-view.restore',
+            'jj-view.squashFilesIntoAncestor',
+            'jj-view.squashFilesIntoParent',
+            'jj-view.squashFilesIntoChild',
+        ]);
+    });
+
+    it('offers only restore for conflict folders and no actions for other providers', () => {
+        const conflictContext = new ContextKeyService(undefined, {
+            scmProvider: 'jj-/repo',
+            scmResourceGroup: 'jj.group.conflict',
+        });
+        expect(
+            registry.getInlineActions('scm/resourceFolder/context', conflictContext).map((action) => action.command),
+        ).toEqual(['jj-view.restore']);
+        const gitContext = new ContextKeyService(undefined, { scmProvider: 'git', scmResourceGroup: 'workingTree' });
+        expect(registry.getInlineActions('scm/resourceFolder/context', gitContext)).toEqual([]);
+    });
+});
 
 describe('ContextKeyService', () => {
     it('sets, gets, and deletes keys', () => {

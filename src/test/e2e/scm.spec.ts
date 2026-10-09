@@ -28,6 +28,54 @@ import {
 } from './e2e-helpers';
 
 test.describe('SCM Pane E2E', () => {
+    for (const action of [SCM_ACTIONS.SquashFilesIntoParent, 'Restore']) {
+        test(`Multi-child SCM folders offer all actions and apply ${action} to descendants`, async ({ vscode }) => {
+            const repo = new TestRepo();
+            repo.init();
+            const files = ['src/first.txt', 'src/nested/deep/second.txt', 'src/nested/deep/third.txt', 'outside.txt'];
+            await buildGraph(repo, [
+                { label: 'base', files: Object.fromEntries(files.map((file) => [file, 'base'])) },
+                {
+                    label: 'wc',
+                    parents: ['base'],
+                    files: Object.fromEntries(files.map((file) => [file, 'changed'])),
+                    isCurrentWorkingCopy: true,
+                },
+            ]);
+            // Match VS Code's normalized Windows workspace URI.
+            const workspacePath =
+                process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+            const { page } = await vscode.openWorkspace({ path: workspacePath });
+            await focusSCM(page);
+            await vscode.evaluate(async (vscode) => {
+                await vscode.commands.executeCommand('workbench.scm.action.setTreeViewMode');
+            });
+            const folder = await expectFileInScmGroup(page, /Working Copy/, 'src');
+            const compressedFolder = page.getByRole('treeitem', { name: /^src[\\/]nested[\\/]deep$/ }).first();
+            for (const row of [folder, compressedFolder]) {
+                await row.hover();
+                for (const title of [
+                    'Restore',
+                    SCM_ACTIONS.SquashFilesIntoAncestor,
+                    SCM_ACTIONS.SquashFilesIntoParent,
+                    SCM_ACTIONS.SquashFilesIntoChild,
+                ]) {
+                    await expect(row.getByRole('button', { name: title, exact: true })).toBeVisible();
+                }
+            }
+            await clickScmAction(page, folder, action);
+            await expect(async () => {
+                const expected = action === 'Restore' ? 'base' : 'changed';
+                expect(repo.getFileContent('@-', 'src/first.txt').trim()).toBe(expected);
+                expect(repo.getFileContent('@-', 'src/nested/deep/second.txt').trim()).toBe(expected);
+                expect(repo.getFileContent('@-', 'src/nested/deep/third.txt').trim()).toBe(expected);
+                expect(repo.getDiffSummary('@')).not.toContain('src/');
+                expect(repo.getFileContent('@-', 'outside.txt').trim()).toBe('base');
+                expect(repo.getFileContent('@', 'outside.txt').trim()).toBe('changed');
+            }).toPass({ timeout: 10000 });
+        });
+    }
+
     for (const viewMode of ['list', 'tree']) {
         for (const modifiedWorkingCopy of [false, true]) {
             test(`Open File in Working Copy keeps the selected row in ${viewMode} view with ${modifiedWorkingCopy ? 'modified' : 'empty'} working copy`, async ({

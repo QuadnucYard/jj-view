@@ -1161,6 +1161,28 @@
                     "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowDescribe\\b/"
                 }
             ],
+            "scm/resourceFolder/context": [
+                {
+                    "command": "jj-view.restore",
+                    "group": "inline@2",
+                    "when": "scmProvider =~ /^jj-/"
+                },
+                {
+                    "command": "jj-view.squashFilesIntoAncestor",
+                    "group": "inline@3",
+                    "when": "scmProvider =~ /^jj-/ && scmResourceGroup != 'jj.group.conflict'"
+                },
+                {
+                    "command": "jj-view.squashFilesIntoParent",
+                    "group": "inline@4",
+                    "when": "scmProvider =~ /^jj-/ && scmResourceGroup != 'jj.group.conflict'"
+                },
+                {
+                    "command": "jj-view.squashFilesIntoChild",
+                    "group": "inline@5",
+                    "when": "scmProvider =~ /^jj-/ && scmResourceGroup != 'jj.group.conflict'"
+                }
+            ],
             "scm/resourceState/context": [
                 {
                     "command": "jj-view.copyRelativePath",

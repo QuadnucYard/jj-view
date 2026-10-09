@@ -48,6 +48,20 @@ import type { VsCodeScmProvider } from '../vscode/providers/vscode-scm-provider'
 import { createMock } from './test-utils';
 
 describe('vscode payloads', () => {
+    it.each(['@', 'ancestor-change'])('applies folder actions to all descendant files at %s', (revision) => {
+        // VS Code expands folder nodes into resource states before invoking commands.
+        const states = ['src/first.ts', 'src/nested/second.ts'].map((filePath) => ({
+            resourceUri: Uri.file(`/repo/${filePath}`).with({ scheme: 'jj-scm' }),
+            revision,
+        }));
+        const paths = states.map((state) => state.resourceUri.fsPath);
+
+        expect(createRestorePayload(states)).toEqual({ pathsByRevision: { [revision]: paths } });
+        expect(createSquashFilesIntoParentPayload(states)).toEqual({ paths, revision });
+        expect(createSquashFilesIntoAncestorPayload(states)).toEqual({ paths, revision, ancestorRevision: undefined });
+        expect(createSquashFilesIntoChildPayload(states)).toEqual({ paths, revision, childRevision: undefined });
+    });
+
     describe('abandon payload', () => {
         it('extracts working copy when resource group is working copy', () => {
             const scmGroup = { id: 'jj.group.workingCopy', label: 'Working Copy', resourceStates: [] };
