@@ -5,9 +5,89 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { buildGraph } from '../test-repo';
 import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
 
 test.describe('Standalone Web Quick Input & Command Palette', () => {
+    test('should wrap ancestor subjects and preview searchable full descriptions', async ({
+        page,
+        server,
+        testRepo,
+    }) => {
+        const subject = 'fix: preserve every word in a revision subject that exceeds fifty characters';
+        const body = `Searchable body context: 修复描述 🐱\n${'Additional explanation.\n'.repeat(30)}`;
+        const description = `${subject}\n\n${body}`;
+        const ids = await buildGraph(testRepo, [
+            { label: 'older', description: 'Older ancestor\n\nOlder body', files: { 'a.txt': 'a' } },
+            { label: 'parent', parents: ['older'], description, files: { 'b.txt': 'b' } },
+            { label: 'child', parents: ['parent'], files: { 'c.txt': 'c' }, isCurrentWorkingCopy: true },
+        ]);
+        await page.goto(server.serverUrl);
+        await waitForScmReady(page);
+
+        await recordGifFlow(
+            page,
+            async (capture) => {
+                await page.evaluate((revision) => {
+                    void window.__JJ_VIEW_ENV__?.commands.executeCommand('jj-view.squashRevisionIntoAncestor', {
+                        revision,
+                    });
+                }, ids.child.changeId);
+                const widget = page.getByTestId('quick-input-widget');
+                const input = page.getByTestId('quick-input-text-input');
+                const preview = page.getByTestId('quick-input-detail-preview');
+                const parent = page.locator('.quick-pick-item').filter({ hasText: subject });
+                await expect(parent.locator('.item-description')).toHaveText(subject);
+                await expect(preview).toHaveText(body);
+                await expect(preview).not.toContainText(subject);
+                await capture();
+                await page.screenshot({ path: path.join(ARTIFACT_DIR, 'ancestor-description-desktop.png') });
+
+                await page.keyboard.press('ArrowDown');
+                await expect(preview).toContainText('Older body');
+                await page.keyboard.press('ArrowUp');
+                await expect(preview).toHaveText(body);
+
+                await input.fill('fifty characters');
+                await expect(page.locator('.quick-pick-item')).toHaveCount(1);
+                await input.fill('修复描述');
+                await expect(parent).toBeVisible();
+                await expect(page.locator('.quick-pick-item')).toHaveCount(1);
+                await capture();
+
+                await page.setViewportSize({ width: 390, height: 620 });
+                const dimensions = await parent.locator('.item-description').evaluate((element) => ({
+                    height: element.getBoundingClientRect().height,
+                    lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+                    width: element.clientWidth,
+                    scrollWidth: element.scrollWidth,
+                }));
+                expect(dimensions.height).toBeGreaterThan(dimensions.lineHeight);
+                expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width);
+                const box = await widget.boundingBox();
+                if (!box) {
+                    throw new Error('Ancestor picker has no visible bounds');
+                }
+                expect(box.x + box.width).toBeLessThanOrEqual(390);
+                expect(box.y + box.height).toBeLessThanOrEqual(620);
+                await preview.focus();
+                await page.keyboard.press('End');
+                await expect.poll(() => preview.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+                await capture();
+                await page.screenshot({ path: path.join(ARTIFACT_DIR, 'ancestor-description-narrow.png') });
+
+                await input.fill('no such description');
+                await expect(page.getByTestId('quick-pick-no-results')).toBeVisible();
+                await expect(preview).toHaveCount(0);
+                await input.fill('');
+                await expect(preview).toHaveText(body);
+                await input.press('Escape');
+                await expect(widget).toHaveCount(0);
+            },
+            { outputPath: path.join(ARTIFACT_DIR, 'ancestor-description-flow.gif') },
+        );
+    });
+
     test('should open command palette via keyboard shortcuts and close with Escape', async ({ page, server }) => {
         await page.goto(server.serverUrl);
         await waitForScmReady(page);

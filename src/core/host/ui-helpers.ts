@@ -125,7 +125,8 @@ export async function promptForRevision(
         const items = entries.map((entry) => {
             const shortId = entry.change_id.substring(0, 8);
             const desc = entry.description || '(no description set)';
-            const shortDesc = desc.split('\n')[0].substring(0, 50);
+            const [subject, ...bodyLines] = desc.split('\n');
+            const body = bodyLines.join('\n').replace(/^\n+|\n+$/g, '');
 
             let bookmarkStr = '';
             if (entry.bookmarks && entry.bookmarks.length > 0) {
@@ -134,7 +135,8 @@ export async function promptForRevision(
 
             return {
                 label: `${shortId}${bookmarkStr}`,
-                description: shortDesc,
+                description: subject,
+                detail: body.trim() ? body : undefined,
                 value: entry.change_id,
             };
         });
@@ -152,6 +154,7 @@ export async function promptForRevision(
             const selected = await ui.showQuickPick(items, {
                 placeHolder,
                 matchOnDescription: true,
+                matchOnDetail: true,
                 acceptCustomValue: true,
                 onDidChangeActive: tracker.onDidChangeActive,
                 onDidChangeValue: tracker.onDidChangeValue,

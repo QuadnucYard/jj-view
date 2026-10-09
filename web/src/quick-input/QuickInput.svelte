@@ -101,6 +101,8 @@ const hasAnyIcon = $derived(
         (session.options.items || []).some((it) => Boolean(it.iconClass)),
 );
 
+const activeDetail = $derived(isQuickPick ? filteredItems[selectedIndex]?.detail : undefined);
+
 $effect(() => {
     if (filteredItems.length > 0 && selectedIndex >= filteredItems.length) {
         selectedIndex = filteredItems.length - 1;
@@ -238,6 +240,7 @@ function handleKeyDown(e: KeyboardEvent): void {
                 oninput={handleInputChange}
                 onkeydown={handleKeyDown}
                 aria-label="Quick Input Entry"
+                aria-describedby={activeDetail ? 'quick-input-detail-preview' : undefined}
             />
         </div>
 
@@ -289,13 +292,28 @@ function handleKeyDown(e: KeyboardEvent): void {
                             {#if item.description}
                                 <span class="item-description">{item.description}</span>
                             {/if}
-                            {#if item.detail}
-                                <span class="item-detail">{item.detail}</span>
-                            {/if}
                         </div>
                     {/each}
                 {/if}
             </div>
+            {#if activeDetail}
+                <!-- The scrollable preview needs keyboard focus for reading long descriptions. -->
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+                <div
+                    id="quick-input-detail-preview"
+                    class="quick-input-detail-preview"
+                    data-testid="quick-input-detail-preview"
+                    role="region"
+                    aria-label="Selected item details"
+                    tabindex="0"
+                    onkeydown={(event) => {
+                        if (event.key === 'Escape') {
+                            event.preventDefault();
+                            service.cancel();
+                        }
+                    }}
+                >{activeDetail}</div>
+            {/if}
         {/if}
     </div>
 {/if}
@@ -316,6 +334,7 @@ function handleKeyDown(e: KeyboardEvent): void {
     transform: translateX(-50%);
     width: 500px;
     max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - 48px);
     z-index: 10000;
     background: var(--vscode-editor-background, #171717);
     color: var(--vscode-foreground, #d4d4d4);
@@ -370,6 +389,7 @@ function handleKeyDown(e: KeyboardEvent): void {
 }
 
 .quick-input-input-wrapper {
+    flex-shrink: 0;
     padding: 8px 10px;
     box-sizing: border-box;
 }
@@ -418,6 +438,7 @@ function handleKeyDown(e: KeyboardEvent): void {
 }
 
 .quick-pick-list {
+    min-height: 0;
     max-height: 380px;
     overflow-y: auto;
     padding: 4px 6px 6px;
@@ -429,7 +450,8 @@ function handleKeyDown(e: KeyboardEvent): void {
 
 .quick-pick-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
+    flex-shrink: 0;
     min-height: 28px;
     padding: 4px 10px;
     border-radius: 4px;
@@ -472,21 +494,24 @@ function handleKeyDown(e: KeyboardEvent): void {
 }
 
 .item-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
     font-weight: 500;
+}
+
+.quick-pick-item:has(.item-description) .item-label {
+    flex: 0 0 40%;
 }
 
 .item-description {
     font-size: 11px;
     color: var(--vscode-descriptionForeground, #8a8a8a);
-    margin-left: auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding-left: 8px;
-    flex-shrink: 0;
+    flex: 1;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
 }
 
 .quick-pick-item.active .item-description {
@@ -494,10 +519,22 @@ function handleKeyDown(e: KeyboardEvent): void {
     opacity: 0.85;
 }
 
-.item-detail {
-    font-size: 11px;
-    color: var(--vscode-descriptionForeground, #8a8a8a);
-    padding-left: 6px;
+.quick-input-detail-preview {
+    flex-shrink: 0;
+    max-height: min(180px, 35dvh);
+    overflow-y: auto;
+    padding: 10px 16px;
+    border-top: 1px solid var(--vscode-widget-border);
+    font-size: 12px;
+    color: var(--vscode-foreground);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+}
+
+.quick-input-detail-preview:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
 }
 
 .no-items-message {

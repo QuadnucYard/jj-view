@@ -105,6 +105,42 @@ describe('ui-helpers', () => {
             );
         });
 
+        it('preserves long revision subjects and makes the complete description searchable', async () => {
+            const subject = 'fix: preserve every word in a revision subject that exceeds fifty characters';
+            const body = 'Body with searchable context and Unicode: 修复描述 🐱\n\n    Indented example';
+            const description = `${subject}\n\n${body}`;
+            repo.describe(description);
+
+            await promptForRevision(ui, jj, { revisionQuery: '@' });
+
+            expect(ui.quickPickCalls[0].items).toEqual([
+                expect.objectContaining({
+                    description: subject,
+                    detail: body,
+                    value: repo.getWorkingCopyId(),
+                }),
+            ]);
+            expect(ui.quickPickCalls[0].options).toMatchObject({
+                matchOnDescription: true,
+                matchOnDetail: true,
+            });
+        });
+
+        it.each([
+            '',
+            'Subject only',
+            'Subject only\n\n',
+        ])('omits details for descriptions without a body: %j', async (description) => {
+            repo.describe(description);
+
+            await promptForRevision(ui, jj, { revisionQuery: '@' });
+
+            expect(ui.quickPickCalls[0].items[0]).toMatchObject({
+                description: description.split('\n')[0] || '(no description set)',
+                detail: undefined,
+            });
+        });
+
         it('returns customValue if user typed a revision not in the list', async () => {
             ui.showQuickPick = vi.fn().mockResolvedValue({
                 customValue: 'main@origin',
