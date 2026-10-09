@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { z } from 'zod';
-import { JjBookmarkSchema, JjStatusEntrySchema } from '../../jj-schemas';
+import { JjBookmarkSchema, JjStatusEntrySchema, JjTagSchema } from '../../jj-schemas';
 
 export const CommitDetailsToHostMessageSchema = z.discriminatedUnion('type', [
     z.object({ type: z.literal('webviewLoaded') }),
@@ -65,7 +65,7 @@ export const CommitDetailsPayloadSchema = z.object({
         })
         .optional(),
     bookmarks: z.array(JjBookmarkSchema).optional(),
-    tags: z.array(z.string()).optional(),
+    tags: z.array(JjTagSchema).optional(),
     titleWidthRuler: z.number().optional(),
     bodyWidthRuler: z.number().optional(),
     minChangeIdLength: z.number().optional(),

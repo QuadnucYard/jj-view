@@ -127,9 +127,12 @@ export const LOG_ENTRY_SCHEMA: Record<string, JjTemplateField> = {
         },
     },
     tags: {
-        type: 'stringArray',
+        type: 'array',
         expr: 'tags',
-        itemExpr: 'item.name()',
+        itemSchema: {
+            name: { type: 'json', expr: 'item.name()' },
+            remote: { type: 'nullable', expr: 'item.remote()', valueExpr: 'item.remote()' },
+        },
     },
     is_immutable: { type: 'raw', expr: 'immutable' },
     is_current_working_copy: { type: 'raw', expr: 'current_working_copy' },
@@ -162,6 +165,11 @@ export const LOG_ENTRY_SCHEMA: Record<string, JjTemplateField> = {
 // Schema for JjBookmark
 export const BOOKMARK_SCHEMA: Record<string, JjTemplateField> = {
     name: { type: 'string', expr: 'name' },
+    remote: { type: 'nullable', expr: 'remote', valueExpr: 'remote' },
+};
+
+export const TAG_SCHEMA: Record<string, JjTemplateField> = {
+    name: { type: 'json', expr: 'name' },
     remote: { type: 'nullable', expr: 'remote', valueExpr: 'remote' },
 };
 

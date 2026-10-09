@@ -524,6 +524,18 @@ export class TestRepo {
         this.exec(['git', 'remote', 'add', name, url]);
     }
 
+    tagMove(name: string, revision: string) {
+        this.exec(['tag', 'set', name, '-r', revision, '--allow-move']);
+    }
+
+    fetchTags(remote: string) {
+        this.exec(['git', 'fetch', '--remote', remote, '--tag', '*']);
+    }
+
+    trackTag(name: string, remote: string) {
+        this.exec(['tag', 'track', `${name}@${remote}`]);
+    }
+
     getBookmarks(revision: string): string[] {
         const output = this.exec([
             'log',

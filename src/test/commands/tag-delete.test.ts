@@ -5,10 +5,11 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { deleteTagCommand } from '../../core/commands/tag-delete';
+import { createDeleteTagPayload } from '../../core/commands/tag-payload';
 import type { JjRepository } from '../../core/jj-repository';
 import { JjService, NO_OP_LOGGER } from '../../core/jj-service';
 import { FakeCommandContext } from '../fake-host-environment';
-import { TestRepo } from '../test-repo';
+import { ScopedTestRepo, TestRepo } from '../test-repo';
 import { createMock } from '../test-utils';
 
 describe('deleteTagCommand', () => {
@@ -32,13 +33,37 @@ describe('deleteTagCommand', () => {
         vi.clearAllMocks();
     });
 
+    test('offers only local tags in the deletion picker', async () => {
+        using remote = new ScopedTestRepo();
+        remote.init();
+        remote.writeFile('remote.txt', 'release');
+        remote.describe('remote tag target');
+        remote.tag('remote-only', '@');
+        repo.addRemote('origin', remote.path);
+        repo.fetchTags('origin');
+        repo.trackTag('remote-only', 'origin');
+        await jj.deleteTag('remote-only');
+        repo.tag('local-only', '@');
+        expect(await jj.getTags()).toContainEqual({ name: 'remote-only', remote: 'origin' });
+        await deleteTagCommand(ctx, {});
+        expect(ctx.host.ui.quickPickCalls[0].items).toEqual([{ label: 'local-only', value: 'local-only' }]);
+    });
+
+    test('ignores deletion payloads from remote tags without touching the local tag', async () => {
+        repo.tag('release', '@');
+        const payload = createDeleteTagPayload([{ tagName: 'release', isRemoteTag: true, changeId: 'inherited' }]);
+        await deleteTagCommand(ctx, payload);
+        expect((await jj.getTags()).map((tag) => tag.name)).toContain('release');
+        expect(mockJjRepo.refresh).not.toHaveBeenCalled();
+    });
+
     test('deletes specified tag directly from payload', async () => {
         repo.tag('feature-1', '@');
-        expect(await jj.getTags()).toContain('feature-1');
+        expect((await jj.getTags()).map((tag) => tag.name)).toContain('feature-1');
 
         await deleteTagCommand(ctx, { tagName: 'feature-1' });
 
-        expect(await jj.getTags()).not.toContain('feature-1');
+        expect((await jj.getTags()).map((tag) => tag.name)).not.toContain('feature-1');
         expect(mockJjRepo.refresh).toHaveBeenCalledWith({ reason: 'after tag delete' });
         expect(ctx.host.commands.executedCommands).toContainEqual({ commandId: 'jj-view.refreshGraph', args: [] });
         expect(ctx.host.ui.infoMessages[0]).toContain('Deleted tag "feature-1".');
@@ -52,8 +77,8 @@ describe('deleteTagCommand', () => {
 
         await deleteTagCommand(ctx, {});
 
-        expect(await jj.getTags()).not.toContain('feature-1');
-        expect(await jj.getTags()).toContain('feature-2');
+        expect((await jj.getTags()).map((tag) => tag.name)).not.toContain('feature-1');
+        expect((await jj.getTags()).map((tag) => tag.name)).toContain('feature-2');
         expect(mockJjRepo.refresh).toHaveBeenCalledWith({ reason: 'after tag delete' });
         expect(ctx.host.commands.executedCommands).toContainEqual({ commandId: 'jj-view.refreshGraph', args: [] });
     });
@@ -71,7 +96,7 @@ describe('deleteTagCommand', () => {
 
         await deleteTagCommand(ctx, {});
 
-        expect(await jj.getTags()).toContain('feature-1');
+        expect((await jj.getTags()).map((tag) => tag.name)).toContain('feature-1');
         expect(mockJjRepo.refresh).not.toHaveBeenCalled();
     });
 

@@ -12,6 +12,12 @@ export const JjBookmarkSchema = z.object({
 });
 export type JjBookmark = z.infer<typeof JjBookmarkSchema>;
 
+export const JjTagSchema = z.object({
+    name: z.string(),
+    remote: z.string().nullable().optional(),
+});
+export type JjTag = z.infer<typeof JjTagSchema>;
+
 export const JjWorkspaceSchema = z.object({
     /** The name of the Jujutsu workspace. */
     name: z.string(),
@@ -175,7 +181,7 @@ export const JjLogEntrySchema = z.object({
     /** Bookmarks pointing to this revision. */
     bookmarks: z.array(JjBookmarkSchema).default([]),
     /** Tags pointing to this revision. */
-    tags: z.array(z.string()).optional(),
+    tags: z.array(JjTagSchema).optional(),
     /** Names of the working copies using this revision. */
     working_copies: z.array(z.string()).optional(),
     /** Whether this revision is the current working copy. */

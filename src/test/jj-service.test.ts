@@ -884,8 +884,8 @@ log = "none()"
 
         expect(log.tags).toBeDefined();
         expect(Array.isArray(log.tags)).toBe(true);
-        expect(log.tags).toContain('test-tag-1');
-        expect(log.tags).toContain('test-tag-2');
+        expect(log.tags?.map((tag) => tag.name)).toContain('test-tag-1');
+        expect(log.tags?.map((tag) => tag.name)).toContain('test-tag-2');
         expect(log.tags?.length).toBe(2);
     });
 
@@ -1427,6 +1427,37 @@ log = "none()"
         expect(deleted?.status).toBe('deleted');
     });
 
+    test('preserves remote tag identity separately from a same-name local tag', async () => {
+        using remote = new ScopedTestRepo();
+        remote.init();
+        remote.writeFile('release.txt', 'remote content');
+        remote.describe('remote tag target');
+        const remoteId = remote.getChangeId('@');
+        remote.tag('release', '@');
+        repo.addRemote('origin', remote.path);
+        repo.fetchTags('origin');
+        repo.trackTag('release', 'origin');
+        const localId = repo.getChangeId('@');
+        await jjService.moveTag('release', localId);
+
+        const [remoteLog] = await jjService.getLog({ revision: remoteId, omitChanges: true });
+        expect(remoteLog.tags).toContainEqual({ name: 'release', remote: 'origin' });
+        const [localLog] = await jjService.getLog({ revision: localId });
+        expect(localLog.tags).toContainEqual({ name: 'release', remote: null });
+        const tags = await jjService.getTags();
+        expect(tags).toContainEqual({ name: 'release', remote: null });
+        expect(tags).toContainEqual({ name: 'release', remote: 'origin' });
+
+        const cached = await jjService.getLogEntry(remoteLog.commit_id);
+        if (cached?.tags?.[0]) {
+            cached.tags[0].remote = 'changed';
+        }
+        expect((await jjService.getLogEntry(remoteLog.commit_id))?.tags).toContainEqual({
+            name: 'release',
+            remote: 'origin',
+        });
+    });
+
     test('moveTag moves an existing tag backwards and deleteTag removes it', async () => {
         const [parent] = await jjService.getLog({ revision: '@' });
         await jjService.new({ message: 'tag target' });
@@ -1436,12 +1467,12 @@ log = "none()"
         await jjService.moveTag('release', parent.change_id);
         const [parentLog] = await jjService.getLog({ revision: parent.change_id });
         const [childLog] = await jjService.getLog({ revision: child.change_id });
-        expect(parentLog.tags).toContain('release');
-        expect(childLog.tags).not.toContain('release');
-        expect(await jjService.getTags()).toContain('release');
+        expect(parentLog.tags).toContainEqual({ name: 'release', remote: null });
+        expect(childLog.tags).not.toContainEqual({ name: 'release', remote: null });
+        expect(await jjService.getTags()).toContainEqual({ name: 'release', remote: null });
 
         await jjService.deleteTag('release');
-        expect(await jjService.getTags()).not.toContain('release');
+        expect(await jjService.getTags()).not.toContainEqual({ name: 'release', remote: null });
     });
 
     test('moveBookmark moves bookmark to revision', async () => {

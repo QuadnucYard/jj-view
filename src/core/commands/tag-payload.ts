@@ -10,7 +10,7 @@ export function createDeleteTagPayload(args: unknown[]): DeleteTagPayload {
             return { tagName: arg };
         }
         if (typeof arg === 'object' && arg !== null && 'tagName' in arg && typeof arg.tagName === 'string') {
-            return { tagName: arg.tagName };
+            return { tagName: arg.tagName, isRemoteTag: 'isRemoteTag' in arg && arg.isRemoteTag === true };
         }
     }
     return {};

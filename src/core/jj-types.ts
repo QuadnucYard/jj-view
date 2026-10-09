@@ -13,6 +13,7 @@ import type {
     JjFileChangeWithStats,
     JjLogEntry,
     JjStatusEntry,
+    JjTag,
     JjWorkspace,
 } from './jj-schemas';
 
@@ -26,6 +27,7 @@ export type {
     JjFileChangeWithStats,
     JjLogEntry,
     JjStatusEntry,
+    JjTag,
     JjWorkspace,
     ToggleableCommitAction,
 };

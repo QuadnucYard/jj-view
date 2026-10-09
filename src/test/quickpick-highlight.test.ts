@@ -143,7 +143,7 @@ describe('QuickPick Commit Highlight', () => {
                     { name: 'main', remote: null },
                     { name: 'feature', remote: 'origin' },
                 ],
-                tags: ['v1.0.0'],
+                tags: [{ name: 'v1.0.0' }],
             }),
             createMock<JjLogEntry>({
                 change_id: 'qutpskpt/0',
@@ -152,7 +152,7 @@ describe('QuickPick Commit Highlight', () => {
                 is_current_working_copy: false,
                 parents: [],
                 bookmarks: [{ name: 'old-main', remote: null }],
-                tags: [],
+                tags: [{ name: 'v1.0.0', remote: 'origin' }],
             }),
         ];
 
@@ -178,6 +178,8 @@ describe('QuickPick Commit Highlight', () => {
         expect(findMatchingCommit(dummyCommits, 'old-m')?.change_id).toBe('qutpskpt/0');
         // Tag name
         expect(findMatchingCommit(dummyCommits, 'v1.0.0')?.change_id).toBe('kkmpptxz');
+        expect(findMatchingCommit(dummyCommits, 'v1.0.0@origin')?.change_id).toBe('qutpskpt/0');
+        expect(findMatchingCommit(dummyCommits, 'V1.0.0@ORI')?.change_id).toBe('qutpskpt/0');
         // Working copy @ and parent @-
         expect(findMatchingCommit(dummyCommits, '@')?.change_id).toBe('kkmpptxz');
         expect(findMatchingCommit(dummyCommits, '@-')?.change_id).toBe('qutpskpt/0');

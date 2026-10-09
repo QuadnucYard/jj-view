@@ -910,7 +910,7 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             },
             {
                 command: 'jj-view.deleteTag',
-                when: "webviewSection == 'jj.tag'",
+                when: "webviewSection == 'jj.tag' && !isRemoteTag",
                 group: '3_tag@2',
             },
             {

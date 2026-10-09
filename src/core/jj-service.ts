@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import path from 'pathe';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { AsyncCache } from '../utils/async-cache';
 import { getErrorMessage } from '../utils/error-utils';
 import { type LoggerChannel, NO_OP_LOGGER } from '../utils/output-channel';
@@ -19,6 +19,7 @@ import {
     JjFileChangeSchema,
     type JjFileChangeWithStats,
     JjLogEntrySchema,
+    JjTagSchema,
     JjWorkspaceSchema,
 } from './jj-schemas';
 import {
@@ -27,9 +28,10 @@ import {
     buildLogTemplate,
     CHANGE_ID_EXPR,
     LOG_ENTRY_SCHEMA,
+    TAG_SCHEMA,
     WORKSPACE_SCHEMA,
 } from './jj-template-builder';
-import type { JjBookmark, JjLogEntry, JjStatusEntry, JjWorkspace } from './jj-types';
+import type { JjBookmark, JjLogEntry, JjStatusEntry, JjTag, JjWorkspace } from './jj-types';
 import type { SelectionRange } from './patch-helper';
 import * as PatchHelper from './patch-helper';
 
@@ -466,12 +468,13 @@ export class JjService {
         });
     }
 
-    async getTags(): Promise<string[]> {
-        const output = await this.run('tag', ['list', '-T', "'{\"name\":' ++ name.escape_json() ++ '}\n'"], {
+    async getTags(): Promise<JjTag[]> {
+        const template = `if(present, ${buildLogTemplate(TAG_SCHEMA)}, "")`;
+        const output = await this.run('tag', ['list', '--all-remotes', '-T', template], {
             useCachedSnapshot: true,
             label: 'getTags',
         });
-        return this._parseJsonLines(output, z.object({ name: z.string() }), 'getTags').map((tag) => tag.name);
+        return this._parseJsonLines(output, JjTagSchema, 'getTags');
     }
 
     async moveTag(name: string, toRevision: string): Promise<string> {
@@ -525,7 +528,7 @@ export class JjService {
             committer: { ...entry.committer },
             parents: entry.parents.map((p) => ({ ...p })),
             bookmarks: entry.bookmarks.map((b) => ({ ...b })),
-            tags: entry.tags ? [...entry.tags] : undefined,
+            tags: entry.tags?.map((tag) => ({ ...tag })),
             working_copies: entry.working_copies ? [...entry.working_copies] : undefined,
             nearest_visible_ancestors: entry.nearest_visible_ancestors
                 ? [...entry.nearest_visible_ancestors]

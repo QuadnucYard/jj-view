@@ -7,15 +7,19 @@ import { showJjError } from '../host/ui-helpers';
 
 export interface DeleteTagPayload {
     tagName?: string;
+    isRemoteTag?: boolean;
 }
 
 export async function deleteTagCommand(ctx: CommandContext, payload?: DeleteTagPayload): Promise<void> {
+    if (payload?.isRemoteTag) {
+        return;
+    }
     let tagName = payload?.tagName?.trim() || undefined;
 
     if (!tagName) {
         try {
             const tags = await ctx.host.ui.withProgress('Fetching tags...', () => ctx.repo.jj.getTags());
-            const items = tags.map((name) => ({ label: name, value: name }));
+            const items = tags.filter((tag) => !tag.remote).map((tag) => ({ label: tag.name, value: tag.name }));
 
             if (items.length === 0) {
                 await ctx.host.ui.showInformation('No tags to delete.');

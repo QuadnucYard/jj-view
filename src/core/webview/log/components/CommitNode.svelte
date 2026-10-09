@@ -377,13 +377,13 @@ const hasActiveBookmarkAlready = $derived(
                 {#each commit.working_copies || [] as workspace (workspace)}
                     <WorkspacePill {workspace} />
                 {/each}
-                {#each commit.tags || [] as tag (tag)}
+                {#each commit.tags || [] as tag (JSON.stringify([tag.name, tag.remote ?? null]))}
                     <DraggableTag {tag} {dragManager} />
                 {/each}
 
-                {#if isOver && activeTag && !commit.tags?.includes(activeTag)}
+                {#if isOver && activeTag && !commit.tags?.some((tag) => tag.name === activeTag && !tag.remote)}
                     <TagPill
-                        tag={activeTag}
+                        tag={{ name: activeTag }}
                         style="opacity: 0.7; background-color: transparent; border: 1px dashed var(--vscode-charts-green); box-shadow: inset 0 0 8px var(--vscode-charts-green);"
                     />
                 {/if}

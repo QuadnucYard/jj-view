@@ -3,26 +3,33 @@
   SPDX-License-Identifier: Apache-2.0
 -->
 <script lang="ts">
+import type { JjTag } from '../../../jj-types';
 import { TagPill } from '../../common/components';
 import type { DragManager } from '../drag-manager.svelte';
 
 interface Props {
-    tag: string;
+    tag: JjTag;
     dragManager: DragManager;
 }
 
 let { tag, dragManager }: Props = $props();
 
-const isDragging = $derived(dragManager.activeDragItem?.type === 'tag' && dragManager.activeDragItem.name === tag);
+const isDragging = $derived(dragManager.activeDragItem?.type === 'tag' && dragManager.activeDragItem.name === tag.name);
 </script>
 
+{#if tag.remote}
+    <span use:dragManager.draggable={() => null}>
+        <TagPill {tag} />
+    </span>
+{:else}
 <span
     class="draggable-tag"
     class:is-dragging={isDragging}
-    use:dragManager.draggable={() => ({ type: 'tag', name: tag })}
+    use:dragManager.draggable={() => ({ type: 'tag', name: tag.name })}
 >
     <TagPill {tag} />
 </span>
+{/if}
 
 <style>
     .draggable-tag {

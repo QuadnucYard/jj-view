@@ -24,7 +24,7 @@ describe('CommitDetailsApp SSR Rendering', () => {
                 timestamp: '2026-09-14T19:00:00Z',
             },
             bookmarks: [{ name: 'main' }],
-            tags: ['v1.0.0'],
+            tags: [{ name: 'v1.0.0' }],
             minChangeIdLength: 4,
         };
 

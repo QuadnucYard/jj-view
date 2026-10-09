@@ -120,7 +120,7 @@ describe('commit-tooltip', () => {
                 author: undefined,
                 committer: undefined,
                 bookmarks: [{ name: 'main' }, { name: 'push-feat', remote: 'origin' }],
-                tags: ['v1.2.0'],
+                tags: [{ name: 'v1.2.0' }, { name: 'v1.2.0', remote: 'origin' }],
                 working_copies: ['default'],
             });
             const tooltip = formatCommitTooltip(commit);
@@ -130,7 +130,7 @@ describe('commit-tooltip', () => {
                     'ᴄʜᴀɴɢᴇ: 𝗸𝗸𝗆𝗉𝗉𝗍𝗑𝗓𝖺𝖻',
                     'ᴄᴏᴍᴍɪᴛ: 𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫',
                     'ʙᴏᴏᴋᴍᴀʀᴋs: main, push-feat@origin',
-                    'ᴛᴀɢs: v1.2.0',
+                    'ᴛᴀɢs: v1.2.0, v1.2.0@origin',
                     'ᴡᴏʀᴋsᴘᴀᴄᴇs: default',
                     DIVIDER,
                     'feat: add feature',

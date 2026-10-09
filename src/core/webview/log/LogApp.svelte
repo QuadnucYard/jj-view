@@ -46,7 +46,9 @@ const sender = useRpcSender<LogViewToHostMessage>(LogViewToHostMessageSchema);
 
 const dragManager = new DragManager((item, target, modifier) => {
     if (item.type === 'tag') {
-        const sourceCommit = commits.find((commit) => commit.tags?.includes(item.name));
+        const sourceCommit = commits.find((commit) =>
+            commit.tags?.some((tag) => tag.name === item.name && !tag.remote),
+        );
         if (!sourceCommit || sourceCommit.change_id === target.changeId) {
             return;
         }
@@ -336,7 +338,7 @@ function handleGraphAction(action: string, payload: ActionPayload) {
                     </div>
                 {:else if dragManager.activeDragItem.type === 'tag'}
                     <div class="bookmark-preview-wrapper">
-                        <TagPill tag={dragManager.activeDragItem.name} />
+                        <TagPill tag={{ name: dragManager.activeDragItem.name }} />
                     </div>
                 {:else if dragManager.activeDragItem.type === 'commit'}
                     <CommitDragPreview

@@ -142,7 +142,9 @@ export function formatCommitTooltip(commit: JjLogEntry): string {
         lines.push(`ʙᴏᴏᴋᴍᴀʀᴋs: ${bms}`);
     }
     if (commit.tags && commit.tags.length > 0) {
-        lines.push(`ᴛᴀɢs: ${commit.tags.join(', ')}`);
+        lines.push(
+            `ᴛᴀɢs: ${commit.tags.map((tag) => (tag.remote ? `${tag.name}@${tag.remote}` : tag.name)).join(', ')}`,
+        );
     }
     if (commit.working_copies && commit.working_copies.length > 0) {
         lines.push(`ᴡᴏʀᴋsᴘᴀᴄᴇs: ${commit.working_copies.join(', ')}`);

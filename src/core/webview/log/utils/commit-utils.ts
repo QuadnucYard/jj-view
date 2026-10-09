@@ -117,7 +117,9 @@ export function findMatchingCommit(commits: readonly JjLogEntry[], query: string
     }
 
     // 4. Exact match on tag
-    const exactTag = commits.find((c) => c.tags?.some((t) => t.toLowerCase() === q));
+    const exactTag = commits.find((c) =>
+        c.tags?.some((t) => t.name.toLowerCase() === q || (t.remote && `${t.name}@${t.remote}`.toLowerCase() === q)),
+    );
     if (exactTag) {
         return exactTag;
     }
@@ -169,7 +171,12 @@ export function findMatchingCommit(commits: readonly JjLogEntry[], query: string
     }
 
     // 10. Prefix match on tag
-    const prefixTag = commits.find((c) => c.tags?.some((t) => t.toLowerCase().startsWith(q)));
+    const prefixTag = commits.find((c) =>
+        c.tags?.some(
+            (t) =>
+                t.name.toLowerCase().startsWith(q) || (t.remote && `${t.name}@${t.remote}`.toLowerCase().startsWith(q)),
+        ),
+    );
     if (prefixTag) {
         return prefixTag;
     }

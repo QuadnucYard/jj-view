@@ -9,7 +9,7 @@ import {
     type CommitDetailsHostToWebviewMessage,
     CommitDetailsHostToWebviewMessageSchema,
 } from '../../host/ipc/commit-details-schemas';
-import type { JjBookmark, JjStatusEntry } from '../../jj-types';
+import type { JjBookmark, JjStatusEntry, JjTag } from '../../jj-types';
 import { BasePill, BookmarkPill, PersonInfo, TagPill } from '../common/components';
 import { useRpcReceiver } from '../transport/bridge.svelte';
 
@@ -28,7 +28,7 @@ interface Props {
     author?: { name: string; email: string; timestamp: string };
     committer?: { name: string; email: string; timestamp: string };
     bookmarks?: JjBookmark[];
-    tags?: string[];
+    tags?: JjTag[];
     titleWidthRuler?: number;
     bodyWidthRuler?: number;
     minChangeIdLength?: number;
@@ -413,7 +413,7 @@ function getFileColor(status: string, conflicted?: boolean): string {
             {#each bookmarks as b (`${b.name}-${b.remote}`)}
                 <BookmarkPill bookmark={b} />
             {/each}
-            {#each tags as t (t)}
+            {#each tags as t (JSON.stringify([t.name, t.remote ?? null]))}
                 <TagPill tag={t} />
             {/each}
         </div>
