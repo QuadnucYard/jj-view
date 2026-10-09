@@ -164,13 +164,8 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
         }
     },
     setSelection: ({ ids }) => {
-        const newIds = new Set(ids);
-        selectedCommitIds = newIds;
-        const hasImmutable = hasImmutableSelection(newIds, commits);
-        void sender.selectionChange({
-            commitIds: ids,
-            hasImmutableSelection: hasImmutable,
-        });
+        // Host-driven selections are authoritative updates, not new user input.
+        selectedCommitIds = new Set(ids);
     },
     setHighlight: ({ changeId }) => {
         rawHighlightQuery = changeId;

@@ -95,6 +95,44 @@ describe('LogViewController Domain Unit Tests', () => {
         expect(selections.length).toBe(1);
     });
 
+    test('does not echo rapid graph selections back to the webview', async () => {
+        const selections: (readonly string[])[] = [];
+        controller.onDidChangeSelection((ids) => selections.push(ids));
+        postedMessages.length = 0;
+
+        await Promise.all(
+            [['c1'], ['c2'], ['c3'], []].map((commitIds) =>
+                controller.handleMessage({
+                    type: 'selectionChange',
+                    payload: { commitIds, hasImmutableSelection: false },
+                }),
+            ),
+        );
+
+        expect(controller.selectedCommitIds).toEqual([]);
+        expect(selections).toEqual([['c1'], ['c2'], ['c3'], []]);
+        expect(postedMessages).not.toContainEqual(expect.objectContaining({ type: 'setSelection' }));
+        expect(fakeHost.commands.contextKeys.get(JjContextKey.SelectionAllowAbandon)).toBe(false);
+        expect(fakeHost.commands.contextKeys.get(JjContextKey.SelectionAllowMerge)).toBe(false);
+    });
+
+    test('broadcasts host selections and accepts graph selection context without echoing', async () => {
+        postedMessages.length = 0;
+        controller.setSelectedCommits(['c1', 'c2']);
+        expect(postedMessages).toEqual([{ type: 'setSelection', payload: { ids: ['c1', 'c2'] } }]);
+        postedMessages.length = 0;
+
+        await controller.handleMessage({
+            type: 'selectionChange',
+            payload: { commitIds: ['c1', 'c2'], hasImmutableSelection: true },
+        });
+        expect(postedMessages).toEqual([]);
+        expect(fakeHost.commands.contextKeys.get(JjContextKey.SelectionAllowAbandon)).toBe(false);
+        expect(fakeHost.commands.contextKeys.get(JjContextKey.SelectionAllowMerge)).toBe(true);
+
+        controller.setSelectedCommits([]);
+        expect(postedMessages).toEqual([{ type: 'setSelection', payload: { ids: [] } }]);
+    });
     test('toggles commit actions and filters invalid action strings', () => {
         expect(controller.hiddenActions).toEqual(['squash']);
 

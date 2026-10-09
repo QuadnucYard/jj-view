@@ -300,24 +300,30 @@ export class LogViewController implements Disposable {
     }
 
     public setSelectedCommits(commitIds: readonly string[], hasImmutableSelection?: boolean): void {
+        if (this._updateSelectedCommits(commitIds, hasImmutableSelection)) {
+            this._receiver.sender.setSelection({ ids: [...commitIds] });
+        }
+    }
+
+    private _updateSelectedCommits(commitIds: readonly string[], hasImmutableSelection?: boolean): boolean {
         if (
             this._selectedCommitIds.length === commitIds.length &&
             this._selectedCommitIds.every((id, idx) => id === commitIds[idx])
         ) {
             this._updateSelectionContextKeys(this._selectedCommitIds, hasImmutableSelection);
-            return;
+            return false;
         }
 
         this._selectedCommitIds = [...commitIds];
         this._updateSelectionContextKeys(this._selectedCommitIds, hasImmutableSelection);
 
         if (this._disposed) {
-            return;
+            return false;
         }
 
         this._onDidChangeSelection.fire(this._selectedCommitIds);
 
-        this._receiver.sender.setSelection({ ids: [...commitIds] });
+        return true;
     }
 
     public setHighlightedCommit(changeId: string | undefined): void {
@@ -685,7 +691,8 @@ export class LogViewController implements Disposable {
                 },
                 selectionChange: async (msg) => {
                     const hasImmutable = Boolean(msg.hasImmutableSelection);
-                    this.setSelectedCommits(msg.commitIds, hasImmutable);
+                    // The graph already applied this selection; sending it back can replay stale clicks.
+                    this._updateSelectedCommits(msg.commitIds, hasImmutable);
                     this._options?.onSelectionChange?.(msg.commitIds);
                 },
             },
