@@ -137,6 +137,35 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         );
     });
 
+    test('pins the details editor before opening a changed file diff', async () => {
+        const vscodeApi = await import('vscode');
+        const changeId = testRepo.getChangeId('@');
+        const document = new JjCommitDocument(
+            createCommitDetailsUri({ repoRoot: testRepo.path, changeId, title: `Commit: ${changeId}` }),
+            changeId,
+            Uri.file(testRepo.path),
+        );
+        const client = createCommitDetailsClient();
+        await provider.resolveCustomEditor(
+            document,
+            client.panel,
+            createMock<vscode.CancellationToken>({ isCancellationRequested: false }),
+        );
+        await client.sender.webviewLoaded();
+        const executeCommand = vi.mocked(vscodeApi.commands.executeCommand);
+        executeCommand.mockClear();
+
+        await client.sender.openDiff({
+            changeId,
+            file: { path: 'file.txt', status: 'added' },
+            isImmutable: false,
+        });
+
+        expect(executeCommand).toHaveBeenNthCalledWith(1, 'workbench.action.keepEditor');
+        expect(executeCommand.mock.calls[1]?.[0]).toBe('vscode.diff');
+        expect(provider.getController(changeId, Uri.file(testRepo.path))?.isDisposed).toBe(false);
+    });
+
     test('concurrent refresh during custom editor resolution does not dispose the webview panel', async () => {
         const changeId = testRepo.getChangeId('@');
         const repoRoot = Uri.file(testRepo.path);

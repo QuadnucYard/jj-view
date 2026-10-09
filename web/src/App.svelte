@@ -633,6 +633,7 @@ $effect(() => {
 
 $effect(() => {
     if (activeTab?.view.type === 'commit-details' && scmModel && webHostEnv) {
+        const detailsTabId = activeTab.id;
         const changeId = activeTab.view.changeId;
         const bridge = createInMemoryBridge(async (msg) => {
             if (commitDetailsController) {
@@ -647,6 +648,7 @@ $effect(() => {
                 if (!repo) {
                     return;
                 }
+                pinTab(detailsTabId);
                 const leftUri = Uri.from({
                     scheme: 'jj-view',
                     path: file.path.startsWith('/') ? file.path : `/${file.path}`,

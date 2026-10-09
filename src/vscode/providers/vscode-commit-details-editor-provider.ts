@@ -180,6 +180,7 @@ export class VsCodeCommitDetailsEditorProvider
                             workingCopyChangeId: wcChangeId,
                         });
                         if (state.command) {
+                            await vscode.commands.executeCommand('workbench.action.keepEditor');
                             await vscode.commands.executeCommand(
                                 state.command.command,
                                 ...(state.command.arguments ?? []),

@@ -280,6 +280,7 @@ test.describe('Commit Details E2E', () => {
 
             // A diff tab should open with the filename
             await waitForTab(page, /f\.txt/);
+            await expect(page.getByRole('tab', { name: new RegExp(`^Commit: ${shortId}`) })).toBeVisible();
         });
 
         test('Open Multi-File Diff from button', async () => {

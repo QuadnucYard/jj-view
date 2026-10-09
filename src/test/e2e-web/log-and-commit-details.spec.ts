@@ -85,6 +85,12 @@ test.describe('Standalone Web Log and Commit Details', () => {
         expect(labelColor).not.toBe(detailsColor);
 
         // 5. Click the changed file in Commit Details to open its diff
+        const detailsTab = page.locator('[data-testid="tab-bar-container"] .tab.active');
+        const detailsTabId = await detailsTab.getAttribute('data-testid');
+        if (!detailsTabId) {
+            throw new Error('Details tab is missing its test ID');
+        }
+        await expect(detailsTab).toHaveClass(/preview/);
         await fileRow.click();
 
         // Verify Pierre Diff Viewer opens
@@ -97,6 +103,14 @@ test.describe('Standalone Web Log and Commit Details', () => {
         const diffContainer = diffViewer.locator('[data-testid="diff-content-container"]');
         await expect(diffContainer).toBeVisible();
         await expect(diffContainer.getByText('commit 2 original')).toBeVisible({ timeout: 5000 });
+
+        // Opening a diff pins the originating details tab so it can be revisited.
+        const keptDetailsTab = page.getByTestId(detailsTabId);
+        await expect(keptDetailsTab).toBeVisible();
+        await expect(keptDetailsTab).not.toHaveClass(/preview/);
+        await keptDetailsTab.click();
+        await expect(detailsView.locator('.commit-textarea')).toHaveValue('feat: add second file');
+        await expect(fileRow).toBeVisible();
     });
 
     test('should render colorful graph lanes and allow vertical scrolling for long log history', async ({
