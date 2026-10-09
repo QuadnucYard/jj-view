@@ -14,7 +14,7 @@ import type { JjService } from '../../core/jj-service';
 import type { JjStatusEntry } from '../../core/jj-types';
 import { ScmModel, type ScmSnapshot } from '../../core/scm-model';
 import { createJjResourceState, type JjResourceState } from '../../core/scm-resource-state';
-import { getRepoRelativePath, Uri } from '../../core/uri-utils';
+import { getRepoRelativePath, toAbsoluteEditorUri, Uri } from '../../core/uri-utils';
 import type { LoggerChannel } from '../../utils/output-channel';
 import { VsCodeDecorationProvider } from './vscode-decoration-provider';
 import type { VsCodeEditFsProvider } from './vscode-edit-fs-provider';
@@ -260,15 +260,29 @@ export class VsCodeScmProvider implements vscode.Disposable {
         const resourceUri = Uri.joinPath(this._scmRootUri, entry.path).with({
             fragment: new URLSearchParams({ root, 'jj-revision': revision }).toString(),
         });
-        return createJjResourceState(entry, revision, root, {
+        const state = createJjResourceState(entry, revision, root, {
             ...options,
             resourceUri,
             workingCopyChangeId: this.scmModel.currentEntry?.change_id,
         });
+        // Relative virtual editor paths also collide with SCM tree keys. Use the
+        // physical absolute path for every diff side, including deleted files.
+        const leftUri = state.leftUri ? toAbsoluteEditorUri(state.leftUri) : undefined;
+        const rightUri = state.rightUri ? toAbsoluteEditorUri(state.rightUri) : undefined;
+        return {
+            ...state,
+            leftUri,
+            rightUri,
+            command:
+                state.command?.command === 'vscode.diff'
+                    ? { ...state.command, arguments: [leftUri, rightUri, state.diffTitle] }
+                    : state.command,
+        };
     }
 
     provideOriginalResource(uri: Uri): vscode.ProviderResult<Uri> {
-        return this.scmModel.getOriginalResourceUri(uri);
+        const originalUri = this.scmModel.getOriginalResourceUri(uri);
+        return originalUri ? toAbsoluteEditorUri(originalUri) : undefined;
     }
 
     dispose(): void {

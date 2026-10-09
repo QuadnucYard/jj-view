@@ -64,15 +64,20 @@ test.describe('SCM Pane E2E', () => {
                             : 'workbench.scm.action.setListViewMode',
                     );
                 }, viewMode);
-                for (const group of modifiedWorkingCopy ? [/ancestor B/, /Working Copy/] : [/ancestor B/]) {
+                for (const group of modifiedWorkingCopy
+                    ? [/ancestor A/, /ancestor B/, /Working Copy/]
+                    : [/ancestor A/, /ancestor B/]) {
                     const row = await expectFileInScmGroup(page, group, 'file.txt');
                     await row.click();
+                    await page.waitForTimeout(1000);
                     await expect(row).toHaveAttribute('aria-selected', 'true');
                     await hoverAndClick(
                         row,
                         row.getByRole('button', { name: 'Open File in Working Copy', exact: true }),
                     );
                     await expect(page.locator('.monaco-diff-editor')).not.toBeVisible();
+                    // Allow native SCM's queued editor-reveal work to complete before asserting.
+                    await page.waitForTimeout(1000);
                     await expect(row).toHaveAttribute('aria-selected', 'true');
                     await expect(row).toHaveClass(/focused/);
                     const editor = await vscode.evaluate((vscode) => ({
@@ -87,6 +92,143 @@ test.describe('SCM Pane E2E', () => {
                 });
             });
         }
+    }
+
+    for (const viewMode of ['list', 'tree']) {
+        test(`SCM selection stays stable across file statuses and ancestor depths in ${viewMode} view`, async ({
+            vscode,
+        }, testInfo) => {
+            testInfo.setTimeout(120000);
+            const repo = new TestRepo();
+            repo.init();
+            await buildGraph(repo, [
+                {
+                    label: 'base',
+                    files: {
+                        'modified.txt': 'base modified',
+                        'restored.txt': 'base restored',
+                        'missing.txt': 'base missing',
+                        'old-name.txt': 'base rename',
+                    },
+                },
+                {
+                    label: 'a',
+                    parents: ['base'],
+                    description: 'status ancestor A',
+                    files: {
+                        'modified.txt': 'A modified',
+                        'missing.txt': 'A missing',
+                        'old-name.txt': 'A rename',
+                        'added.txt': 'A added',
+                    },
+                },
+            ]);
+            repo.deleteFile('restored.txt');
+            repo.new(undefined, 'status ancestor B');
+            repo.writeFile('modified.txt', 'B modified');
+            repo.writeFile('missing.txt', 'B missing');
+            repo.writeFile('restored.txt', 'B restored');
+            repo.moveFile('old-name.txt', 'renamed.txt');
+            repo.new(undefined, 'status ancestor C');
+            repo.writeFile('modified.txt', 'C modified');
+            repo.writeFile('missing.txt', 'C missing');
+            repo.writeFile('restored.txt', 'C restored');
+            repo.new(undefined, 'status working copy');
+            repo.writeFile('modified.txt', 'WC modified');
+            repo.deleteFile('missing.txt');
+
+            const workspacePath =
+                process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+            const { page } = await vscode.openWorkspace({ path: workspacePath }, { 'scm.autoReveal': true });
+            await focusSCM(page);
+            await vscode.evaluate(async (vscode, _api, mode) => {
+                await vscode.commands.executeCommand(
+                    mode === 'tree' ? 'workbench.scm.action.setTreeViewMode' : 'workbench.scm.action.setListViewMode',
+                );
+            }, viewMode);
+            const cases = [
+                { group: /status ancestor C/, file: 'modified.txt', diffContent: 'C modified' },
+                { group: /status ancestor B/, file: 'modified.txt', diffContent: 'B modified' },
+                { group: /status ancestor A/, file: 'modified.txt', diffContent: 'A modified' },
+                { group: /status ancestor A/, file: 'restored.txt', diffContent: '' },
+                { group: /status ancestor B/, file: 'restored.txt', diffContent: 'B restored' },
+                { group: /status ancestor A/, file: 'added.txt', diffContent: 'A added' },
+                { group: /status ancestor B/, file: 'renamed.txt', diffContent: 'A rename' },
+                { group: /status ancestor C/, file: 'missing.txt', diffContent: 'C missing' },
+                { group: /status ancestor B/, file: 'missing.txt', diffContent: 'B missing' },
+                { group: /status ancestor A/, file: 'missing.txt', diffContent: 'A missing' },
+                { group: /Working Copy/, file: 'missing.txt', diffContent: '' },
+                { group: /Working Copy/, file: 'modified.txt', diffContent: 'WC modified' },
+            ];
+            for (const scenario of cases) {
+                const row = await expectFileInScmGroup(page, scenario.group, scenario.file);
+                await row.click();
+                await expect(page.locator('.monaco-diff-editor')).toBeVisible();
+                // Editor auto-reveal is queued after the row click.
+                await page.waitForTimeout(750);
+                await expect(row).toHaveAttribute('aria-selected', 'true');
+                await expect(row).toHaveClass(/focused/);
+                expect(await vscode.evaluate((vscode) => vscode.window.activeTextEditor?.document.getText())).toBe(
+                    scenario.diffContent,
+                );
+                await hoverAndClick(row, row.getByRole('button', { name: 'Open File in Working Copy', exact: true }));
+                await page.waitForTimeout(750);
+                await expect(row).toHaveAttribute('aria-selected', 'true');
+                await expect(row).toHaveClass(/focused/);
+                const workingFile = path.join(repo.path, scenario.file);
+                if (fs.existsSync(workingFile)) {
+                    const editor = await vscode.evaluate((vscode) => ({
+                        scheme: vscode.window.activeTextEditor?.document.uri.scheme,
+                        content: vscode.window.activeTextEditor?.document.getText(),
+                    }));
+                    expect(editor).toEqual({ scheme: 'file', content: fs.readFileSync(workingFile, 'utf8') });
+                } else {
+                    // Opening a deleted working-copy path must not recreate it or move SCM selection.
+                    expect(fs.existsSync(workingFile)).toBe(false);
+                }
+            }
+            await testInfo.attach('file-status-selection', { body: await page.screenshot(), contentType: 'image/png' });
+        });
+    }
+
+    for (const viewMode of ['list', 'tree']) {
+        test(`SCM selection stays stable for conflicted merge ancestors in ${viewMode} view`, async ({ vscode }) => {
+            const repo = new TestRepo();
+            repo.init();
+            await buildGraph(repo, [
+                { label: 'base', files: { 'conflict.txt': 'base' } },
+                { label: 'left', parents: ['base'], description: 'left branch', files: { 'conflict.txt': 'left' } },
+                { label: 'right', parents: ['base'], description: 'right branch', files: { 'conflict.txt': 'right' } },
+                { label: 'merge', parents: ['left', 'right'], description: 'conflict merge' },
+                { label: 'wc', parents: ['merge'], isCurrentWorkingCopy: true },
+            ]);
+            const workspacePath =
+                process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+            const { page } = await vscode.openWorkspace({ path: workspacePath }, { 'scm.autoReveal': true });
+            await focusSCM(page);
+            await vscode.evaluate(async (vscode, _api, mode) => {
+                await vscode.commands.executeCommand(
+                    mode === 'tree' ? 'workbench.scm.action.setTreeViewMode' : 'workbench.scm.action.setListViewMode',
+                );
+            }, viewMode);
+            for (const scenario of [
+                { group: /left branch/, merge: false },
+                { group: /right branch/, merge: false },
+                { group: /Merge Conflicts/, merge: true },
+            ]) {
+                const row = await expectFileInScmGroup(page, scenario.group, 'conflict.txt');
+                await row.click();
+                await expect(page.locator(scenario.merge ? '.merge-editor' : '.monaco-diff-editor')).toBeVisible();
+                await page.waitForTimeout(750);
+                await expect(row).toHaveAttribute('aria-selected', 'true');
+                await expect(row).toHaveClass(/focused/);
+                await hoverAndClick(row, row.getByRole('button', { name: 'Open File in Working Copy', exact: true }));
+                await page.waitForTimeout(750);
+                await expect(row).toHaveAttribute('aria-selected', 'true');
+                await expect(row).toHaveClass(/focused/);
+            }
+            expect(repo.readFile('conflict.txt')).toContain('<<<<<<<');
+        });
     }
 
     test('Displays correct groups and populates SCM input', async ({ vscode }) => {

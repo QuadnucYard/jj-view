@@ -115,6 +115,22 @@ suite('Quick Diff Integration Test', () => {
         );
     }
 
+    test('original resources use absolute editor paths and preserve base content', async () => {
+        repo.writeFile('nested/file.txt', 'base content\n');
+        repo.new();
+        repo.writeFile('nested/file.txt', 'working copy content\n');
+        await scmProvider.refresh();
+
+        assert.ok(originalProvideOriginalResource);
+        const fileUri = Uri.file(path.join(canonicalPath, 'nested/file.txt'));
+        const originalUri = await originalProvideOriginalResource.call(scmProvider, fileUri);
+        assert.ok(originalUri);
+        assert.strictEqual(originalUri.scheme, 'jj-view');
+        assert.strictEqual(originalUri.path, fileUri.path);
+        const content = await viewFileSystemProvider.readFile(originalUri);
+        assert.strictEqual(Buffer.from(content).toString(), 'base content\n');
+    });
+
     test('SCM refresh triggers content provider invalidation', async () => {
         const fileName = 'refresh-test.txt';
         repo.writeFile(fileName, 'original\n');

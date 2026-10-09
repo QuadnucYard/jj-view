@@ -21,12 +21,41 @@ import {
     isJjScheme,
     isWorkingCopyRevision,
     parseCommitDetailsUri,
+    toAbsoluteEditorUri,
     toFileUri,
     toForwardSlash,
     Uri,
 } from '../core/uri-utils';
 import './vitest-utils';
 import { createVscodeMock } from './vscode-mock';
+
+describe('absolute editor URI paths', () => {
+    it.each([
+        'added',
+        'modified',
+        'deleted',
+        'renamed',
+        'copied',
+    ] as const)('preserves %s diff semantics and path resolution across revisions', (status) => {
+        const root = path.resolve('/workspace/repo');
+        const entry: JjStatusEntry = { path: 'nested/file.txt', oldPath: 'nested/old.txt', status };
+        for (const revision of ['@', 'ancestor-1', 'ancestor-2']) {
+            for (const editable of [false, true]) {
+                const { leftUri, rightUri } = createDiffUris(entry, revision, root, { editable });
+                for (const uri of [leftUri, rightUri]) {
+                    const editorUri = toAbsoluteEditorUri(uri);
+                    expect(editorUri.scheme).toBe(uri.scheme);
+                    expect(editorUri.fragment).toBe(uri.fragment);
+                    expect(editorUri.query).toBe(uri.query);
+                    expect(editorUri.path).toBe(toFileUri(uri).path);
+                    expect(getFsPathFromUri(editorUri)).toBeSameFsPath(getFsPathFromUri(uri));
+                    expect(getRepoRelativePath(editorUri, root)).toBe(getRepoRelativePath(uri, root));
+                    expect(toAbsoluteEditorUri(editorUri)).toEqual(editorUri);
+                }
+            }
+        }
+    });
+});
 
 // Mock vscode
 vi.mock('vscode', () => createVscodeMock({}));

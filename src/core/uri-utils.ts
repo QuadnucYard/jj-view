@@ -265,6 +265,15 @@ export function toFileUri(uri: Uri): Uri {
     return Uri.file(getFsPathFromUri(uri));
 }
 
+/** Preserve virtual revision metadata while using an absolute editor path. */
+export function toAbsoluteEditorUri(uri: Uri): Uri {
+    if (!isJjScheme(uri)) {
+        return uri;
+    }
+    const fileUri = toFileUri(uri);
+    return uri.with({ authority: fileUri.authority, path: fileUri.path });
+}
+
 const canonicalRootCache = new LruCache<string, string>({ maxEntries: 100 });
 
 export type RealpathSyncFn = (filePath: string) => string;
@@ -319,6 +328,10 @@ function resolveNearestRealPath(fsPath: string): string | undefined {
  */
 export function getRepoRelativePath(uri: Uri, root: string): string {
     if (uri.scheme !== 'file' && uri.scheme !== 'jj-scm') {
+        const params = getUriParams(uri);
+        if (params.has('root') || params.has('repoRoot')) {
+            return getRepoRelativePath(toFileUri(uri), root);
+        }
         return uri.path.startsWith('/') ? uri.path : `/${uri.path}`;
     }
 

@@ -89,6 +89,18 @@ describe('VsCodeDecorationProvider', () => {
         expect(result?.tooltip).toBe('Modified');
     });
 
+    it('should retain decorations for absolute revision editor paths', async () => {
+        const { createRevisionUri, toAbsoluteEditorUri } = await import('../core/uri-utils');
+        provider = createProvider(createMock<JjService>({}), '/ws');
+        provider.updateScmAndTrackedStatus(
+            new Map([['/nested/file.txt', { path: 'nested/file.txt', status: 'modified' }]]),
+        );
+
+        const uri = toAbsoluteEditorUri(createRevisionUri('/ws', 'nested/file.txt', 'ancestor'));
+        const result = await provider.provideFileDecoration(uri, createMock<vscode.CancellationToken>());
+        expect(result?.tooltip).toBe('Modified');
+    });
+
     it('should NOT fire event when decorations are identical', () => {
         provider = createProvider(createMock<JjService>({}), '/ws');
         fireSpy = vi.spyOn(

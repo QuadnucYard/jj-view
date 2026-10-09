@@ -2,7 +2,6 @@
  * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
-import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { type Event, EventEmitter } from '../core/host/events';
 import type {
@@ -30,7 +29,14 @@ import type {
 } from '../core/host/host-environment';
 import type { HostSystem } from '../core/host/host-system';
 import { NodeHostSystem } from '../core/host/node-host-system';
-import { createCommitDetailsUri, getFsPathFromUri, getUriParams, toFileUri, type Uri } from '../core/uri-utils';
+import {
+    createCommitDetailsUri,
+    getFsPathFromUri,
+    getUriParams,
+    toAbsoluteEditorUri,
+    toFileUri,
+    type Uri,
+} from '../core/uri-utils';
 import { formatCommitTitle } from '../utils/jj-utils';
 import type { LoggerChannel } from '../utils/output-channel';
 import { getJjViewConfig } from './config-utils';
@@ -253,9 +259,15 @@ export class VsCodeHostConfig implements HostConfig {
 
 export class VsCodeHostNavigation implements HostNavigation {
     async openDiff(leftUri: Uri, rightUri: Uri, title: string, options?: HostOpenOptions): Promise<void> {
-        await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title, {
-            preview: options?.preview,
-        });
+        await vscode.commands.executeCommand(
+            'vscode.diff',
+            toAbsoluteEditorUri(leftUri),
+            toAbsoluteEditorUri(rightUri),
+            title,
+            {
+                preview: options?.preview,
+            },
+        );
     }
 
     async openMultiDiff(
@@ -264,7 +276,11 @@ export class VsCodeHostNavigation implements HostNavigation {
         _options?: HostOpenOptions,
     ): Promise<void> {
         // vscode.changes expects 3-tuples of [labelUri, leftUri, rightUri] where labelUri is the target resource URI
-        const changes = resources.map((r) => [r.rightUri, r.leftUri, r.rightUri]);
+        const changes = resources.map((r) => {
+            const leftUri = toAbsoluteEditorUri(r.leftUri);
+            const rightUri = toAbsoluteEditorUri(r.rightUri);
+            return [rightUri, leftUri, rightUri];
+        });
         await vscode.commands.executeCommand('vscode.changes', title, changes);
     }
 
@@ -274,8 +290,7 @@ export class VsCodeHostNavigation implements HostNavigation {
         const params = getUriParams(resourceUri);
         const root = params.get('root') || params.get('repoRoot');
         const rootParam = root ? `&root=${encodeURIComponent(root)}` : '';
-        const relativePath = vscode.workspace.asRelativePath(toFileUri(resourceUri));
-        const virtualPath = path.posix.join('/', relativePath);
+        const virtualPath = toFileUri(resourceUri).path;
 
         const baseUri = resourceUri.with({
             scheme: 'jj-merge-output',
@@ -350,7 +365,7 @@ export class VsCodeHostNavigation implements HostNavigation {
     }
 
     async openFile(uri: Uri, options?: HostOpenOptions): Promise<void> {
-        await openFileWithSync(uri, options?.sourceUri, options);
+        await openFileWithSync(toAbsoluteEditorUri(uri), options?.sourceUri, options);
     }
 
     async openFolder(folderUri: Uri, forceNewWindow?: boolean): Promise<void> {

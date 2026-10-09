@@ -7,7 +7,7 @@ import path from 'pathe';
 import { type Disposable, type Event, EventEmitter } from './host/events';
 import type { JjService } from './jj-service';
 import type { JjStatusEntry } from './jj-types';
-import { Uri } from './uri-utils';
+import { getRepoRelativePath, Uri } from './uri-utils';
 
 export interface JjDecoration {
     badge?: string;
@@ -131,7 +131,7 @@ export class JjDecorationModel implements Disposable {
             return undefined;
         }
         if (uri.scheme === 'jj-edit' || uri.scheme === 'jj-view') {
-            const rel = uri.path;
+            const rel = getRepoRelativePath(uri, this.workspaceRoot);
             return rel.startsWith('/') ? rel.substring(1) : rel;
         }
 
