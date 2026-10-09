@@ -60,6 +60,8 @@ import {
     squashSelectionIntoAncestorCommand,
     squashSelectionIntoParentCommand,
 } from '../../../src/core/commands/squash-selection';
+import { deleteTagCommand } from '../../../src/core/commands/tag-delete';
+import { createDeleteTagPayload } from '../../../src/core/commands/tag-payload';
 import { undoCommand } from '../../../src/core/commands/undo';
 import { uploadCommand } from '../../../src/core/commands/upload';
 import { uploadStackCommand } from '../../../src/core/commands/upload-stack';
@@ -318,6 +320,7 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         advanceBookmarkAndUploadCommand,
     );
     registerWithPayload('jj-view.deleteBookmark', createDeleteBookmarkPayload, deleteBookmarkCommand);
+    registerWithPayload('jj-view.deleteTag', createDeleteTagPayload, deleteTagCommand);
     registerWithPayload('jj-view.upload', createUploadPayload, uploadCommand);
     registerWithPayload('jj-view.uploadStack', createUploadStackPayload, uploadStackCommand);
 

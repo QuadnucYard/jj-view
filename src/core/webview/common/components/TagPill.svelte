@@ -17,6 +17,14 @@ const backgroundColor = `color-mix(in srgb, ${accentColor}, transparent 90%)`;
 const borderColor = `color-mix(in srgb, ${accentColor}, transparent 50%)`;
 </script>
 
+<span
+    class="tag-wrapper"
+    data-vscode-context={JSON.stringify({
+        webviewSection: 'jj.tag',
+        tagName: tag,
+        preventDefaultContextMenuItems: true,
+    })}
+>
 <BasePill
     title={tag}
     style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
@@ -24,6 +32,13 @@ const borderColor = `color-mix(in srgb, ${accentColor}, transparent 50%)`;
     <span aria-hidden="true" class="codicon codicon-tag"></span>
     <span class="pill-label">{tag}</span>
 </BasePill>
+</span>
 
-
-
+<style>
+    .tag-wrapper {
+        display: inline-flex;
+        align-items: center;
+        min-width: 22px;
+        flex-shrink: 1;
+    }
+</style>

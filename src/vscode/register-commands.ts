@@ -59,6 +59,8 @@ import {
     squashSelectionIntoAncestorCommand,
     squashSelectionIntoParentCommand,
 } from '../core/commands/squash-selection';
+import { deleteTagCommand } from '../core/commands/tag-delete';
+import { createDeleteTagPayload } from '../core/commands/tag-payload';
 import { undoCommand } from '../core/commands/undo';
 import { uploadCommand } from '../core/commands/upload';
 import { uploadStackCommand } from '../core/commands/upload-stack';
@@ -304,6 +306,7 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             advanceBookmarkAndUploadCommand,
         ),
         registerCommandWithPayload('jj-view.deleteBookmark', createDeleteBookmarkPayload, deleteBookmarkCommand),
+        registerCommandWithPayload('jj-view.deleteTag', createDeleteTagPayload, deleteTagCommand),
         registerCommandWithPayload('jj-view.showDetails', createShowDetailsPayload, showDetailsCommand),
         registerCommandWithPayload('jj-view.openMergeEditor', createOpenMergeEditorPayload, openMergeEditorCommand),
         registerCommandWithPayload('jj-view.absorb', createAbsorbPayload, absorbCommand),

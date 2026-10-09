@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import path from 'pathe';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { AsyncCache } from '../utils/async-cache';
 import { getErrorMessage } from '../utils/error-utils';
 import { type LoggerChannel, NO_OP_LOGGER } from '../utils/output-channel';
@@ -463,6 +463,28 @@ export class JjService {
         return this.run('bookmark', ['set', name, '-r', toRevision, '--allow-backwards'], {
             isMutation: true,
             label: 'moveBookmark',
+        });
+    }
+
+    async getTags(): Promise<string[]> {
+        const output = await this.run('tag', ['list', '-T', "'{\"name\":' ++ name.escape_json() ++ '}\n'"], {
+            useCachedSnapshot: true,
+            label: 'getTags',
+        });
+        return this._parseJsonLines(output, z.object({ name: z.string() }), 'getTags').map((tag) => tag.name);
+    }
+
+    async moveTag(name: string, toRevision: string): Promise<string> {
+        return this.run('tag', ['set', name, '-r', toRevision, '--allow-move'], {
+            isMutation: true,
+            label: 'moveTag',
+        });
+    }
+
+    async deleteTag(name: string): Promise<string> {
+        return this.run('tag', ['delete', name], {
+            isMutation: true,
+            label: 'deleteTag',
         });
     }
 

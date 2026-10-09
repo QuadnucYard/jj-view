@@ -286,6 +286,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(cloud-upload)',
         },
         {
+            command: 'jj-view.deleteTag',
+            title: 'Delete Tag',
+            category: 'JJ View',
+            icon: '$(trash)',
+        },
+        {
             command: 'jj-view.deleteBookmark',
             title: 'Delete Bookmark',
             category: 'JJ View',
@@ -901,6 +907,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.advanceBookmarkAndUpload',
                 when: "webviewSection == 'commit' && jj.canUpload",
                 group: '3_bookmark@1.6',
+            },
+            {
+                command: 'jj-view.deleteTag',
+                when: "webviewSection == 'jj.tag'",
+                group: '3_tag@2',
             },
             {
                 command: 'jj-view.deleteBookmark',

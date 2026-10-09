@@ -1427,6 +1427,23 @@ log = "none()"
         expect(deleted?.status).toBe('deleted');
     });
 
+    test('moveTag moves an existing tag backwards and deleteTag removes it', async () => {
+        const [parent] = await jjService.getLog({ revision: '@' });
+        await jjService.new({ message: 'tag target' });
+        const [child] = await jjService.getLog({ revision: '@' });
+        repo.tag('release', '@');
+
+        await jjService.moveTag('release', parent.change_id);
+        const [parentLog] = await jjService.getLog({ revision: parent.change_id });
+        const [childLog] = await jjService.getLog({ revision: child.change_id });
+        expect(parentLog.tags).toContain('release');
+        expect(childLog.tags).not.toContain('release');
+        expect(await jjService.getTags()).toContain('release');
+
+        await jjService.deleteTag('release');
+        expect(await jjService.getTags()).not.toContain('release');
+    });
+
     test('moveBookmark moves bookmark to revision', async () => {
         // Setup: Create a bookmark on initial commit
         repo.bookmark('test-bookmark', '@');

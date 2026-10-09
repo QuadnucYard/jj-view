@@ -12,7 +12,7 @@ import {
     LogViewToHostMessageSchema,
 } from '../../host/ipc/log-view-schemas';
 import type { JjLogEntry } from '../../jj-types';
-import { BookmarkPill } from '../common/components';
+import { BookmarkPill, TagPill } from '../common/components';
 import { useRpcReceiver, useRpcSender } from '../transport/bridge.svelte';
 import CommitDragPreview from './components/CommitDragPreview.svelte';
 import CommitGraph from './components/CommitGraph.svelte';
@@ -45,6 +45,15 @@ function scrollToCommit(changeId: string) {
 const sender = useRpcSender<LogViewToHostMessage>(LogViewToHostMessageSchema);
 
 const dragManager = new DragManager((item, target, modifier) => {
+    if (item.type === 'tag') {
+        const sourceCommit = commits.find((commit) => commit.tags?.includes(item.name));
+        if (!sourceCommit || sourceCommit.change_id === target.changeId) {
+            return;
+        }
+        void sender.moveTag({ tag: item.name, targetChangeId: target.changeId });
+        return;
+    }
+
     if (item.type === 'bookmark') {
         const bookmarkName = item.name;
         const bookmarkRemote = item.remote;
@@ -324,6 +333,10 @@ function handleGraphAction(action: string, payload: ActionPayload) {
                                 remote: dragManager.activeDragItem.remote,
                             }}
                         />
+                    </div>
+                {:else if dragManager.activeDragItem.type === 'tag'}
+                    <div class="bookmark-preview-wrapper">
+                        <TagPill tag={dragManager.activeDragItem.name} />
                     </div>
                 {:else if dragManager.activeDragItem.type === 'commit'}
                     <CommitDragPreview

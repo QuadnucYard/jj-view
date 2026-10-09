@@ -619,6 +619,14 @@ export class LogViewController implements Disposable {
                         await jj.resolve(msg.path);
                     });
                 },
+                moveTag: async (msg) => {
+                    if (!msg.tag || !msg.targetChangeId) {
+                        return;
+                    }
+                    await this.executeJjMutation('Moving tag...', 'Failed to move tag', (jj) =>
+                        jj.moveTag(msg.tag, msg.targetChangeId),
+                    );
+                },
                 moveBookmark: async (msg) => {
                     if (!msg.bookmark || !msg.targetChangeId) {
                         return;

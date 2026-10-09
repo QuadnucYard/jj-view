@@ -75,6 +75,10 @@ export const LogViewToHostMessageSchema = z.discriminatedUnion('type', [
         payload: z.object({ path: z.string() }),
     }),
     z.object({
+        type: z.literal('moveTag'),
+        payload: z.object({ tag: z.string(), targetChangeId: z.string() }),
+    }),
+    z.object({
         type: z.literal('moveBookmark'),
         payload: z.object({ bookmark: z.string(), targetChangeId: z.string() }),
     }),

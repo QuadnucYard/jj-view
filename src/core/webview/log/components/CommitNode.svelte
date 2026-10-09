@@ -10,6 +10,7 @@ import type { DragManager } from '../drag-manager.svelte';
 import { formatCommitTooltip } from '../utils/commit-tooltip';
 import { computeCommitActions } from '../utils/commit-utils';
 import DraggableBookmark from './DraggableBookmark.svelte';
+import DraggableTag from './DraggableTag.svelte';
 
 interface Props {
     commit: JjLogEntry;
@@ -159,6 +160,8 @@ const commitTooltip = $derived(formatCommitTooltip(commit));
 const [idPart, offsetPart] = $derived(commit.change_id.split('/'));
 const shortId = $derived(commit.change_id_shortest);
 const hasShortId = $derived(shortId && idPart.startsWith(shortId));
+
+const activeTag = $derived(dragManager.activeDragItem?.type === 'tag' ? dragManager.activeDragItem.name : null);
 
 // Active dragging bookmark check
 const isDraggingBookmark = $derived(dragManager.activeDragItem?.type === 'bookmark');
@@ -375,8 +378,15 @@ const hasActiveBookmarkAlready = $derived(
                     <WorkspacePill {workspace} />
                 {/each}
                 {#each commit.tags || [] as tag (tag)}
-                    <TagPill {tag} />
+                    <DraggableTag {tag} {dragManager} />
                 {/each}
+
+                {#if isOver && activeTag && !commit.tags?.includes(activeTag)}
+                    <TagPill
+                        tag={activeTag}
+                        style="opacity: 0.7; background-color: transparent; border: 1px dashed var(--vscode-charts-green); box-shadow: inset 0 0 8px var(--vscode-charts-green);"
+                    />
+                {/if}
 
                 {#if isOver && dragManager.activeDragItem?.type === 'commit'}
                     <span

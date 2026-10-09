@@ -5,7 +5,10 @@
 import type { CommitDragData } from './components/CommitDragPreview';
 import { type DragActionModifier, type PressedKeysState, resolveActiveModifier } from './utils/drag-modifiers';
 
-export type DragItem = { type: 'bookmark'; name: string; remote?: string } | (CommitDragData & { type: 'commit' });
+export type DragItem =
+    | { type: 'tag'; name: string }
+    | { type: 'bookmark'; name: string; remote?: string }
+    | (CommitDragData & { type: 'commit' });
 
 export interface DropTarget {
     type: 'commit';
