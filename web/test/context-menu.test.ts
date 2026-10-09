@@ -133,6 +133,24 @@ describe('Generalized Context Menu System', () => {
 
             const allCommands = groups.flatMap((g) => g.items.map((i) => i.command));
             expect(allCommands).toContain('jj-view.deleteBookmark');
+            expect(allCommands).toContain('jj-view.pushRef');
+            expect(allCommands).toContain('jj-view.pushRefToRemote');
+        });
+
+        it('offers both push actions on local tags and keeps remote badges read-only', () => {
+            for (const [section, remoteKey] of [
+                ['jj.tag', 'isRemoteTag'],
+                ['jj.bookmark', 'isRemoteBookmark'],
+            ]) {
+                for (const isRemote of [false, true]) {
+                    const context = rootContext.createScoped({ webviewSection: section, [remoteKey]: isRemote });
+                    const commands = menuRegistry
+                        .getContextActions('webview/context', context)
+                        .flatMap((group) => group.items.map((item) => item.command));
+                    expect(commands.includes('jj-view.pushRef')).toBe(!isRemote);
+                    expect(commands.includes('jj-view.pushRefToRemote')).toBe(!isRemote);
+                }
+            }
         });
 
         it('returns workspace actions when webviewSection is workspace', () => {

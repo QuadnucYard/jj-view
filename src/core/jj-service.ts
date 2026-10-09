@@ -448,9 +448,14 @@ export class JjService {
         }
     }
 
-    async getBookmarks(options: { revision?: string } = {}): Promise<JjBookmark[]> {
-        const template = buildLogTemplate(BOOKMARK_SCHEMA);
+    async getBookmarks(options: { revision?: string; allRemotes?: boolean } = {}): Promise<JjBookmark[]> {
+        const template = options.allRemotes
+            ? `if(present, ${buildLogTemplate(BOOKMARK_SCHEMA)}, "")`
+            : buildLogTemplate(BOOKMARK_SCHEMA);
         const args = ['list', '-T', template];
+        if (options.allRemotes) {
+            args.push('--all-remotes');
+        }
         if (options.revision) {
             args.push('-r', options.revision);
         }
@@ -465,6 +470,13 @@ export class JjService {
         return this.run('bookmark', ['set', name, '-r', toRevision, '--allow-backwards'], {
             isMutation: true,
             label: 'moveBookmark',
+        });
+    }
+
+    async trackRef(kind: 'bookmark' | 'tag', name: string, remote: string): Promise<string> {
+        return this.run(kind, ['track', `${JSON.stringify(name)}@${JSON.stringify(remote)}`], {
+            isMutation: true,
+            label: 'trackRef',
         });
     }
 

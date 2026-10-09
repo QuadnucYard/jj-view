@@ -286,6 +286,18 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(cloud-upload)',
         },
         {
+            command: 'jj-view.pushRef',
+            title: 'Push',
+            category: 'JJ View',
+            icon: '$(cloud-upload)',
+        },
+        {
+            command: 'jj-view.pushRefToRemote',
+            title: 'Push to Remote...',
+            category: 'JJ View',
+            icon: '$(cloud-upload)',
+        },
+        {
             command: 'jj-view.deleteTag',
             title: 'Delete Tag',
             category: 'JJ View',
@@ -487,6 +499,14 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
     ],
     menus: {
         commandPalette: [
+            {
+                command: 'jj-view.pushRef',
+                when: 'false',
+            },
+            {
+                command: 'jj-view.pushRefToRemote',
+                when: 'false',
+            },
             {
                 command: 'jj-view.copyRelativePath',
                 when: 'false',
@@ -907,6 +927,16 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.advanceBookmarkAndUpload',
                 when: "webviewSection == 'commit' && jj.canUpload",
                 group: '3_bookmark@1.6',
+            },
+            {
+                command: 'jj-view.pushRef',
+                when: "(webviewSection == 'jj.bookmark' && !isRemoteBookmark) || (webviewSection == 'jj.tag' && !isRemoteTag)",
+                group: '2_push@1',
+            },
+            {
+                command: 'jj-view.pushRefToRemote',
+                when: "(webviewSection == 'jj.bookmark' && !isRemoteBookmark) || (webviewSection == 'jj.tag' && !isRemoteTag)",
+                group: '2_push@2',
             },
             {
                 command: 'jj-view.deleteTag',

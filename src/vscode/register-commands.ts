@@ -2,6 +2,7 @@
  * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
+
 import * as vscode from 'vscode';
 import { abandonCommand } from '../core/commands/abandon';
 import { abandonDescendantsCommand } from '../core/commands/abandon-descendants';
@@ -39,6 +40,7 @@ import { newCommand } from '../core/commands/new';
 import { newAfterCommand } from '../core/commands/new-after';
 import { newBeforeCommand } from '../core/commands/new-before';
 import { openChangesCommand, openFileCommand } from '../core/commands/open';
+import { createPushRefPayload, pushRefCommand, pushRefToRemoteCommand } from '../core/commands/push-ref';
 import { rebaseOntoSelectedCommand } from '../core/commands/rebase';
 import { redoCommand } from '../core/commands/redo';
 import { refreshCommand } from '../core/commands/refresh';
@@ -306,6 +308,8 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             advanceBookmarkAndUploadCommand,
         ),
         registerCommandWithPayload('jj-view.deleteBookmark', createDeleteBookmarkPayload, deleteBookmarkCommand),
+        registerCommandWithPayload('jj-view.pushRef', createPushRefPayload, pushRefCommand),
+        registerCommandWithPayload('jj-view.pushRefToRemote', createPushRefPayload, pushRefToRemoteCommand),
         registerCommandWithPayload('jj-view.deleteTag', createDeleteTagPayload, deleteTagCommand),
         registerCommandWithPayload('jj-view.showDetails', createShowDetailsPayload, showDetailsCommand),
         registerCommandWithPayload('jj-view.openMergeEditor', createOpenMergeEditorPayload, openMergeEditorCommand),

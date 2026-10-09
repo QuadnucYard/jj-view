@@ -40,6 +40,7 @@ import { newCommand } from '../../../src/core/commands/new';
 import { newAfterCommand } from '../../../src/core/commands/new-after';
 import { newBeforeCommand } from '../../../src/core/commands/new-before';
 import { openChangesCommand, openFileCommand } from '../../../src/core/commands/open';
+import { createPushRefPayload, pushRefCommand, pushRefToRemoteCommand } from '../../../src/core/commands/push-ref';
 import { rebaseOntoSelectedCommand } from '../../../src/core/commands/rebase';
 import { redoCommand } from '../../../src/core/commands/redo';
 import { refreshCommand } from '../../../src/core/commands/refresh';
@@ -320,6 +321,8 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         advanceBookmarkAndUploadCommand,
     );
     registerWithPayload('jj-view.deleteBookmark', createDeleteBookmarkPayload, deleteBookmarkCommand);
+    registerWithPayload('jj-view.pushRef', createPushRefPayload, pushRefCommand);
+    registerWithPayload('jj-view.pushRefToRemote', createPushRefPayload, pushRefToRemoteCommand);
     registerWithPayload('jj-view.deleteTag', createDeleteTagPayload, deleteTagCommand);
     registerWithPayload('jj-view.upload', createUploadPayload, uploadCommand);
     registerWithPayload('jj-view.uploadStack', createUploadStackPayload, uploadStackCommand);
