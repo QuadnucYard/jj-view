@@ -269,13 +269,19 @@ export class VsCodeScmProvider implements vscode.Disposable {
         // physical absolute path for every diff side, including deleted files.
         const leftUri = state.leftUri ? toAbsoluteEditorUri(state.leftUri) : undefined;
         const rightUri = state.rightUri ? toAbsoluteEditorUri(state.rightUri) : undefined;
-        return {
+        const editorState = {
             ...state,
             leftUri,
             rightUri,
+        };
+        return {
+            ...editorState,
             command:
                 state.command?.command === 'vscode.diff'
-                    ? { ...state.command, arguments: [leftUri, rightUri, state.diffTitle] }
+                    ? rightUri?.scheme === 'file'
+                        ? // Resolve Git ownership at click time, including repositories opened later.
+                          { ...state.command, command: 'jj-view.openChanges', arguments: [editorState] }
+                        : { ...state.command, arguments: [leftUri, rightUri, state.diffTitle] }
                     : state.command,
         };
     }

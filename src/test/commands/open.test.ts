@@ -22,6 +22,19 @@ describe('openFileCommand', () => {
         vi.clearAllMocks();
     });
 
+    test('passes SCM placement to navigation while opening the real file', async () => {
+        await openFileCommand(ctx, {
+            resourceUri: Uri.file('/repo/file.txt').with({ scheme: 'jj-scm', fragment: 'jj-revision=ancestor' }),
+            openBeside: true,
+        });
+        expect(ctx.host.nav.filesOpenedWithOptions).toEqual([
+            {
+                uri: Uri.file('/repo/file.txt'),
+                options: { sourceUri: undefined, openBeside: true },
+            },
+        ]);
+    });
+
     test('does nothing if no args and no resourceUri', async () => {
         await openFileCommand(ctx, {});
         expect(ctx.host.nav.filesOpened).toHaveLength(0);

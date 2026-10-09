@@ -135,10 +135,10 @@ suite('JJ SCM Provider Integration Test', () => {
 
         const { command } = workingCopyGroup.resourceStates[0];
         assert.ok(command, 'Resource state should have a command');
-        assert.strictEqual(command.command, 'vscode.diff', 'Command should be vscode.diff');
-        assert.strictEqual(command.arguments?.length, 3, 'Diff command should have 3 arguments');
+        assert.strictEqual(command.command, 'jj-view.openChanges', 'Resolve editor placement when the diff is opened');
+        assert.strictEqual(command.arguments?.length, 1, 'Diff command should carry its resource state');
 
-        const [leftUri, rightUri] = command.arguments;
+        const { leftUri, rightUri } = command.arguments[0] as JjResourceState;
         assert.strictEqual((leftUri as Uri).scheme, 'jj-view', 'Left URI scheme should be jj-view');
         assert.strictEqual(
             normalize(toFileUri(rightUri as Uri).fsPath),

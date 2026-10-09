@@ -61,6 +61,8 @@ export interface HostConfig {
 
 export interface HostOpenOptions {
     preview?: boolean;
+    /** Show the file beside its source editor and retain source focus when supported. */
+    openBeside?: boolean;
     /** Source editor whose selection and viewport should be preserved when supported. */
     sourceUri?: Uri;
 }

@@ -15,6 +15,7 @@ import { fireDidChangeActiveTextEditor, setActiveTextEditor } from '../vscode-mo
 vi.mock('vscode', async () => {
     const { createVscodeMock } = await import('../vscode-mock');
     return createVscodeMock({
+        ViewColumn: { Active: -1, Beside: -2 },
         workspace: {
             openTextDocument: vi.fn(),
         },
@@ -67,6 +68,36 @@ describe('openFileCommand', () => {
         vi.clearAllMocks();
         setActiveTextEditor(undefined);
         vscode.window.visibleTextEditors = [];
+    });
+
+    test('opens beside without activating the physical file when requested by SCM', async () => {
+        const targetUri = vscode.Uri.file('/repo/file.txt');
+        const target = setOpenTarget(targetUri, 'working copy');
+        await openFileWithSync(targetUri, undefined, { openBeside: true });
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(target.document, {
+            preview: undefined,
+            viewColumn: vscode.ViewColumn.Beside,
+            preserveFocus: true,
+        });
+    });
+
+    test('reuses a visible working-copy editor and preserves mapped selections', async () => {
+        const sourceUri = vscode.Uri.parse('jj-view:/file.txt#root=%2Frepo&revision=ancestor');
+        const targetUri = vscode.Uri.file('/repo/file.txt');
+        const selection = new vscode.Selection(1, 0, 1, 0);
+        setActiveEditor(sourceUri, 'first\nlast', selection);
+        const target = setOpenTarget(targetUri, 'first\ninserted\nlast');
+        vscode.window.visibleTextEditors = [
+            createMock<vscode.TextEditor>({ document: target.document, viewColumn: 2 }),
+        ];
+        await openFileWithSync(targetUri, sourceUri, { openBeside: true });
+        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(target.document, {
+            preview: undefined,
+            viewColumn: 2,
+            preserveFocus: true,
+            selection: new vscode.Selection(2, 0, 2, 0),
+        });
+        expect(target.selections).toEqual([new vscode.Selection(2, 0, 2, 0)]);
     });
 
     test('does nothing if no args and no active text editor', async () => {

@@ -28,6 +28,99 @@ import {
 } from './e2e-helpers';
 
 test.describe('SCM Pane E2E', () => {
+    for (const viewMode of ['list', 'tree']) {
+        for (const openDiffOnClick of [true, false]) {
+            test(`Working copy opens retain JJ selection with Git also visible in ${viewMode} view with openDiffOnClick ${openDiffOnClick}`, async ({
+                vscode,
+            }) => {
+                const repo = new TestRepo();
+                repo.init();
+                await buildGraph(repo, [
+                    { label: 'a', description: 'mixed ancestor A', files: { 'file.txt': 'A' } },
+                    { label: 'b', parents: ['a'], description: 'mixed ancestor B', files: { 'file.txt': 'B' } },
+                    { label: 'wc', parents: ['b'], files: { 'file.txt': 'WC' }, isCurrentWorkingCopy: true },
+                ]);
+                const workspacePath =
+                    process.platform === 'win32'
+                        ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase())
+                        : repo.path;
+                const { page } = await vscode.openWorkspace(
+                    { path: workspacePath },
+                    {
+                        'git.enabled': true,
+                        'scm.autoReveal': true,
+                        'scm.repositories.selectionMode': 'multiple',
+                        'jj-view.openDiffOnClick': openDiffOnClick,
+                    },
+                );
+                await vscode.evaluate(
+                    async (vscode, _api, root, mode) => {
+                        await vscode.extensions.getExtension('vscode.git')?.activate();
+                        await vscode.commands.executeCommand('git.openRepository', root);
+                        await vscode.commands.executeCommand('git.refresh');
+                        await vscode.commands.executeCommand(
+                            mode === 'tree'
+                                ? 'workbench.scm.action.setTreeViewMode'
+                                : 'workbench.scm.action.setListViewMode',
+                        );
+                    },
+                    workspacePath,
+                    viewMode,
+                );
+                await focusSCM(page);
+                await expect(page.getByRole('treeitem', { name: / Git$/ }).first()).toBeVisible();
+                for (const groupName of [/mixed ancestor A/, /mixed ancestor B/, /Working Copy/]) {
+                    const group = page
+                        .getByRole('treeitem', { name: groupName })
+                        .and(page.locator('[aria-level="2"]'))
+                        .first();
+                    await expect(group).toBeVisible();
+                    const row = group.locator('xpath=following-sibling::div[@role="treeitem"][1]').first();
+                    await expect(row).toHaveAttribute('aria-label', 'file.txt');
+                    await row.click();
+                    await page.waitForTimeout(1000);
+                    await expect(row).toHaveAttribute('aria-selected', 'true');
+                    const sourceUri = await vscode.evaluate(
+                        (vscode) => vscode.window.activeTextEditor?.document.uri.toString() ?? null,
+                    );
+                    if (openDiffOnClick) {
+                        await hoverAndClick(
+                            row,
+                            row.getByRole('button', { name: 'Open File in Working Copy', exact: true }),
+                        );
+                    }
+                    await page.waitForTimeout(1000);
+                    await expect(row).toHaveAttribute('aria-selected', 'true');
+                    await expect(row).toHaveClass(/focused/);
+                    const editors = await vscode.evaluate((vscode) => ({
+                        sourceUri: vscode.window.activeTextEditor?.document.uri.toString() ?? null,
+                        workingCopies: vscode.window.visibleTextEditors
+                            .filter((editor) => editor.document.uri.scheme === 'file')
+                            .map((editor) => editor.document.getText()),
+                        groups: vscode.window.tabGroups.all.length,
+                        autoReveal: vscode.workspace.getConfiguration('scm').get('autoReveal'),
+                    }));
+                    expect(editors).toEqual({ sourceUri, workingCopies: ['WC'], groups: 2, autoReveal: true });
+                }
+                // The target is the live native document: edits save to disk, not to a revision alias.
+                await vscode.evaluate(async (vscode) => {
+                    const target = vscode.window.visibleTextEditors.find(
+                        (editor) => editor.document.uri.scheme === 'file',
+                    );
+                    if (!target) {
+                        throw new Error('Working-copy editor was not opened');
+                    }
+                    const edit = new vscode.WorkspaceEdit();
+                    edit.insert(target.document.uri, new vscode.Position(0, 0), 'edited ');
+                    await vscode.workspace.applyEdit(edit);
+                    await target.document.save();
+                });
+                expect(repo.readFile('file.txt')).toBe('edited WC');
+                expect(repo.getFileContent('@-', 'file.txt')).toBe('B');
+            });
+        }
+    }
+
     for (const action of [SCM_ACTIONS.SquashFilesIntoParent, 'Restore']) {
         test(`Multi-child SCM folders offer all actions and apply ${action} to descendants`, async ({ vscode }) => {
             const repo = new TestRepo();
@@ -143,100 +236,182 @@ test.describe('SCM Pane E2E', () => {
     }
 
     for (const viewMode of ['list', 'tree']) {
-        test(`SCM selection stays stable across file statuses and ancestor depths in ${viewMode} view`, async ({
-            vscode,
-        }, testInfo) => {
-            testInfo.setTimeout(120000);
-            const repo = new TestRepo();
-            repo.init();
-            await buildGraph(repo, [
-                {
-                    label: 'base',
-                    files: {
-                        'modified.txt': 'base modified',
-                        'restored.txt': 'base restored',
-                        'missing.txt': 'base missing',
-                        'old-name.txt': 'base rename',
+        for (const gitEnabled of [false, true]) {
+            test(`SCM selection stays stable across file statuses and ancestor depths in ${viewMode} view with Git ${gitEnabled}`, async ({
+                vscode,
+            }, testInfo) => {
+                testInfo.setTimeout(120000);
+                const repo = new TestRepo();
+                repo.init();
+                await buildGraph(repo, [
+                    {
+                        label: 'base',
+                        files: {
+                            'modified.txt': 'base modified',
+                            'restored.txt': 'base restored',
+                            'missing.txt': 'base missing',
+                            'old-name.txt': 'base rename',
+                        },
                     },
-                },
-                {
-                    label: 'a',
-                    parents: ['base'],
-                    description: 'status ancestor A',
-                    files: {
-                        'modified.txt': 'A modified',
-                        'missing.txt': 'A missing',
-                        'old-name.txt': 'A rename',
-                        'added.txt': 'A added',
+                    {
+                        label: 'a',
+                        parents: ['base'],
+                        description: 'status ancestor A',
+                        files: {
+                            'modified.txt': 'A modified',
+                            'missing.txt': 'A missing',
+                            'old-name.txt': 'A rename',
+                            'added.txt': 'A added',
+                        },
                     },
-                },
-            ]);
-            repo.deleteFile('restored.txt');
-            repo.new(undefined, 'status ancestor B');
-            repo.writeFile('modified.txt', 'B modified');
-            repo.writeFile('missing.txt', 'B missing');
-            repo.writeFile('restored.txt', 'B restored');
-            repo.moveFile('old-name.txt', 'renamed.txt');
-            repo.new(undefined, 'status ancestor C');
-            repo.writeFile('modified.txt', 'C modified');
-            repo.writeFile('missing.txt', 'C missing');
-            repo.writeFile('restored.txt', 'C restored');
-            repo.new(undefined, 'status working copy');
-            repo.writeFile('modified.txt', 'WC modified');
-            repo.deleteFile('missing.txt');
+                ]);
+                repo.deleteFile('restored.txt');
+                repo.new(undefined, 'status ancestor B');
+                repo.writeFile('modified.txt', 'B modified');
+                repo.writeFile('missing.txt', 'B missing');
+                repo.writeFile('restored.txt', 'B restored');
+                repo.moveFile('old-name.txt', 'renamed.txt');
+                repo.new(undefined, 'status ancestor C');
+                repo.writeFile('modified.txt', 'C modified');
+                repo.writeFile('missing.txt', 'C missing');
+                repo.writeFile('restored.txt', 'C restored');
+                repo.new(undefined, 'status working copy');
+                repo.writeFile('modified.txt', 'WC modified');
+                repo.deleteFile('missing.txt');
 
-            const workspacePath =
-                process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
-            const { page } = await vscode.openWorkspace({ path: workspacePath }, { 'scm.autoReveal': true });
-            await focusSCM(page);
-            await vscode.evaluate(async (vscode, _api, mode) => {
-                await vscode.commands.executeCommand(
-                    mode === 'tree' ? 'workbench.scm.action.setTreeViewMode' : 'workbench.scm.action.setListViewMode',
+                const workspacePath =
+                    process.platform === 'win32'
+                        ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase())
+                        : repo.path;
+                const { page } = await vscode.openWorkspace(
+                    { path: workspacePath },
+                    {
+                        'scm.autoReveal': true,
+                        'git.enabled': gitEnabled,
+                        'scm.repositories.selectionMode': 'multiple',
+                    },
                 );
-            }, viewMode);
-            const cases = [
-                { group: /status ancestor C/, file: 'modified.txt', diffContent: 'C modified' },
-                { group: /status ancestor B/, file: 'modified.txt', diffContent: 'B modified' },
-                { group: /status ancestor A/, file: 'modified.txt', diffContent: 'A modified' },
-                { group: /status ancestor A/, file: 'restored.txt', diffContent: '' },
-                { group: /status ancestor B/, file: 'restored.txt', diffContent: 'B restored' },
-                { group: /status ancestor A/, file: 'added.txt', diffContent: 'A added' },
-                { group: /status ancestor B/, file: 'renamed.txt', diffContent: 'A rename' },
-                { group: /status ancestor C/, file: 'missing.txt', diffContent: 'C missing' },
-                { group: /status ancestor B/, file: 'missing.txt', diffContent: 'B missing' },
-                { group: /status ancestor A/, file: 'missing.txt', diffContent: 'A missing' },
-                { group: /Working Copy/, file: 'missing.txt', diffContent: '' },
-                { group: /Working Copy/, file: 'modified.txt', diffContent: 'WC modified' },
-            ];
-            for (const scenario of cases) {
-                const row = await expectFileInScmGroup(page, scenario.group, scenario.file);
-                await row.click();
-                await expect(page.locator('.monaco-diff-editor')).toBeVisible();
-                // Editor auto-reveal is queued after the row click.
-                await page.waitForTimeout(750);
-                await expect(row).toHaveAttribute('aria-selected', 'true');
-                await expect(row).toHaveClass(/focused/);
-                expect(await vscode.evaluate((vscode) => vscode.window.activeTextEditor?.document.getText())).toBe(
-                    scenario.diffContent,
-                );
-                await hoverAndClick(row, row.getByRole('button', { name: 'Open File in Working Copy', exact: true }));
-                await page.waitForTimeout(750);
-                await expect(row).toHaveAttribute('aria-selected', 'true');
-                await expect(row).toHaveClass(/focused/);
-                const workingFile = path.join(repo.path, scenario.file);
-                if (fs.existsSync(workingFile)) {
-                    const editor = await vscode.evaluate((vscode) => ({
-                        scheme: vscode.window.activeTextEditor?.document.uri.scheme,
-                        content: vscode.window.activeTextEditor?.document.getText(),
-                    }));
-                    expect(editor).toEqual({ scheme: 'file', content: fs.readFileSync(workingFile, 'utf8') });
-                } else {
-                    // Opening a deleted working-copy path must not recreate it or move SCM selection.
-                    expect(fs.existsSync(workingFile)).toBe(false);
+                await focusSCM(page);
+                if (gitEnabled) {
+                    await vscode.evaluate(async (vscode, _api, root) => {
+                        await vscode.extensions.getExtension('vscode.git')?.activate();
+                        await vscode.commands.executeCommand('git.openRepository', root);
+                        await vscode.commands.executeCommand('git.refresh');
+                    }, workspacePath);
+                    await page.getByRole('button', { name: 'Graph Section', exact: true }).click();
+                    // This larger tree virtualizes Git's row below the viewport.
+                    expect(
+                        await vscode.evaluate((vscode, _api, root) => {
+                            if (typeof root !== 'string') {
+                                throw new Error('Expected repository path');
+                            }
+                            const git = vscode.extensions.getExtension<{
+                                getAPI(version: 1): { repositories: { rootUri: { path: string } }[] };
+                            }>('vscode.git');
+                            return git?.exports
+                                .getAPI(1)
+                                .repositories.some((repo) => repo.rootUri.path === vscode.Uri.file(root).path);
+                        }, workspacePath),
+                    ).toBe(true);
                 }
-            }
-            await testInfo.attach('file-status-selection', { body: await page.screenshot(), contentType: 'image/png' });
-        });
+                await vscode.evaluate(async (vscode, _api, mode) => {
+                    await vscode.commands.executeCommand(
+                        mode === 'tree'
+                            ? 'workbench.scm.action.setTreeViewMode'
+                            : 'workbench.scm.action.setListViewMode',
+                    );
+                }, viewMode);
+                const cases = [
+                    { group: /status ancestor C/, file: 'modified.txt', diffContent: 'C modified' },
+                    { group: /status ancestor B/, file: 'modified.txt', diffContent: 'B modified' },
+                    { group: /status ancestor A/, file: 'modified.txt', diffContent: 'A modified' },
+                    { group: /status ancestor A/, file: 'restored.txt', diffContent: '' },
+                    { group: /status ancestor B/, file: 'restored.txt', diffContent: 'B restored' },
+                    { group: /status ancestor A/, file: 'added.txt', diffContent: 'A added' },
+                    { group: /status ancestor B/, file: 'renamed.txt', diffContent: 'A rename' },
+                    { group: /status ancestor C/, file: 'missing.txt', diffContent: 'C missing' },
+                    { group: /status ancestor B/, file: 'missing.txt', diffContent: 'B missing' },
+                    { group: /status ancestor A/, file: 'missing.txt', diffContent: 'A missing' },
+                    { group: /Working Copy/, file: 'missing.txt', diffContent: '' },
+                    { group: /Working Copy/, file: 'modified.txt', diffContent: 'WC modified' },
+                ];
+                for (const scenario of cases) {
+                    const row = gitEnabled
+                        ? page
+                              .locator(
+                                  `//div[@role="treeitem"][@aria-level="3"][@aria-label="${scenario.file}"][(preceding-sibling::div[@role="treeitem"][@aria-level="2"])[last()][contains(@aria-label, "${scenario.group.source}")]]`,
+                              )
+                              .first()
+                        : await expectFileInScmGroup(page, scenario.group, scenario.file);
+                    if (gitEnabled) {
+                        const scmTree = page.getByRole('tree', { name: 'Source Control Management', exact: true });
+                        await scmTree.focus();
+                        await page.keyboard.press('Home');
+                        await expect(async () => {
+                            if (!(await row.isVisible())) {
+                                await scmTree.hover();
+                                await page.mouse.wheel(0, 400);
+                            }
+                            await expect(row).toBeVisible({ timeout: 100 });
+                        }).toPass({ timeout: 10000, intervals: [100] });
+                    }
+                    await expect(row).toBeVisible();
+                    await row.click();
+                    await expect(page.locator('.monaco-diff-editor').last()).toBeVisible();
+                    // Editor auto-reveal is queued after the row click.
+                    await page.waitForTimeout(750);
+                    await expect(row).toHaveAttribute('aria-selected', 'true');
+                    await expect(row).toHaveClass(/focused/);
+                    expect(
+                        await vscode.evaluate(
+                            (vscode, _api, content) =>
+                                vscode.window.visibleTextEditors.some(
+                                    (editor) => editor.document.getText() === content,
+                                ),
+                            scenario.diffContent,
+                        ),
+                    ).toBe(true);
+                    if (!gitEnabled) {
+                        expect(
+                            await vscode.evaluate((vscode) => vscode.window.activeTextEditor?.document.getText()),
+                        ).toBe(scenario.diffContent);
+                    }
+                    await hoverAndClick(
+                        row,
+                        row.getByRole('button', { name: 'Open File in Working Copy', exact: true }),
+                    );
+                    await page.waitForTimeout(750);
+                    await expect(row).toHaveAttribute('aria-selected', 'true');
+                    await expect(row).toHaveClass(/focused/);
+                    const workingFile = path.join(repo.path, scenario.file);
+                    if (fs.existsSync(workingFile)) {
+                        const editor = await vscode.evaluate(
+                            (vscode, _api, root, file) => {
+                                if (typeof root !== 'string' || typeof file !== 'string') {
+                                    throw new Error('Expected file path');
+                                }
+                                const target = vscode.window.visibleTextEditors.find(
+                                    (editor) =>
+                                        editor.document.uri.toString() ===
+                                        vscode.Uri.joinPath(vscode.Uri.file(root), file).toString(),
+                                );
+                                return { scheme: target?.document.uri.scheme, content: target?.document.getText() };
+                            },
+                            workspacePath,
+                            scenario.file,
+                        );
+                        expect(editor).toEqual({ scheme: 'file', content: fs.readFileSync(workingFile, 'utf8') });
+                    } else {
+                        // Opening a deleted working-copy path must not recreate it or move SCM selection.
+                        expect(fs.existsSync(workingFile)).toBe(false);
+                    }
+                }
+                await testInfo.attach('file-status-selection', {
+                    body: await page.screenshot(),
+                    contentType: 'image/png',
+                });
+            });
+        }
     }
 
     for (const viewMode of ['list', 'tree']) {
@@ -800,7 +975,9 @@ test.describe('SCM Pane E2E', () => {
             { label: 'wc', parents: ['ancestor'], isCurrentWorkingCopy: true },
         ]);
 
-        const { page } = await vscode.openWorkspace(repo);
+        const workspacePath =
+            process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+        const { page } = await vscode.openWorkspace({ path: workspacePath });
 
         await focusSCM(page);
         // 1. Multi-File Diff
@@ -980,9 +1157,14 @@ test.describe('SCM Pane E2E', () => {
         ]);
         fs.unlinkSync(path.join(repo.path, 'deleted.txt'));
 
-        const { page } = await vscode.openWorkspace(repo, {
-            'jj-view.openDiffOnClick': true,
-        });
+        const workspacePath =
+            process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+        const { page } = await vscode.openWorkspace(
+            { path: workspacePath },
+            {
+                'jj-view.openDiffOnClick': true,
+            },
+        );
 
         await focusSCM(page);
 
@@ -1032,9 +1214,14 @@ test.describe('SCM Pane E2E', () => {
         ]);
         fs.unlinkSync(path.join(repo.path, 'deleted.txt'));
 
-        const { page } = await vscode.openWorkspace(repo, {
-            'jj-view.openDiffOnClick': false,
-        });
+        const workspacePath =
+            process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+        const { page } = await vscode.openWorkspace(
+            { path: workspacePath },
+            {
+                'jj-view.openDiffOnClick': false,
+            },
+        );
 
         await focusSCM(page);
 
