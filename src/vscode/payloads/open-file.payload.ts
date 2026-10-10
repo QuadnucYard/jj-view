@@ -4,8 +4,7 @@
  */
 
 import type { OpenFilePayload } from '../../core/commands/open';
-import { toFileUri, Uri } from '../../core/uri-utils';
-import { gitCanRevealFile } from '../scm-editor-options';
+import { Uri } from '../../core/uri-utils';
 import { extractActiveResourceUri } from './payload-helpers';
 
 export function createOpenFilePayload(args: unknown[]): OpenFilePayload {
@@ -13,6 +12,5 @@ export function createOpenFilePayload(args: unknown[]): OpenFilePayload {
     return {
         resourceUri,
         sourceUri: Uri.isUri(args[0]) ? args[0] : undefined,
-        ...(resourceUri?.scheme === 'jj-scm' && gitCanRevealFile(toFileUri(resourceUri)) ? { openBeside: true } : {}),
     };
 }

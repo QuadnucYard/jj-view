@@ -92,7 +92,7 @@ describe('open file payload placement', () => {
             fragment: 'jj-revision=ancestor&root=%2Frepo',
         });
         const payload = createOpenFilePayload([{ resourceUri }]);
-        expect(payload.openBeside === true).toBe(scenario.beside);
+        expect(payload.openBeside).toBeUndefined();
         expect(payload.resourceUri).toEqual(resourceUri);
         const diffPayload = createOpenChangesPayload([
             createMock<JjResourceState>({
