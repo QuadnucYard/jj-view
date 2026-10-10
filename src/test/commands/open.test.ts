@@ -22,15 +22,14 @@ describe('openFileCommand', () => {
         vi.clearAllMocks();
     });
 
-    test('passes SCM placement to navigation while opening the real file', async () => {
+    test('uses normal placement when opening the real file from SCM', async () => {
         await openFileCommand(ctx, {
             resourceUri: Uri.file('/repo/file.txt').with({ scheme: 'jj-scm', fragment: 'jj-revision=ancestor' }),
-            openBeside: true,
         });
         expect(ctx.host.nav.filesOpenedWithOptions).toEqual([
             {
                 uri: Uri.file('/repo/file.txt'),
-                options: { sourceUri: undefined, openBeside: true },
+                options: undefined,
             },
         ]);
     });
@@ -97,6 +96,16 @@ describe('openChangesCommand', () => {
     test('does nothing if no resource state', async () => {
         await openChangesCommand(ctx, {});
         expect(ctx.host.nav.diffsOpened).toHaveLength(0);
+    });
+
+    test('uses normal placement when opening a diff from SCM', async () => {
+        const leftUri = Uri.file('/repo/file.txt').with({ scheme: 'jj-view', query: 'revision=parent' });
+        const rightUri = Uri.file('/repo/file.txt');
+        const resourceState = createMock<JjResourceState>({ leftUri, rightUri, diffTitle: 'Working Copy' });
+
+        await openChangesCommand(ctx, { resourceState });
+
+        expect(ctx.host.nav.diffsOpened).toEqual([{ leftUri, rightUri, title: 'Working Copy', options: undefined }]);
     });
 
     test('does nothing if resource state has no leftUri or rightUri', async () => {

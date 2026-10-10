@@ -41,10 +41,6 @@ import { formatCommitTitle } from '../utils/jj-utils';
 import type { LoggerChannel } from '../utils/output-channel';
 import { getJjViewConfig } from './config-utils';
 import { openFileWithSync } from './open-sync';
-import { getBesideEditorOptions } from './scm-editor-options';
-
-// VS Code's internal EditorActivation enum; the public diff command omits this option.
-const EDITOR_ACTIVATION_RESTORE = 2;
 
 export class VsCodeHostUi implements HostUi {
     async showInputBox(options?: {
@@ -263,27 +259,6 @@ export class VsCodeHostConfig implements HostConfig {
 
 export class VsCodeHostNavigation implements HostNavigation {
     async openDiff(leftUri: Uri, rightUri: Uri, title: string, options?: HostOpenOptions): Promise<void> {
-        if (options?.openBeside) {
-            const placement = getBesideEditorOptions(rightUri);
-            const column = placement.viewColumn ?? vscode.ViewColumn.Beside;
-            // vscode.diff drops EditorActivation.RESTORE during option conversion.
-            // Match showTextDocument's preserveFocus behavior at the native boundary.
-            await vscode.commands.executeCommand(
-                '_workbench.diff',
-                toAbsoluteEditorUri(leftUri),
-                toAbsoluteEditorUri(rightUri),
-                title,
-                [
-                    column > 0 ? column - 1 : column,
-                    {
-                        preserveFocus: true,
-                        activation: EDITOR_ACTIVATION_RESTORE,
-                        pinned: options.preview === undefined ? undefined : !options.preview,
-                    },
-                ],
-            );
-            return;
-        }
         await vscode.commands.executeCommand(
             'vscode.diff',
             toAbsoluteEditorUri(leftUri),

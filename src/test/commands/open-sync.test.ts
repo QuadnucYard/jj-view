@@ -70,34 +70,22 @@ describe('openFileCommand', () => {
         vscode.window.visibleTextEditors = [];
     });
 
-    test('opens beside without activating the physical file when requested by SCM', async () => {
+    test('opens working-copy files with native editor placement', async () => {
         const targetUri = vscode.Uri.file('/repo/file.txt');
-        const target = setOpenTarget(targetUri, 'working copy');
-        await openFileWithSync(targetUri, undefined, { openBeside: true });
-        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(target.document, {
-            preview: undefined,
-            viewColumn: vscode.ViewColumn.Beside,
-            preserveFocus: true,
-        });
+        await openFileWithSync(targetUri);
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+            'vscode.open',
+            expect.objectContaining({ scheme: 'file', path: '/repo/file.txt' }),
+        );
     });
 
-    test('reuses a visible working-copy editor and preserves mapped selections', async () => {
-        const sourceUri = vscode.Uri.parse('jj-view:/file.txt#root=%2Frepo&revision=ancestor');
-        const targetUri = vscode.Uri.file('/repo/file.txt');
-        const selection = new vscode.Selection(1, 0, 1, 0);
-        setActiveEditor(sourceUri, 'first\nlast', selection);
-        const target = setOpenTarget(targetUri, 'first\ninserted\nlast');
-        vscode.window.visibleTextEditors = [
-            createMock<vscode.TextEditor>({ document: target.document, viewColumn: 2 }),
-        ];
-        await openFileWithSync(targetUri, sourceUri, { openBeside: true });
-        expect(vscode.window.showTextDocument).toHaveBeenCalledWith(target.document, {
+    test('opens working-copy diffs with the public native command', async () => {
+        const leftUri = vscode.Uri.parse('jj-view:///repo/file.txt?revision=parent');
+        const rightUri = vscode.Uri.file('/repo/file.txt');
+        await new VsCodeHostNavigation().openDiff(leftUri, rightUri, 'Working Copy');
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith('vscode.diff', leftUri, rightUri, 'Working Copy', {
             preview: undefined,
-            viewColumn: 2,
-            preserveFocus: true,
-            selection: new vscode.Selection(2, 0, 2, 0),
         });
-        expect(target.selections).toEqual([new vscode.Selection(2, 0, 2, 0)]);
     });
 
     test('does nothing if no args and no active text editor', async () => {

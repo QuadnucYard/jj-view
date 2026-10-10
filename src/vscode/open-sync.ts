@@ -7,7 +7,6 @@ import path from 'pathe';
 import * as vscode from 'vscode';
 import type { HostOpenOptions } from '../core/host/host-environment';
 import { getFsPathFromUri, type Uri } from '../core/uri-utils';
-import { getBesideEditorOptions } from './scm-editor-options';
 
 // Exact lines are anchors; unmatched lines retain their relative position inside the intervening hunk.
 function mapHunkLine(sourceOffset: number, sourceCount: number, targetStart: number, targetCount: number): number {
@@ -207,19 +206,11 @@ function computeOpenSync(args: unknown[], openUri: vscode.Uri): OpenSync | undef
 // converts the scheme to 'file', and strips query parameters.
 export async function openFileWithSync(uri: Uri, sourceUri?: Uri, options?: HostOpenOptions): Promise<void> {
     const targetUri = vscode.Uri.parse(uri.toString());
-    // Making the physical file active lets any visible SCM provider reveal it.
-    // SCM actions retain the source group so selection cannot jump to Git's row.
-    const placement = options?.openBeside ? getBesideEditorOptions(uri) : {};
     const args = sourceUri ? [vscode.Uri.parse(sourceUri.toString())] : [];
     const sync = computeOpenSync(args, targetUri);
     if (!sync) {
-        if (options?.openBeside) {
-            const document = await vscode.workspace.openTextDocument(targetUri);
-            await vscode.window.showTextDocument(document, { preview: options.preview, ...placement });
-            return;
-        }
         if (options) {
-            await vscode.commands.executeCommand('vscode.open', targetUri, { preview: options.preview, ...placement });
+            await vscode.commands.executeCommand('vscode.open', targetUri, { preview: options.preview });
         } else {
             await vscode.commands.executeCommand('vscode.open', targetUri);
         }
@@ -255,7 +246,6 @@ export async function openFileWithSync(uri: Uri, sourceUri?: Uri, options?: Host
     // only accepts one Range, so restore all cursors and their anchor/active direction here.
     const editor = await vscode.window.showTextDocument(document, {
         ...(options ? { preview: options.preview } : {}),
-        ...placement,
         selection: initialSelection,
     });
     editor.selections = selections;

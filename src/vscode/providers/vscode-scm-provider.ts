@@ -278,10 +278,7 @@ export class VsCodeScmProvider implements vscode.Disposable {
             ...editorState,
             command:
                 state.command?.command === 'vscode.diff'
-                    ? rightUri?.scheme === 'file'
-                        ? // Resolve Git ownership at click time, including repositories opened later.
-                          { ...state.command, command: 'jj-view.openChanges', arguments: [editorState] }
-                        : { ...state.command, arguments: [leftUri, rightUri, state.diffTitle] }
+                    ? { ...state.command, arguments: [leftUri, rightUri, state.diffTitle] }
                     : state.command,
         };
     }

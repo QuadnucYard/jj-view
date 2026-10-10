@@ -30,7 +30,7 @@ import {
 test.describe('SCM Pane E2E', () => {
     for (const viewMode of ['list', 'tree']) {
         for (const openDiffOnClick of [true, false]) {
-            test(`Working copy opens retain JJ selection with Git also visible in ${viewMode} view with openDiffOnClick ${openDiffOnClick}`, async ({
+            test(`Working copy opens reuse the active group with Git also visible in ${viewMode} view with openDiffOnClick ${openDiffOnClick}`, async ({
                 vscode,
             }) => {
                 const repo = new TestRepo();
@@ -50,6 +50,7 @@ test.describe('SCM Pane E2E', () => {
                         'git.enabled': true,
                         'scm.autoReveal': true,
                         'scm.repositories.selectionMode': 'multiple',
+                        'workbench.tree.enableStickyScroll': false,
                         'jj-view.openDiffOnClick': openDiffOnClick,
                     },
                 );
@@ -70,6 +71,9 @@ test.describe('SCM Pane E2E', () => {
                 await focusSCM(page);
                 await expect(page.getByRole('treeitem', { name: / Git$/ }).first()).toBeVisible();
                 for (const groupName of [/mixed ancestor A/, /mixed ancestor B/, /Working Copy/]) {
+                    // Git auto-reveal can scroll the virtualized tree to its physical-file row.
+                    await page.getByRole('tree', { name: 'Source Control Management', exact: true }).hover();
+                    await page.mouse.wheel(0, -1000);
                     const group = page
                         .getByRole('treeitem', { name: groupName })
                         .and(page.locator('[aria-level="2"]'))
@@ -79,28 +83,36 @@ test.describe('SCM Pane E2E', () => {
                     await expect(row).toHaveAttribute('aria-label', 'file.txt');
                     await row.click();
                     await page.waitForTimeout(1000);
-                    await expect(row).toHaveAttribute('aria-selected', 'true');
-                    const sourceUri = await vscode.evaluate(
-                        (vscode) => vscode.window.activeTextEditor?.document.uri.toString() ?? null,
+                    expect(await vscode.evaluate((vscode) => vscode.window.tabGroups.all.length)).toBe(1);
+                    const clickedContent = await vscode.evaluate((vscode) =>
+                        vscode.window.activeTextEditor?.document.getText(),
+                    );
+                    expect(clickedContent).toBe(
+                        openDiffOnClick
+                            ? groupName.source.includes('ancestor A')
+                                ? 'A'
+                                : groupName.source.includes('ancestor B')
+                                  ? 'B'
+                                  : 'WC'
+                            : 'WC',
                     );
                     if (openDiffOnClick) {
+                        await page.getByRole('tree', { name: 'Source Control Management', exact: true }).hover();
+                        await page.mouse.wheel(0, -1000);
                         await hoverAndClick(
                             row,
                             row.getByRole('button', { name: 'Open File in Working Copy', exact: true }),
                         );
                     }
                     await page.waitForTimeout(1000);
-                    await expect(row).toHaveAttribute('aria-selected', 'true');
-                    await expect(row).toHaveClass(/focused/);
                     const editors = await vscode.evaluate((vscode) => ({
-                        sourceUri: vscode.window.activeTextEditor?.document.uri.toString() ?? null,
                         workingCopies: vscode.window.visibleTextEditors
                             .filter((editor) => editor.document.uri.scheme === 'file')
                             .map((editor) => editor.document.getText()),
                         groups: vscode.window.tabGroups.all.length,
                         autoReveal: vscode.workspace.getConfiguration('scm').get('autoReveal'),
                     }));
-                    expect(editors).toEqual({ sourceUri, workingCopies: ['WC'], groups: 2, autoReveal: true });
+                    expect(editors).toEqual({ workingCopies: ['WC'], groups: 1, autoReveal: true });
                 }
                 // The target is the live native document: edits save to disk, not to a revision alias.
                 await vscode.evaluate(async (vscode) => {
@@ -117,9 +129,102 @@ test.describe('SCM Pane E2E', () => {
                 });
                 expect(repo.readFile('file.txt')).toBe('edited WC');
                 expect(repo.getFileContent('@-', 'file.txt')).toBe('B');
+
+                // Opening from SCM must also leave an existing two-group layout intact.
+                // Keep the working-copy file open and make an unrelated tab active.
+                await vscode.evaluate(async (vscode) => {
+                    await vscode.commands.executeCommand('workbench.action.splitEditorRight');
+                    await vscode.commands.executeCommand('workbench.action.files.newUntitledFile');
+                });
+                expect(await vscode.evaluate((vscode) => vscode.window.tabGroups.all.length)).toBe(2);
+                await focusSCM(page);
+                await page.getByRole('tree', { name: 'Source Control Management', exact: true }).hover();
+                await page.mouse.wheel(0, -1000);
+                const workingCopyGroup = page
+                    .getByRole('treeitem', { name: /Working Copy/ })
+                    .and(page.locator('[aria-level="2"]'))
+                    .first();
+                const workingCopyRow = workingCopyGroup
+                    .locator('xpath=following-sibling::div[@role="treeitem"][1]')
+                    .first();
+                await expect(workingCopyRow).toHaveAttribute('aria-label', 'file.txt');
+                await workingCopyRow.click();
+                await expect
+                    .poll(() =>
+                        vscode.evaluate((vscode) => ({
+                            groups: vscode.window.tabGroups.all.length,
+                            content: vscode.window.activeTextEditor?.document.getText(),
+                            diff:
+                                vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof
+                                vscode.TabInputTextDiff,
+                        })),
+                    )
+                    .toEqual({ groups: 2, content: 'edited WC', diff: openDiffOnClick });
+                if (openDiffOnClick) {
+                    await page.getByRole('tree', { name: 'Source Control Management', exact: true }).hover();
+                    await page.mouse.wheel(0, -1000);
+                    await hoverAndClick(
+                        workingCopyRow,
+                        workingCopyRow.getByRole('button', { name: 'Open File in Working Copy', exact: true }),
+                    );
+                    await expect
+                        .poll(() =>
+                            vscode.evaluate((vscode) => ({
+                                groups: vscode.window.tabGroups.all.length,
+                                file:
+                                    vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof
+                                    vscode.TabInputText,
+                                content: vscode.window.activeTextEditor?.document.getText(),
+                            })),
+                        )
+                        .toEqual({ groups: 2, file: true, content: 'edited WC' });
+                }
             });
         }
     }
+
+    test('SCM clicks respect native group locking with commit details active', async ({ vscode }) => {
+        const repo = new TestRepo();
+        repo.init();
+        await buildGraph(repo, [
+            { label: 'base', files: { 'file.txt': 'base' } },
+            { label: 'wc', parents: ['base'], files: { 'file.txt': 'WC' }, isCurrentWorkingCopy: true },
+        ]);
+        const workspacePath =
+            process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+        const { page } = await vscode.openWorkspace({ path: workspacePath }, { 'jj-view.openDiffOnClick': true });
+
+        for (const locked of [false, true]) {
+            await vscode.evaluate(async (vscode, _api, lockGroup) => {
+                await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+                await vscode.commands.executeCommand('workbench.action.joinAllGroups');
+                await vscode.commands.executeCommand('jj-view.showDetails', '@');
+                await vscode.commands.executeCommand(
+                    lockGroup ? 'workbench.action.lockEditorGroup' : 'workbench.action.unlockEditorGroup',
+                );
+            }, locked);
+            await expect
+                .poll(() =>
+                    vscode.evaluate((vscode) => {
+                        const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+                        return input instanceof vscode.TabInputCustom ? input.viewType : undefined;
+                    }),
+                )
+                .toBe('jj-view.commitDetailsEditor');
+            expect(await vscode.evaluate((vscode) => vscode.window.tabGroups.all.length)).toBe(1);
+
+            await focusSCM(page);
+            await openScmDiff(page, 'file.txt', /Working Copy/);
+            await expect
+                .poll(() =>
+                    vscode.evaluate((vscode) => ({
+                        groups: vscode.window.tabGroups.all.length,
+                        content: vscode.window.activeTextEditor?.document.getText(),
+                    })),
+                )
+                .toEqual({ groups: locked ? 2 : 1, content: 'WC' });
+        }
+    });
 
     for (const action of [SCM_ACTIONS.SquashFilesIntoParent, 'Restore']) {
         test(`Multi-child SCM folders offer all actions and apply ${action} to descendants`, async ({ vscode }) => {

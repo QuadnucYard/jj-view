@@ -9,12 +9,10 @@ import { toFileUri, type Uri } from '../uri-utils';
 export interface OpenFilePayload {
     resourceUri?: Uri;
     sourceUri?: Uri;
-    openBeside?: boolean;
 }
 
 export interface OpenChangesPayload {
     resourceState?: JjResourceState;
-    openBeside?: boolean;
 }
 
 // Opens the file on disk (working copy version).
@@ -26,10 +24,7 @@ export async function openFileCommand(ctx: CommandContext, payload?: OpenFilePay
         return;
     }
     const uri = toFileUri(resourceUri);
-    const options =
-        payload?.sourceUri || payload?.openBeside
-            ? { sourceUri: payload.sourceUri, ...(payload.openBeside ? { openBeside: true } : {}) }
-            : undefined;
+    const options = payload?.sourceUri ? { sourceUri: payload.sourceUri } : undefined;
     await ctx.host.nav.openFile(uri, options);
 }
 
@@ -40,10 +35,5 @@ export async function openChangesCommand(ctx: CommandContext, payload?: OpenChan
     if (!resourceState?.leftUri || !resourceState?.rightUri) {
         return;
     }
-    await ctx.host.nav.openDiff(
-        resourceState.leftUri,
-        resourceState.rightUri,
-        resourceState.diffTitle ?? 'Diff',
-        payload?.openBeside ? { openBeside: true } : undefined,
-    );
+    await ctx.host.nav.openDiff(resourceState.leftUri, resourceState.rightUri, resourceState.diffTitle ?? 'Diff');
 }

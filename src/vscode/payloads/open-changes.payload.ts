@@ -4,16 +4,8 @@
  */
 import type { OpenChangesPayload } from '../../core/commands/open';
 import type { JjResourceState } from '../../core/scm-resource-state';
-import { gitCanRevealFile } from '../scm-editor-options';
 
 export function createOpenChangesPayload(args: unknown[]): OpenChangesPayload {
     const resourceState = args[0] as JjResourceState | undefined;
-    return {
-        resourceState,
-        ...(resourceState?.resourceUri.scheme === 'jj-scm' &&
-        resourceState.rightUri &&
-        gitCanRevealFile(resourceState.rightUri)
-            ? { openBeside: true }
-            : {}),
-    };
+    return { resourceState };
 }
