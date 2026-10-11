@@ -61,8 +61,9 @@ import {
     squashSelectionIntoAncestorCommand,
     squashSelectionIntoParentCommand,
 } from '../../../src/core/commands/squash-selection';
+import { createTagCommand } from '../../../src/core/commands/tag-create';
 import { deleteTagCommand } from '../../../src/core/commands/tag-delete';
-import { createDeleteTagPayload } from '../../../src/core/commands/tag-payload';
+import { createCreateTagPayload, createDeleteTagPayload } from '../../../src/core/commands/tag-payload';
 import { undoCommand } from '../../../src/core/commands/undo';
 import { uploadCommand } from '../../../src/core/commands/upload';
 import { uploadStackCommand } from '../../../src/core/commands/upload-stack';
@@ -323,6 +324,7 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     registerWithPayload('jj-view.deleteBookmark', createDeleteBookmarkPayload, deleteBookmarkCommand);
     registerWithPayload('jj-view.pushRef', createPushRefPayload, pushRefCommand);
     registerWithPayload('jj-view.pushRefToRemote', createPushRefPayload, pushRefToRemoteCommand);
+    registerWithPayload('jj-view.createTag', createCreateTagPayload, createTagCommand);
     registerWithPayload('jj-view.deleteTag', createDeleteTagPayload, deleteTagCommand);
     registerWithPayload('jj-view.upload', createUploadPayload, uploadCommand);
     registerWithPayload('jj-view.uploadStack', createUploadStackPayload, uploadStackCommand);

@@ -256,6 +256,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(jj-icon-squash-into)',
         },
         {
+            command: 'jj-view.createTag',
+            title: 'Create Tag...',
+            category: 'JJ View',
+            icon: '$(tag)',
+        },
+        {
             command: 'jj-view.setBookmark',
             title: 'Set Bookmark',
             category: 'JJ View',
@@ -912,6 +918,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.newMergeChange',
                 when: "webviewSection == 'commit' && jj.canMerge",
                 group: '5_rebase@2',
+            },
+            {
+                command: 'jj-view.createTag',
+                when: "webviewSection == 'commit'",
+                group: '3_bookmark@1.1',
             },
             {
                 command: 'jj-view.setBookmark',

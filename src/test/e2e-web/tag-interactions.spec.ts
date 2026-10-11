@@ -196,3 +196,41 @@ test('collapses synchronized bookmark and tag badges and expands them when local
         { outputPath: path.join(ARTIFACT_DIR, 'collapsed-refs.gif') },
     );
 });
+
+test('creates a tag from the graph revision context menu', async ({ page, server, testRepo }) => {
+    testRepo.describe('tag creation target');
+    const revision = testRepo.getChangeId('@');
+    testRepo.new();
+    testRepo.describe('another revision');
+    await page.goto(server.serverUrl);
+    await waitForScmReady(page);
+    const target = page.locator(`.commit-row[data-change-id="${revision}"]`);
+    await recordGifFlow(
+        page,
+        async (capture) => {
+            await target.locator('.commit-desc').click({ button: 'right' });
+            const createAction = page.getByTestId('menu-item-jj-view.createTag');
+            await expect(createAction).toBeVisible();
+            await capture();
+            await createAction.click();
+            const input = page.getByTestId('quick-input-text-input');
+            await expect(input).toHaveAttribute('placeholder', 'Tag name');
+            await input.fill('release-new');
+            await capture();
+            await page.keyboard.press('Enter');
+            await expect(target.locator('.draggable-tag')).toHaveText('release-new');
+            expect(testRepo.getChangeId('release-new')).toBe(revision);
+            await capture();
+            await page.screenshot({ path: path.join(ARTIFACT_DIR, 'tag-creation.png') });
+            await target.locator('.commit-desc').click({ button: 'right' });
+            await page.getByTestId('menu-item-jj-view.createTag').click();
+            await input.fill('release-new');
+            await expect(page.getByTestId('quick-input-widget')).toContainText(
+                'A local tag with this name already exists.',
+            );
+            await page.keyboard.press('Escape');
+            await expect(target.locator('.draggable-tag')).toHaveText('release-new');
+        },
+        { outputPath: path.join(ARTIFACT_DIR, 'tag-creation.gif') },
+    );
+});

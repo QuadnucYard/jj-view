@@ -498,6 +498,13 @@ export class JjService {
         return this._parseJsonLines(output, JjTagSchema, 'getTags');
     }
 
+    async createTag(name: string, revision: string): Promise<string> {
+        return this.run('tag', ['set', '-r', revision, '--', name], {
+            isMutation: true,
+            label: 'createTag',
+        });
+    }
+
     async moveTag(name: string, toRevision: string): Promise<string> {
         return this.run('tag', ['set', name, '-r', toRevision, '--allow-move'], {
             isMutation: true,
