@@ -9,6 +9,13 @@ import { getErrorMessage } from '../utils/error-utils';
 import { type LoggerChannel, NO_OP_LOGGER } from '../utils/output-channel';
 import { type HostSystem, type ProcessExecOptions, ProcessExitError, type TrackableProcess } from './host/host-system';
 import { NodeHostSystem } from './host/node-host-system';
+import {
+    ANNOTATION_TEMPLATE,
+    JjAnnotationSchema,
+    type JjFileBlame,
+    MAX_BLAME_BYTES,
+    MAX_BLAME_LINES,
+} from './jj-blame';
 import type { IJjTrackedProcess, JjProcessTracker } from './jj-process-tracker';
 import {
     ChangesAndStatsOutputSchema,
@@ -110,6 +117,7 @@ export class JjService {
     private readonly _changesCache = new AsyncCache<string, JjStatusEntry[]>({
         clone: (entries) => entries.map((e) => ({ ...e })),
     });
+    private readonly _blameCache = new AsyncCache<string, JjFileBlame | undefined>({ maxEntries: 20 });
     private _mutationMutex: Promise<void> = Promise.resolve();
 
     constructor(
@@ -891,7 +899,7 @@ export class JjService {
         this._gitRoot = undefined;
         this._gitRootPromise = undefined;
         this._gitBlobHashCache.clear();
-        await Promise.all([this._diffCache.clear(), this._changesCache.clear()]);
+        await Promise.all([this._diffCache.clear(), this._changesCache.clear(), this._blameCache.clear()]);
     }
 
     /**
@@ -1194,6 +1202,58 @@ export class JjService {
             label: 'getWorkspaceRoot',
         });
         return output.trim();
+    }
+
+    /** Reads annotations from a pinned snapshot without snapshotting or editing the working copy. */
+    async getFileBlame(filePath: string, revision = '@'): Promise<JjFileBlame | undefined> {
+        const entry = await this.getLogEntry(revision);
+        if (!entry) {
+            return undefined;
+        }
+        const relativePath = this.toRelative(filePath).replace(/\\/g, '/');
+        const key = JSON.stringify([entry.commit_id, relativePath]);
+        return this._blameCache.getOrFetch(key, async () => {
+            // Literal filesets prevent punctuation in filenames from becoming query syntax.
+            const fileset = `file:${JSON.stringify(relativePath)}`;
+            const metadata = await this.run(
+                'file',
+                ['list', '-r', entry.commit_id, '-T', 'if(conflict, "conflict", "file")', '--', fileset],
+                { useCachedSnapshot: true, label: 'getFileBlame:tracked' },
+            );
+            if (metadata !== 'file') {
+                return undefined;
+            }
+            const content = await this.run('file', ['show', '-r', entry.commit_id, '--', fileset], {
+                useCachedSnapshot: true,
+                trim: false,
+                label: 'getFileBlame:content',
+            });
+            if (
+                content.includes('\0') ||
+                Buffer.byteLength(content, 'utf8') > MAX_BLAME_BYTES ||
+                content.split('\n').length > MAX_BLAME_LINES
+            ) {
+                return undefined;
+            }
+            const output = await this.run(
+                'file',
+                ['annotate', '-r', entry.commit_id, '-T', ANNOTATION_TEMPLATE, '--', relativePath],
+                { useCachedSnapshot: true, label: 'getFileBlame' },
+            );
+            const annotations = output.trim()
+                ? output
+                      .trim()
+                      .split('\n')
+                      .map((line) => JjAnnotationSchema.parse(JSON.parse(line)))
+                : [];
+            if (
+                annotations.some((annotation, index) => annotation.line !== index + 1) ||
+                annotations.map((annotation) => annotation.content).join('') !== content
+            ) {
+                throw new Error('JJ annotation output does not match the requested file snapshot');
+            }
+            return { commitId: entry.commit_id, content, annotations };
+        });
     }
 
     async getFileContent(

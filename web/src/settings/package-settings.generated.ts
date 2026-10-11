@@ -19,6 +19,15 @@ export interface SettingDefinition {
 
 export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
     {
+        key: 'blame.enabled',
+        title: 'Blame Enabled',
+        description:
+            'Show JJ blame at the end of the cursor line. Yields to built-in Git inline blame when both apply to the file.',
+        category: 'General',
+        type: 'boolean',
+        default: true,
+    },
+    {
         key: 'refreshDebounceMillis',
         title: 'Refresh Debounce Millis',
         description: 'Base debounce time (ms) for SCM refresh based on file events.',
@@ -196,7 +205,7 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
     {
         key: 'suppressGitColocationWarning',
         title: 'Suppress Git Colocation Warning',
-        description: 'Suppress the warning to disable the built-in Git extension in colocated repositories.',
+        description: 'Suppress Git and JJ blame coexistence guidance in colocated repositories.',
         category: 'General',
         type: 'boolean',
         default: false,

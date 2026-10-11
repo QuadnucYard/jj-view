@@ -51,6 +51,12 @@
         "configuration": {
             "title": "JJ View",
             "properties": {
+                "jj-view.blame.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "scope": "resource",
+                    "description": "Show JJ blame at the end of the cursor line. Yields to built-in Git inline blame when both apply to the file."
+                },
                 "jj-view.refreshDebounceMillis": {
                     "type": "number",
                     "default": 100,
@@ -178,7 +184,7 @@
                 "jj-view.suppressGitColocationWarning": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Suppress the warning to disable the built-in Git extension in colocated repositories."
+                    "description": "Suppress Git and JJ blame coexistence guidance in colocated repositories."
                 },
                 "jj-view.binaryPath": {
                     "type": "string",
@@ -233,6 +239,21 @@
             }
         },
         "commands": [
+            {
+                "command": "jj-view.toggleLineBlame",
+                "title": "Toggle JJ Line Blame",
+                "category": "Jujutsu"
+            },
+            {
+                "command": "jj-view.preferJjBlame",
+                "title": "Prefer JJ Blame in This Workspace",
+                "category": "Jujutsu"
+            },
+            {
+                "command": "jj-view.restoreGitBlame",
+                "title": "Restore Git Inline Blame Preference",
+                "category": "Jujutsu"
+            },
             {
                 "command": "jj-view.upload",
                 "title": "Upload",

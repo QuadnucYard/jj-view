@@ -26,6 +26,7 @@ import { resolveJjBinary } from '../utils/binary-utils';
 import { toError } from '../utils/error-utils';
 import { type LoggerChannel, OutputChannel } from '../utils/output-channel';
 import { checkGitColocation } from './git-colocation';
+import { VsCodeBlameProvider } from './providers/vscode-blame-provider';
 import { VsCodeCommentsProvider } from './providers/vscode-comments-provider';
 import { VsCodeCommitDetailsEditorProvider } from './providers/vscode-commit-details-editor-provider';
 import { VsCodeEditFsProvider } from './providers/vscode-edit-fs-provider';
@@ -162,6 +163,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         processTracker,
     );
     context.subscriptions.push(repositoryManager);
+    context.subscriptions.push(new VsCodeBlameProvider(repositoryManager, context));
 
     // Listen to authentication successes from AuthManager and re-detect provider to trigger refresh
     context.subscriptions.push(

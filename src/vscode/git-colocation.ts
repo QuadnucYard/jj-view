@@ -47,16 +47,16 @@ export async function checkGitColocation(jj: JjService): Promise<void> {
         return;
     }
 
-    const disableAction = 'Disable Git Extension';
+    const disableAction = 'Prefer JJ Blame';
     const ignoreAction = "Don't Show Again";
     const result = await vscode.window.showInformationMessage(
-        'Colocated Jujutsu and Git repository detected. We recommend disabling the built-in Git extension to avoid conflicting source control views.',
+        'Colocated Jujutsu and Git repository detected. Git source control can stay enabled. JJ line blame yields while Git inline blame is enabled; prefer JJ blame to disable only Git inline blame in this workspace.',
         disableAction,
         ignoreAction,
     );
 
     if (result === disableAction) {
-        await vscode.commands.executeCommand('workbench.action.openSettings', 'git.enabled');
+        await vscode.commands.executeCommand('jj-view.preferJjBlame');
     } else if (result === ignoreAction) {
         await updateJjViewConfig('suppressGitColocationWarning', true, vscode.ConfigurationTarget.Global);
     }

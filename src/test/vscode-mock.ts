@@ -106,6 +106,7 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
     const onDidChangeTextEditorVisibleRangesEmitter = new EventEmitter<vscode.TextEditorVisibleRangesChangeEvent>();
     const onDidChangeConfigurationEmitter = new EventEmitter<unknown>();
     const onDidSaveTextDocumentEmitter = new EventEmitter<unknown>();
+    const onDidChangeTextDocumentEmitter = new EventEmitter<vscode.TextDocumentChangeEvent>();
     const onDidCloseTextDocumentEmitter = new EventEmitter<vscode.TextDocument>();
     const onDidChangeWorkspaceFoldersEmitter = new EventEmitter<unknown>();
 
@@ -168,6 +169,10 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
     }
 
     class MarkdownString {
+        appendText(value: string): MarkdownString {
+            this.value += value;
+            return this;
+        }
         constructor(public value: string = '') {}
         appendMarkdown(value: string): MarkdownString {
             this.value += value;
@@ -215,6 +220,8 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
 
     const base: Record<string, unknown> = {
         ProgressLocation: { Notification: 15 },
+        DecorationRangeBehavior: { ClosedClosed: 1 },
+        ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
         Position,
         Range,
         Selection,
@@ -265,6 +272,7 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
             },
         },
         window: {
+            createTextEditorDecorationType: vi.fn().mockReturnValue({ dispose: vi.fn() }),
             get activeTextEditor() {
                 return activeTextEditorState;
             },
@@ -377,6 +385,7 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
             }),
             onDidChangeConfiguration: onDidChangeConfigurationEmitter.event,
             onDidSaveTextDocument: onDidSaveTextDocumentEmitter.event,
+            onDidChangeTextDocument: onDidChangeTextDocumentEmitter.event,
             onDidCloseTextDocument: onDidCloseTextDocumentEmitter.event,
 
             registerTextDocumentContentProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
@@ -394,6 +403,11 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
         },
         commands: {
             executeCommand: vi.fn(),
+            registerCommand: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+        },
+        extensions: {
+            getExtension: vi.fn(),
+            onDidChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
         },
         scm: {
             createSourceControl: vi.fn().mockImplementation((id: string, label: string, rootUri?: unknown) => {
@@ -431,6 +445,7 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
             onDidChangeTextEditorVisibleRanges: onDidChangeTextEditorVisibleRangesEmitter,
             onDidChangeConfiguration: onDidChangeConfigurationEmitter,
             onDidSaveTextDocument: onDidSaveTextDocumentEmitter,
+            onDidChangeTextDocument: onDidChangeTextDocumentEmitter,
             onDidCloseTextDocument: onDidCloseTextDocumentEmitter,
             onDidChangeWorkspaceFolders: onDidChangeWorkspaceFoldersEmitter,
         },

@@ -39,4 +39,16 @@ suite('Extension Test Suite', () => {
         const commands = await vscode.commands.getCommands(true);
         assert.ok(commands.includes('jj-view.focusDescriptionInput'), 'jj-view.focusDescriptionInput not registered');
     });
+    test('JJ blame commands should be registered on activation', async () => {
+        await vscode.extensions.getExtension('jj-view.jj-view')?.activate();
+        const commands = await vscode.commands.getCommands(true);
+        for (const command of [
+            'jj-view.toggleLineBlame',
+            'jj-view.preferJjBlame',
+            'jj-view.restoreGitBlame',
+            'jj-view.openBlameCommit',
+        ]) {
+            assert.ok(commands.includes(command), `${command} not registered`);
+        }
+    });
 });
