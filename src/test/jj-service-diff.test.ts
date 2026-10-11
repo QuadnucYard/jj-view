@@ -8,7 +8,7 @@ import * as fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { NodeHostProcess, NodeHostSystem } from '../core/host/node-host-system';
 import { JjService, NO_OP_LOGGER } from '../core/jj-service';
 import { buildGraph, TestRepo } from './test-repo';
@@ -23,7 +23,134 @@ describe('JjService Diff Tests', () => {
         jjService = new JjService(repo.path, NO_OP_LOGGER);
     });
 
-    afterEach(() => {});
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    test.each([
+        'existence check',
+        'content read',
+        'cache warming',
+        'forced replacement',
+        'overlapping invalidations',
+    ])('diff read survives invalidation during %s', async (stage) => {
+        const ids = await buildGraph(repo, [
+            { label: 'base', files: { 'file.txt': 'before\n' } },
+            { label: 'child', parents: ['base'], files: { 'file.txt': 'after\n' } },
+        ]);
+        const system = new NodeHostSystem();
+        const service = new JjService(repo.path, NO_OP_LOGGER, { system });
+        let invalidated = false;
+        const invalidate = async () => {
+            invalidated = true;
+            if (stage === 'forced replacement') {
+                await service.getDiffForRevision(ids.child.changeId, true);
+            } else if (stage === 'overlapping invalidations') {
+                await Promise.all([service.clearCache(), service.clearCache()]);
+            } else {
+                await service.clearCache();
+            }
+        };
+
+        if (stage === 'cache warming') {
+            const exec = system.process.execFile.bind(system.process);
+            vi.spyOn(system.process, 'execFile').mockImplementation(async (file, args, options) => {
+                try {
+                    return await exec(file, args, options);
+                } finally {
+                    if (!invalidated && args.includes('diffedit')) {
+                        await invalidate();
+                    }
+                }
+            });
+        } else {
+            await service.getDiffForRevision(ids.child.changeId);
+            if (stage === 'content read') {
+                const read = system.fs.readTextFile.bind(system.fs);
+                vi.spyOn(system.fs, 'readTextFile').mockImplementation(async (file) => {
+                    if (!invalidated && file.endsWith('file.txt')) {
+                        await invalidate();
+                    }
+                    return read(file);
+                });
+            } else {
+                const exists = system.fs.exists.bind(system.fs);
+                vi.spyOn(system.fs, 'exists').mockImplementation(async (file) => {
+                    if (!invalidated && file.endsWith('file.txt')) {
+                        await invalidate();
+                    }
+                    return exists(file);
+                });
+            }
+        }
+
+        try {
+            const results = await Promise.all([
+                service.getDiffContent(ids.child.changeId, 'file.txt'),
+                service.getDiffContent(ids.child.changeId, 'file.txt'),
+            ]);
+            expect(invalidated).toBe(true);
+            expect(results).toEqual([
+                { left: 'before\n', right: 'after\n' },
+                { left: 'before\n', right: 'after\n' },
+            ]);
+        } finally {
+            await service.clearCache();
+        }
+    });
+
+    test('diff read fails instead of returning identical content when invalidation never settles', async () => {
+        const ids = await buildGraph(repo, [
+            { label: 'base', files: { 'file.txt': 'before\n' } },
+            { label: 'child', parents: ['base'], files: { 'file.txt': 'after\n' } },
+        ]);
+        const system = new NodeHostSystem();
+        const service = new JjService(repo.path, NO_OP_LOGGER, { system });
+        const exists = system.fs.exists.bind(system.fs);
+        let invalidations = 0;
+        vi.spyOn(system.fs, 'exists').mockImplementation(async (file) => {
+            if (file.replace(/\\/g, '/').endsWith('/left/file.txt')) {
+                invalidations++;
+                await service.clearCache();
+            }
+            return exists(file);
+        });
+        try {
+            await expect(service.getDiffContent(ids.child.changeId, 'file.txt')).rejects.toThrow(
+                'Repository changed repeatedly',
+            );
+            expect(invalidations).toBe(3);
+        } finally {
+            await service.clearCache();
+        }
+    });
+
+    test('unchanged-file fallback propagates read errors but confirms truly missing files', async () => {
+        const ids = await buildGraph(repo, [
+            {
+                label: 'base',
+                files: { 'file.txt': 'content\n', ' file.txt': 'leading space\n' },
+            },
+        ]);
+        repo.new([ids.base.changeId]);
+        const system = new NodeHostSystem();
+        const service = new JjService(repo.path, NO_OP_LOGGER, { system });
+        const exec = system.process.execFile.bind(system.process);
+        vi.spyOn(system.process, 'execFile').mockImplementation(async (file, args, options) => {
+            if (args.includes('file') && args.includes('show')) {
+                throw new Error('Read temporarily unavailable');
+            }
+            return exec(file, args, options);
+        });
+        try {
+            await expect(service.getDiffContent('@', 'file.txt')).rejects.toThrow('Read temporarily unavailable');
+            await expect(service.getDiffContent('@', ' file.txt')).rejects.toThrow('Read temporarily unavailable');
+            await expect(service.getDiffContent('@', 'missing.txt')).resolves.toEqual({ left: '', right: '' });
+            await expect(service.getDiffContent('invalid-revision', 'missing.txt')).rejects.toThrow();
+        } finally {
+            await service.clearCache();
+        }
+    });
 
     test('getChangesBetween correctly calculates net changes across complex diamond merge graph', async () => {
         const ids = await buildGraph(repo, [

@@ -125,11 +125,42 @@ export class JjEditFsService implements Disposable {
         this._uriTracker.recordAccess(uri);
 
         const repoKey = repo.rootUri.fsPath;
-        const inMemoryContent = this.getPendingOrActiveContent(repoKey, revision, filePath);
-        if (inMemoryContent !== undefined) {
-            return new TextEncoder().encode(inMemoryContent);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (this._isDisposed) {
+                throw new Error('JjEditFsService is disposed');
+            }
+            const version = this._writeVersion;
+            const inMemoryContent = this.getPendingOrActiveContent(repoKey, revision, filePath);
+            if (inMemoryContent !== undefined) {
+                return new TextEncoder().encode(inMemoryContent);
+            }
+            try {
+                const content = await this._readRepositoryContent(repo, revision, filePath);
+                if (this._isDisposed) {
+                    throw new Error('JjEditFsService is disposed');
+                }
+                // A save can start while the repository read is in flight.
+                const latestContent = this.getPendingOrActiveContent(repoKey, revision, filePath);
+                if (latestContent !== undefined) {
+                    return new TextEncoder().encode(latestContent);
+                }
+                if (version === this._writeVersion) {
+                    return content;
+                }
+            } catch (err: unknown) {
+                const latestContent = this.getPendingOrActiveContent(repoKey, revision, filePath);
+                if (latestContent !== undefined) {
+                    return new TextEncoder().encode(latestContent);
+                }
+                if (version === this._writeVersion) {
+                    throw err;
+                }
+            }
         }
+        throw new Error('File changed repeatedly while reading editable revision content');
+    }
 
+    private async _readRepositoryContent(repo: JjRepository, revision: string, filePath: string): Promise<Uint8Array> {
         if (revision === '@') {
             try {
                 if (repo.host.system?.fs) {

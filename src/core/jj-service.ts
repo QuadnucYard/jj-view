@@ -104,6 +104,7 @@ export class JjService {
     private _nextOpId = 0;
     private static readonly MAX_LOG_ENTRY_CACHE_KEYS = 4000;
     private _cacheEpoch = 0;
+    private _diffCacheGeneration = 0;
     private readonly _logEntryCache = new Map<string, JjLogEntry>();
     private readonly _diffCache: AsyncCache<string, { tempDir: string; expires: number }>;
     private readonly _changesCache = new AsyncCache<string, JjStatusEntry[]>({
@@ -765,6 +766,29 @@ export class JjService {
      * Uses the bulk cache, warming it if necessary.
      */
     async getDiffContent(revision: string, filePath: string): Promise<{ left: string; right: string }> {
+        return this._readStableDiff(() => this._readDiffContent(revision, filePath));
+    }
+
+    private async _readStableDiff<T>(read: () => Promise<T>): Promise<T> {
+        // Invalidation can delete a directory still held by an in-flight reader.
+        // Discard both successful fallbacks and errors from that retired generation.
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const generation = this._diffCacheGeneration;
+            try {
+                const content = await read();
+                if (generation === this._diffCacheGeneration) {
+                    return content;
+                }
+            } catch (err: unknown) {
+                if (generation === this._diffCacheGeneration) {
+                    throw err;
+                }
+            }
+        }
+        throw new Error('Repository changed repeatedly while reading diff content');
+    }
+
+    private async _readDiffContent(revision: string, filePath: string): Promise<{ left: string; right: string }> {
         const cache = await this.getDiffForRevision(revision);
         const relativePath = await this.toRepoRelative(filePath);
         const leftPath = path.join(cache.tempDir, 'left', relativePath);
@@ -784,12 +808,25 @@ export class JjService {
         // This handles "Quick Diff" on unchanged files where we need the base content.
         try {
             this.logger.debug(`getDiffContent fallback ${filePath} ${revision}`);
-            const content = await this.getFileContent(filePath, revision);
+            const content = await this._readFileContent(filePath, revision, 'default');
             return { left: content, right: content };
-        } catch {
-            // If file doesn't exist in revision, return empty
+        } catch (err: unknown) {
+            if (await this._fileExistsAtRevision(filePath, revision)) {
+                throw err;
+            }
             return { left: '', right: '' };
         }
+    }
+
+    private async _fileExistsAtRevision(filePath: string, revision: string): Promise<boolean> {
+        const relativePath = await this.toRepoRelative(filePath);
+        // Compare exact paths instead of interpreting the filename as a fileset.
+        const output = await this.run('file', ['list', '-r', revision, '-T', 'path.display() ++ "\\n"'], {
+            trim: false,
+            useCachedSnapshot: true,
+            label: 'fileExistsAtRevision',
+        });
+        return output.split('\n').some((entry) => entry.replace(/\r$/, '') === relativePath);
     }
 
     /**
@@ -798,6 +835,7 @@ export class JjService {
      */
     async getDiffForRevision(revision: string, force: boolean = false): Promise<{ tempDir: string; expires: number }> {
         if (force) {
+            this._diffCacheGeneration++;
             await this._diffCache.delete(revision);
         }
         return this._diffCache.getOrFetch(revision, () => this._warmDiffCache(revision));
@@ -847,6 +885,7 @@ export class JjService {
 
     async clearCache(): Promise<void> {
         this._cacheEpoch++;
+        this._diffCacheGeneration++;
         this._repoRoot = undefined;
         this._logEntryCache.clear();
         this._gitRoot = undefined;
@@ -1161,6 +1200,14 @@ export class JjService {
         filePath: string,
         revision: string = '@',
         conflictStyle: 'git' | 'default' = 'default',
+    ): Promise<string> {
+        return this._readStableDiff(() => this._readFileContent(filePath, revision, conflictStyle));
+    }
+
+    private async _readFileContent(
+        filePath: string,
+        revision: string,
+        conflictStyle: 'git' | 'default',
     ): Promise<string> {
         // Check cache first (only for default conflict style for now)
         if (conflictStyle === 'default') {

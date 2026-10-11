@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodeForgeRegistry } from '../core/code-forge-registry';
 import { JjEditFsService } from '../core/jj-edit-fs-service';
 import { JjRepositoryManager } from '../core/jj-repository-manager';
@@ -36,8 +36,83 @@ describe('JjEditFsService Unit Tests', () => {
     });
 
     afterEach(async () => {
+        vi.restoreAllMocks();
+        service.dispose();
         await repoManager.dispose();
         await repo.dispose();
+    });
+
+    it.each([
+        { target: '@', state: 'queued' },
+        { target: 'ancestor', state: 'queued' },
+        { target: '@', state: 'completed' },
+        { target: 'ancestor', state: 'completed' },
+    ])('does not return a stale $target read after a newer save is $state', async ({ target, state }) => {
+        const nodes = await buildGraph(repo, [
+            { label: 'initial', files: { 'file.txt': 'old source\n' } },
+            { label: 'child', parents: ['initial'], files: { 'file.txt': 'working copy\n' } },
+        ]);
+        const revision = target === '@' ? '@' : nodes.initial.changeId;
+        const uri = Uri.from({
+            scheme: 'jj-edit',
+            path: '/file.txt',
+            fragment: new URLSearchParams({ root: repo.path, revision }).toString(),
+        });
+        const repository = repoManager.getRepositoryForUri(uri);
+        if (!repository) {
+            throw new Error('Repository was not registered');
+        }
+        let release = () => {};
+        const blocked = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let entered = () => {};
+        const started = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        let paused = false;
+        const pause = async () => {
+            if (!paused) {
+                paused = true;
+                entered();
+                await blocked;
+            }
+        };
+        const fs = repository.jj.system.fs;
+        if (target === '@') {
+            const read = fs.readBinaryFile.bind(fs);
+            vi.spyOn(fs, 'readBinaryFile').mockImplementation(async (file) => {
+                const content = await read(file);
+                if (file.endsWith('file.txt')) {
+                    await pause();
+                }
+                return content;
+            });
+        } else {
+            const read = fs.readTextFile.bind(fs);
+            vi.spyOn(fs, 'readTextFile').mockImplementation(async (file) => {
+                const content = await read(file);
+                if (file.endsWith('file.txt')) {
+                    await pause();
+                }
+                return content;
+            });
+        }
+        const reading = service.readFile(uri);
+        await started;
+        const saving = service.writeFile(uri, new TextEncoder().encode('new editor source\n'));
+        try {
+            if (state === 'completed') {
+                await saving;
+                // Let the writer finish clearing its active batch before releasing the old read.
+                await new Promise<void>((resolve) => setImmediate(resolve));
+            }
+            release();
+            expect(new TextDecoder().decode(await reading)).toBe('new editor source\n');
+        } finally {
+            release();
+            await saving;
+        }
     });
 
     it('reads file from historical revision', async () => {

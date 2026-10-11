@@ -60,4 +60,16 @@ describe('VsCodeViewFsProvider Unit Tests', () => {
     test('throws NoPermissions error on write', () => {
         expect(() => provider.writeFile()).toThrow();
     });
+
+    test.each([
+        'revision=invalid-revision',
+        'base=invalid-revision&side=left',
+    ])('reports failed reads as unavailable for %s', async (query) => {
+        const uri = Uri.from({
+            scheme: 'jj-view',
+            path: '/file.txt',
+            fragment: `root=${encodeURIComponent(testRepo.path)}&${query}`,
+        });
+        await expect(provider.readFile(uri)).rejects.toMatchObject({ code: 'Unavailable' });
+    });
 });

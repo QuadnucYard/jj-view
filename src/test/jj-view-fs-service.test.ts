@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodeForgeRegistry } from '../core/code-forge-registry';
 import { JjRepositoryManager } from '../core/jj-repository-manager';
 import { JjViewFsService } from '../core/jj-view-fs-service';
@@ -36,8 +36,68 @@ describe('JjViewFsService Unit Tests', () => {
     });
 
     afterEach(async () => {
+        vi.restoreAllMocks();
+        service.dispose();
         await repoManager.dispose();
         await repo.dispose();
+    });
+
+    it.each([
+        'revision',
+        'diff',
+    ])('propagates %s read failures instead of returning an empty document', async (mode) => {
+        const query = mode === 'revision' ? 'revision=invalid-revision' : 'base=invalid-revision&side=left';
+        const uri = Uri.from({
+            scheme: 'jj-view',
+            path: '/f.txt',
+            fragment: `root=${encodeURIComponent(repo.path)}&${query}`,
+        });
+        await expect(service.readFile(uri)).rejects.toThrow();
+    });
+
+    it.each(['revision', 'diff'])('preserves a genuinely missing or empty file in %s mode', async (mode) => {
+        const nodes = await buildGraph(repo, [{ label: 'initial', files: { 'empty.txt': '' } }]);
+        const query =
+            mode === 'revision' ? `revision=${nodes.initial.changeId}` : `base=${nodes.initial.changeId}&side=right`;
+        for (const filename of ['empty.txt', 'missing.txt']) {
+            const uri = Uri.from({
+                scheme: 'jj-view',
+                path: `/${filename}`,
+                fragment: `root=${encodeURIComponent(repo.path)}&${query}`,
+            });
+            expect(await service.readFile(uri)).toEqual(new Uint8Array());
+        }
+    });
+
+    it('retries concurrent virtual diff reads after repository and provider invalidation', async () => {
+        const nodes = await buildGraph(repo, [
+            { label: 'initial', files: { 'f.txt': 'before\n' } },
+            { label: 'child', parents: ['initial'], files: { 'f.txt': 'after\n' } },
+        ]);
+        const repository = repoManager.getRepositoryForUri(Uri.file(repo.path));
+        if (!repository) {
+            throw new Error('Repository was not registered');
+        }
+        const read = repository.jj.system.fs.readTextFile.bind(repository.jj.system.fs);
+        let invalidated = false;
+        vi.spyOn(repository.jj.system.fs, 'readTextFile').mockImplementation(async (file) => {
+            if (!invalidated && file.endsWith('f.txt')) {
+                invalidated = true;
+                await repository.jj.clearCache();
+                service.invalidateCache();
+            }
+            return read(file);
+        });
+        const uris = ['left', 'right'].map((side) =>
+            Uri.from({
+                scheme: 'jj-view',
+                path: '/f.txt',
+                fragment: `root=${encodeURIComponent(repo.path)}&base=${nodes.child.changeId}&side=${side}`,
+            }),
+        );
+        const contents = await Promise.all(uris.map((uri) => service.readFile(uri)));
+        expect(invalidated).toBe(true);
+        expect(contents.map((content) => new TextDecoder().decode(content))).toEqual(['before\n', 'after\n']);
     });
 
     it('throws error when no repository is found', async () => {

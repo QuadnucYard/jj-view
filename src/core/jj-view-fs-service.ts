@@ -78,30 +78,28 @@ export class JjViewFsService implements Disposable {
         }
         this._uriTracker.recordAccess(uri);
 
-        try {
-            const query = decodeJjViewQuery(uri);
-            if (query.mode === 'revision') {
-                return await this._readRevisionContent(repo, filePath, query.revision);
+        const query = decodeJjViewQuery(uri);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const generation = this._cacheGeneration;
+            try {
+                const content =
+                    query.mode === 'revision'
+                        ? await this._readDiffContent(repo, filePath, query.revision, 'right')
+                        : await this._readDiffContent(repo, filePath, query.base, query.side);
+                if (generation === this._cacheGeneration) {
+                    return content;
+                }
+            } catch (err: unknown) {
+                if (generation !== this._cacheGeneration) {
+                    continue;
+                }
+                this._repositoryManager.outputChannel.debug(
+                    `[JjViewFsService] Failed to read URI ${uri.toString()}: ${String(err)}`,
+                );
+                throw err;
             }
-            return await this._readDiffContent(repo, filePath, query.base, query.side);
-        } catch (err: unknown) {
-            this._repositoryManager.outputChannel.debug(
-                `[JjViewFsService] Failed to read URI ${uri.toString()}: ${String(err)}`,
-            );
-            return new Uint8Array();
         }
-    }
-
-    private async _readRevisionContent(repo: JjRepository, filePath: string, revision: string): Promise<Uint8Array> {
-        try {
-            const content = await repo.jj.getFileContent(filePath, revision);
-            return new TextEncoder().encode(content);
-        } catch (err: unknown) {
-            this._repositoryManager.outputChannel.debug(
-                `[JjViewFsService] Failed to read revision file ${filePath}@${revision}: ${String(err)}`,
-            );
-            return new Uint8Array();
-        }
+        throw new Error('Repository changed repeatedly while reading virtual file content');
     }
 
     private async _readDiffContent(
