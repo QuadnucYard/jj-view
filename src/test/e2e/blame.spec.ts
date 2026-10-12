@@ -36,6 +36,21 @@ test('JJ line blame renders and yields to Git inline blame', async ({ vscode }) 
             .locator('.monaco-editor .view-line span')
             .evaluateAll((spans) => spans.map((span) => getComputedStyle(span, '::after').content).join('\n'));
     await expect.poll(inlineContent).toMatch(/Test User,.*· Blame origin/);
+    const annotationColor = () =>
+        page.locator('.monaco-editor .view-line span').evaluateAll((spans) => {
+            const annotation = spans.find((span) => getComputedStyle(span, '::after').content.includes('Blame origin'));
+            return annotation ? getComputedStyle(annotation, '::after').color : undefined;
+        });
+    const jjColor = await annotationColor();
+    const expectedColor = await page.evaluate(() => {
+        const element = document.createElement('span');
+        element.style.color = '#99999959';
+        document.body.appendChild(element);
+        const color = getComputedStyle(element).color;
+        element.remove();
+        return color;
+    });
+    expect(jjColor).toBe(expectedColor);
     await vscode.executeCommand('jj-view.toggleLineBlame');
     await expect.poll(inlineContent).not.toMatch(/Test User,.*· Blame origin/);
     await vscode.executeCommand('jj-view.toggleLineBlame');

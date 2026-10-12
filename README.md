@@ -48,6 +48,8 @@ Full integration with VS Code's Source Control view (SCM) and Jujutsu workflows:
 
 JJ line blame also supports JJ revision and diff editors. It yields to the built-in Git inline blame when both apply to a working file. **Jujutsu: Prefer JJ Blame in This Workspace** disables only Git inline blame after confirmation; Git source control and status-bar blame remain enabled. **Jujutsu: Restore Git Inline Blame Preference** undoes that workspace preference unless you have subsequently changed it. Binary, conflicted, and large files (over 1 MiB or 20,000 lines) do not show blame.
 
+Annotations use subtle gray at 35% opacity, matching GitLens's trailing blame default, with higher opacity in high-contrast themes. Customize `jjView.blame.foreground` through VS Code's `workbench.colorCustomizations`; for example, `"jjView.blame.foreground": "#99999940"` makes them even dimmer.
+
 ### 📝 Commit Details Panel
 
 A dedicated view for inspecting and managing commits.

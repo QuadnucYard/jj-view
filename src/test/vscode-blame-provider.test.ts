@@ -133,6 +133,19 @@ describe('JJ editor blame', () => {
         expect(decoration()?.range.start.character).toBe('inherited'.length);
         const hover = decoration()?.hoverMessage;
         expect(hover).toMatchObject({ isTrusted: { enabledCommands: ['jj-view.openBlameCommit'] } });
+        expect(hover).toBeInstanceOf(vscode.MarkdownString);
+        if (!(hover instanceof vscode.MarkdownString)) {
+            throw new Error('Missing blame hover');
+        }
+        expect(hover.value).toMatch(/Test User <.*> {2}\n/);
+        expect(hover.value).toMatch(/Change: [a-z]+ {2}\nCommit: [a-f0-9]+/);
+        expect(vscode.window.createTextEditorDecorationType).toHaveBeenCalledWith(
+            expect.objectContaining({
+                after: expect.objectContaining({
+                    color: new vscode.ThemeColor('jjView.blame.foreground'),
+                }),
+            }),
+        );
         moveCursor(1);
         await expectText('Working copy');
         expect(decoration()?.range.start.line).toBe(1);
@@ -212,5 +225,41 @@ describe('JJ editor blame', () => {
         repo.new();
         await manager.repositories[0].refresh({ reason: 'blame test' });
         await expectText('Saved new line');
+    });
+
+    test('keeps the annotation during background reloads and replaces it without a blank frame', async () => {
+        moveCursor(1);
+        await expectText('Working copy');
+        setDecorations.mockClear();
+        // Selection changes within the same line must not clear or recreate the hover.
+        moveCursor(1);
+        await provider.refresh();
+        expect(setDecorations).not.toHaveBeenCalled();
+
+        const system = manager.repositories[0].jj.system;
+        const originalExec = system.process.execFile.bind(system.process);
+        let release = () => {};
+        let started = false;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        vi.spyOn(system.process, 'execFile').mockImplementation(async (file, args, options) => {
+            if (args.includes('annotate')) {
+                started = true;
+                await gate;
+            }
+            return originalExec(file, args, options);
+        });
+        try {
+            repo.describe('Saved without blinking');
+            repo.new();
+            await manager.repositories[0].refresh({ reason: 'background blame reload' });
+            await vi.waitFor(() => expect(started).toBe(true), { timeout: 10000 });
+            expect(setDecorations).not.toHaveBeenCalled();
+        } finally {
+            release();
+        }
+        await expectText('Saved without blinking');
+        expect(setDecorations.mock.calls.every(([, options]) => options.length > 0)).toBe(true);
     });
 });

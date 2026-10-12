@@ -43,7 +43,7 @@ function relativeDate(timestamp: string): string {
 
 export class VsCodeBlameProvider implements vscode.Disposable {
     private readonly decoration = vscode.window.createTextEditorDecorationType({
-        after: { color: new vscode.ThemeColor('editorInlayHint.foreground'), margin: '0 0 0 3em' },
+        after: { color: new vscode.ThemeColor('jjView.blame.foreground'), margin: '0 0 0 3em' },
         rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
     });
     private readonly subscriptions: vscode.Disposable[] = [];
@@ -54,6 +54,9 @@ export class VsCodeBlameProvider implements vscode.Disposable {
     private request = 0;
     private disposed = false;
     private timer: ReturnType<typeof setTimeout> | undefined;
+    private rendered:
+        | { editor: vscode.TextEditor; uri: string; version: number; line: number; signature: string }
+        | undefined;
     private mapping:
         | { document: vscode.TextDocument; version: number; snapshot: BlameSnapshot; lines: Map<number, number> }
         | undefined;
@@ -148,6 +151,7 @@ export class VsCodeBlameProvider implements vscode.Disposable {
     }
 
     private clearDecorations(): void {
+        this.rendered = undefined;
         for (const editor of vscode.window.visibleTextEditors) {
             editor.setDecorations(this.decoration, []);
         }
@@ -161,13 +165,34 @@ export class VsCodeBlameProvider implements vscode.Disposable {
         if (this.timer) {
             clearTimeout(this.timer);
         }
-        this.clearDecorations();
+        const editor = vscode.window.activeTextEditor;
+        // Keep the current annotation while refreshing unchanged text. Clear immediately
+        // when its location changes or Git takes ownership of inline blame.
+        if (
+            !editor ||
+            this.rendered?.editor !== editor ||
+            this.rendered.uri !== editor.document.uri.toString() ||
+            this.rendered.version !== editor.document.version ||
+            this.rendered.line !== editor.selection.active.line ||
+            !this.isEnabled(editor.document.uri) ||
+            !this.manager.getRepositoryForUri(editor.document.uri)
+        ) {
+            this.clearDecorations();
+        }
         this.timer = setTimeout(() => {
             this.timer = undefined;
             void this.refresh().catch((error: unknown) => {
                 this.manager.outputChannel.debug(`[Blame] ${String(error)}`);
             });
         }, delay);
+    }
+
+    private isEnabled(uri: vscode.Uri): boolean {
+        return (
+            ['file', 'jj-edit', 'jj-view'].includes(uri.scheme) &&
+            vscode.workspace.getConfiguration('jj-view', uri).get<boolean>('blame.enabled', true) &&
+            !this.git.hasInlineBlame(uri)
+        );
     }
 
     private async loadSnapshot(repo: JjRepository, uri: vscode.Uri): Promise<BlameSnapshot | undefined> {
@@ -199,28 +224,29 @@ export class VsCodeBlameProvider implements vscode.Disposable {
     async refresh(): Promise<void> {
         const request = this.request;
         const editor = vscode.window.activeTextEditor;
-        if (!editor || this.disposed) {
+        if (this.disposed) {
+            return;
+        }
+        if (!editor) {
+            this.clearDecorations();
             return;
         }
         const document = editor.document;
         const uri = document.uri;
         const version = document.version;
         const line = editor.selection.active.line;
-        if (
-            !['file', 'jj-edit', 'jj-view'].includes(uri.scheme) ||
-            !vscode.workspace.getConfiguration('jj-view', uri).get<boolean>('blame.enabled', true) ||
-            this.git.hasInlineBlame(uri) ||
-            document.lineCount > MAX_BLAME_LINES
-        ) {
-            editor.setDecorations(this.decoration, []);
+        if (!this.isEnabled(uri) || document.lineCount > MAX_BLAME_LINES) {
+            this.clearDecorations();
             return;
         }
         const text = document.getText();
         if (!text || text.includes('\0') || Buffer.byteLength(text, 'utf8') > MAX_BLAME_BYTES) {
+            this.clearDecorations();
             return;
         }
         const repo = this.manager.getRepositoryForUri(uri);
         if (!repo) {
+            this.clearDecorations();
             return;
         }
         const snapshot = await this.snapshots.getOrFetch(
@@ -232,7 +258,6 @@ export class VsCodeBlameProvider implements vscode.Disposable {
                 }),
         );
         if (
-            !snapshot ||
             this.disposed ||
             this.request !== request ||
             document.version !== version ||
@@ -240,6 +265,10 @@ export class VsCodeBlameProvider implements vscode.Disposable {
             editor.selection.active.line !== line ||
             this.git.hasInlineBlame(uri)
         ) {
+            return;
+        }
+        if (!snapshot) {
+            this.clearDecorations();
             return;
         }
         if (
@@ -253,6 +282,7 @@ export class VsCodeBlameProvider implements vscode.Disposable {
         const annotation = sourceLine === undefined ? undefined : snapshot.blame.annotations[sourceLine];
         // The empty editor line after a final newline has no source annotation.
         if (line === document.lineCount - 1 && document.lineAt(line).text === '' && text.endsWith('\n')) {
+            this.clearDecorations();
             return;
         }
         const workingCopy = annotation?.commitId === snapshot.workingCopyCommitId;
@@ -264,6 +294,16 @@ export class VsCodeBlameProvider implements vscode.Disposable {
               ? 'Unsaved changes'
               : 'Working copy changes';
         const position = document.lineAt(line).range.end;
+        const signature = JSON.stringify([repo.rootUri.toString(), contentText, annotation, workingCopy]);
+        if (
+            this.rendered?.editor === editor &&
+            this.rendered.uri === uri.toString() &&
+            this.rendered.version === version &&
+            this.rendered.line === line &&
+            this.rendered.signature === signature
+        ) {
+            return;
+        }
         editor.setDecorations(this.decoration, [
             {
                 range: new vscode.Range(position, position),
@@ -271,13 +311,28 @@ export class VsCodeBlameProvider implements vscode.Disposable {
                 hoverMessage: annotation ? this.hover(repo, annotation, workingCopy) : undefined,
             },
         ]);
+        this.rendered = { editor, uri: uri.toString(), version, line, signature };
     }
 
     private hover(repo: JjRepository, annotation: JjAnnotation, workingCopy: boolean): vscode.MarkdownString {
         const hover = new vscode.MarkdownString();
-        hover.appendText(
-            `${workingCopy ? 'Working copy\n' : ''}${annotation.author} <${annotation.email}>\n${annotation.timestamp}\n\n${annotation.description}\n\nChange: ${annotation.changeId}\nCommit: ${annotation.commitId}`,
+        // appendText converts newlines to paragraphs. Escape each line separately
+        // and use Markdown hard breaks for compact metadata and message lines.
+        const appendLines = (text: string): void => {
+            text.split(/\r?\n/).forEach((value, index) => {
+                if (index > 0) {
+                    hover.appendMarkdown('  \n');
+                }
+                hover.appendText(value);
+            });
+        };
+        appendLines(
+            `${workingCopy ? 'Working copy\n' : ''}${annotation.author} <${annotation.email}>\n${annotation.timestamp}`,
         );
+        hover.appendMarkdown('\n\n');
+        appendLines(annotation.description);
+        hover.appendMarkdown('\n\n');
+        appendLines(`Change: ${annotation.changeId}\nCommit: ${annotation.commitId}`);
         const args = encodeURIComponent(JSON.stringify([repo.rootUri.fsPath, annotation.commitId]));
         hover.appendMarkdown(`\n\n[Open JJ commit details](command:jj-view.openBlameCommit?${args})`);
         hover.isTrusted = { enabledCommands: ['jj-view.openBlameCommit'] };

@@ -20,6 +20,18 @@
     ],
     "main": "./dist/extension.js",
     "contributes": {
+        "colors": [
+            {
+                "id": "jjView.blame.foreground",
+                "description": "Foreground color of JJ line blame annotations.",
+                "defaults": {
+                    "dark": "#99999959",
+                    "light": "#99999959",
+                    "highContrast": "#99999999",
+                    "highContrastLight": "#99999999"
+                }
+            }
+        ],
         "customEditors": [
             {
                 "viewType": "jj-view.commitDetailsEditor",
