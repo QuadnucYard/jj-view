@@ -1310,16 +1310,44 @@ log = "none()"
         expect(grandparentContent).toBe('line 0\n');
     });
 
-    test('getConflictedFiles returns conflicted paths', async () => {
+    test.each([
+        'conflict.txt',
+        'src/nested/conflict.txt',
+        'src/nested folder/conflict file.txt',
+        ' conflict file.txt',
+    ])('getConflictedFiles returns exact conflicted path %s', async (filePath) => {
         await buildGraph(repo, [
-            { label: 'base', description: 'base', files: { 'conflict.txt': 'base\n' } },
-            { label: 'left', parents: ['base'], description: 'left', files: { 'conflict.txt': 'left\n' } },
-            { label: 'right', parents: ['base'], description: 'right', files: { 'conflict.txt': 'right\n' } },
+            { label: 'base', description: 'base', files: { [filePath]: 'base\n', 'resolved.txt': 'unchanged\n' } },
+            { label: 'left', parents: ['base'], description: 'left', files: { [filePath]: 'left\n' } },
+            { label: 'right', parents: ['base'], description: 'right', files: { [filePath]: 'right\n' } },
             { label: 'merge', parents: ['left', 'right'], description: 'merge', isCurrentWorkingCopy: true },
         ]);
 
         const conflictedFiles = await jjService.getConflictedFiles();
-        expect(conflictedFiles).toEqual(['conflict.txt']);
+        expect(conflictedFiles).toEqual([filePath]);
+    });
+
+    test('getConflictedFiles returns no paths without conflicts', async () => {
+        expect(await jjService.getConflictedFiles()).toEqual([]);
+    });
+
+    test('getConflictedFiles separates multiple conflicted paths', async () => {
+        const paths = ['src/a.txt', 'src/nested folder/b file.txt'];
+        await buildGraph(repo, [
+            { label: 'base', files: Object.fromEntries(paths.map((filePath) => [filePath, 'base\n'])) },
+            {
+                label: 'left',
+                parents: ['base'],
+                files: Object.fromEntries(paths.map((filePath) => [filePath, 'left\n'])),
+            },
+            {
+                label: 'right',
+                parents: ['base'],
+                files: Object.fromEntries(paths.map((filePath) => [filePath, 'right\n'])),
+            },
+            { label: 'merge', parents: ['left', 'right'], isCurrentWorkingCopy: true },
+        ]);
+        expect(await jjService.getConflictedFiles()).toEqual(paths);
     });
 
     test('getConflictParts returns correct parts', async () => {

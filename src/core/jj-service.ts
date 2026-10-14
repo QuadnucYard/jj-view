@@ -1302,15 +1302,15 @@ export class JjService {
 
     async getConflictedFiles(): Promise<string[]> {
         try {
-            const output = await this.run('resolve', ['--list'], {
+            // RepoPath renders with forward slashes; display paths use native
+            // separators and cannot safely be used as SCM URI paths on Windows.
+            // NUL delimiters preserve whitespace and newlines inside filenames.
+            const output = await this.run('file', ['list', '-T', 'if(conflict, path ++ "\\0")'], {
+                trim: false,
                 useCachedSnapshot: true,
                 label: 'getConflictedFiles',
             });
-            return output
-                .split('\n')
-                .map((line) => line.trim())
-                .filter((line) => line.length > 0)
-                .map((line) => line.split(/\s+/)[0]);
+            return output.split('\0').filter((filePath) => filePath.length > 0);
         } catch {
             // No conflicts at this revision
             return [];

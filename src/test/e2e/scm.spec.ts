@@ -28,6 +28,45 @@ import {
 } from './e2e-helpers';
 
 test.describe('SCM Pane E2E', () => {
+    for (const filePath of ['conflict.txt', 'src/nested/conflict.txt', 'src/nested folder/conflict.txt']) {
+        test(`Single conflicted file stays a leaf in Merge Conflicts: ${filePath}`, async ({ vscode }) => {
+            const repo = new TestRepo();
+            repo.init();
+            await buildGraph(repo, [
+                { label: 'base', files: { [filePath]: 'base' } },
+                { label: 'left', parents: ['base'], files: { [filePath]: 'left' } },
+                { label: 'right', parents: ['base'], files: { [filePath]: 'right' } },
+                { label: 'merge', parents: ['left', 'right'], isCurrentWorkingCopy: true },
+            ]);
+            const workspacePath =
+                process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+            const { page } = await vscode.openWorkspace({ path: workspacePath });
+            await focusSCM(page);
+            await vscode.evaluate(async (vscode) => {
+                await vscode.commands.executeCommand('workbench.scm.action.setTreeViewMode');
+            });
+            const topRow = await expectFileInScmGroup(
+                page,
+                /Merge Conflicts/,
+                filePath.includes('/') ? 'src' : 'conflict.txt',
+            );
+            const file = filePath.includes('/')
+                ? topRow.locator('xpath=following-sibling::div[@role="treeitem"][1]')
+                : topRow;
+            await expect(file).toHaveAttribute('aria-label', /^conflict\.txt(?:,|$)/);
+            await expect(file).not.toHaveAttribute('aria-expanded');
+            if (filePath.includes('/')) {
+                await expect(topRow).toHaveAttribute('aria-label', /src[\\/]nested(?: folder)?$/);
+                await topRow.locator('.monaco-tl-twistie').click();
+                await expect(topRow).toHaveAttribute('aria-expanded', 'false');
+                await topRow.locator('.monaco-tl-twistie').click();
+                await expect(file).toHaveAttribute('aria-label', /^conflict\.txt(?:,|$)/);
+            }
+            await file.click();
+            await expect(page.locator('.merge-editor')).toBeVisible();
+        });
+    }
+
     for (const viewMode of ['list', 'tree']) {
         for (const openDiffOnClick of [true, false]) {
             test(`Working copy opens reuse the active group with Git also visible in ${viewMode} view with openDiffOnClick ${openDiffOnClick}`, async ({
