@@ -4,7 +4,7 @@
  */
 
 import * as path from 'node:path';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import { LogViewController } from '../../core/controllers/log-view-controller';
 import type { JjRepository } from '../../core/jj-repository';
 import type { JjRepositoryManager } from '../../core/jj-repository-manager';
@@ -42,6 +42,17 @@ export class VsCodeLogWebviewProvider implements vscode.WebviewViewProvider, vsc
             logger: outputChannel,
             onSelectionChange,
         });
+
+        let previousState = vscode.window.state;
+        this._disposables.push(
+            vscode.window.onDidChangeWindowState((state) => {
+                const resumed = (state.focused && !previousState.focused) || (state.active && !previousState.active);
+                previousState = state;
+                if (resumed) {
+                    this._refreshVisibleView('windowResumed');
+                }
+            }),
+        );
     }
 
     public get repository(): JjRepository | undefined {
@@ -90,17 +101,23 @@ export class VsCodeLogWebviewProvider implements vscode.WebviewViewProvider, vsc
                 this._clearViewDisposables();
             }),
             webviewView.onDidChangeVisibility(() => {
-                if (webviewView.visible) {
-                    this.controller.setCommits(this.controller.commits);
-                    this.controller.refresh('becameVisible').catch((e) => {
-                        this.outputChannel?.error(`[VsCodeLogWebviewProvider] Visibility refresh error: ${e}`);
-                    });
-                }
+                this._refreshVisibleView('becameVisible');
             }),
             webviewView.webview.onDidReceiveMessage(async (message: unknown) => {
                 return await this.controller.handleMessage(message);
             }),
         );
+    }
+
+    private _refreshVisibleView(reason: string): void {
+        if (!this._view?.visible) {
+            return;
+        }
+        // An idle webview can miss updates even though its view stays visible.
+        this.controller.resendState();
+        this.controller.refresh(reason).catch((e) => {
+            this.outputChannel?.error(`[VsCodeLogWebviewProvider] View recovery refresh error: ${e}`);
+        });
     }
 
     private _clearViewDisposables(): void {

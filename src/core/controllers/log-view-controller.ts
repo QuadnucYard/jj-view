@@ -211,6 +211,15 @@ export class LogViewController implements Disposable {
         this._receiver.setMessenger(messenger);
     }
 
+    public resendState(): void {
+        if (this._disposed) {
+            return;
+        }
+        this.sendRepositoryFocus();
+        this._receiver.sender.update(this.getState());
+        this._receiver.sender.setHighlight({ changeId: this._highlightedCommitId });
+    }
+
     private bindRepo(repo: JjRepository | undefined): void {
         this._codeForgeDisposable?.dispose();
         this._codeForgeDisposable = undefined;
