@@ -17,7 +17,7 @@ import { Uri } from '../core/uri-utils';
 import { VsCodeScmProvider } from '../vscode/providers/vscode-scm-provider';
 import { FakeHostEnvironment } from './fake-host-environment';
 import { buildGraph, TestRepo } from './test-repo';
-import { createMock, createMockLogOutputChannel } from './test-utils';
+import { accessPrivate, createMock, createMockLogOutputChannel } from './test-utils';
 
 describe('VsCodeScmProvider Unit Tests', () => {
     let testRepo: TestRepo;
@@ -89,5 +89,35 @@ describe('VsCodeScmProvider Unit Tests', () => {
             scmProvider.dispose();
             scmProvider.dispose();
         }).not.toThrow();
+    });
+
+    test('invalidates resolved conflict rows using the same URI path and revision', async () => {
+        await buildGraph(testRepo, [
+            { label: 'base', files: { 'conflict.txt': 'base\n' } },
+            { label: 'left', parents: ['base'], files: { 'conflict.txt': 'left\n' } },
+            { label: 'right', parents: ['base'], files: { 'conflict.txt': 'right\n' } },
+            { label: 'merge', parents: ['left', 'right'], isCurrentWorkingCopy: true },
+        ]);
+        await scmProvider.refresh({ forceSnapshot: true });
+        const conflicts = accessPrivate<vscode.SourceControlResourceGroup>(scmProvider, '_conflictGroup');
+        const conflictUri = conflicts.resourceStates[0].resourceUri;
+        const token = createMock<vscode.CancellationToken>({ isCancellationRequested: false });
+        expect((await scmProvider.decorationProvider.provideFileDecoration(conflictUri, token))?.badge).toBe('!');
+
+        const changedUris: Uri[] = [];
+        scmProvider.decorationProvider.onDidChangeFileDecorations((event) => {
+            changedUris.push(...(Array.isArray(event) ? event : event ? [event] : []));
+        });
+        testRepo.writeFile('conflict.txt', 'resolved\n');
+        await scmProvider.refresh({ forceSnapshot: true });
+
+        expect(conflicts.resourceStates).toHaveLength(0);
+        const workingCopy = accessPrivate<vscode.SourceControlResourceGroup>(scmProvider, '_workingCopyGroup');
+        const resolvedUri = workingCopy.resourceStates[0].resourceUri;
+        const invalidation = changedUris.find((uri) => uri.toString() === resolvedUri.toString());
+        expect(invalidation).toBeDefined();
+        expect(invalidation?.path).toBe(resolvedUri.path);
+        expect(invalidation?.fragment).toBe(resolvedUri.fragment);
+        expect((await scmProvider.decorationProvider.provideFileDecoration(resolvedUri, token))?.badge).toBe('M');
     });
 });

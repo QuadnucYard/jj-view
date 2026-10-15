@@ -110,7 +110,13 @@ export class JjDecorationModel implements Disposable {
     }
 
     private getScmStatusDecoration(uri: Uri): JjDecoration | undefined {
-        if (uri.scheme === 'jj-edit' || uri.scheme === 'jj-view' || uri.scheme === 'jj-scm') {
+        // SCM rows identify a specific revision. A missing row must not inherit
+        // the working-copy status of the same path (including conflicts).
+        if (uri.scheme === 'jj-scm') {
+            const scmStatus = this.scmStatusDecorations.get(uri.toString());
+            return scmStatus ? this.createDecoration(scmStatus) : undefined;
+        }
+        if (uri.scheme === 'jj-edit' || uri.scheme === 'jj-view') {
             const scmStatus = this.scmStatusDecorations.get(uri.toString());
             if (scmStatus) {
                 return this.createDecoration(scmStatus);
@@ -342,7 +348,12 @@ export class JjDecorationModel implements Disposable {
         const changedUris: Uri[] = [];
 
         const relativeKeyToUri = (key: string): Uri => {
-            if (key.startsWith('file:') || key.startsWith('jj-edit:') || key.startsWith('jj-view:')) {
+            if (
+                key.startsWith('file:') ||
+                key.startsWith('jj-edit:') ||
+                key.startsWith('jj-view:') ||
+                key.startsWith('jj-scm:')
+            ) {
                 return Uri.parse(key);
             }
             const relKey = key.replace(/^[/\\]+/, '');

@@ -80,7 +80,10 @@ export class VsCodeScmProvider implements vscode.Disposable {
 
         const workspaceRoot = repo.rootUri.fsPath;
         const folderName = path.basename(workspaceRoot);
-        this._scmRootUri = repo.rootUri.with({ scheme: 'jj-scm' });
+        // Decoration invalidations round-trip through URI strings, which normalize
+        // Windows drive letters. Keep the case-sensitive virtual SCM tree in that
+        // same canonical form so invalidations address the displayed rows.
+        this._scmRootUri = Uri.parse(repo.rootUri.with({ scheme: 'jj-scm' }).toString());
         this._sourceControl = vscode.scm.createSourceControl(
             `jj-${workspaceRoot}`,
             `Jujutsu (${folderName})`,

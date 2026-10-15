@@ -28,6 +28,40 @@ import {
 } from './e2e-helpers';
 
 test.describe('SCM Pane E2E', () => {
+    for (const viewMode of ['list', 'tree']) {
+        test(`Resolved conflicts refresh SCM badges in ${viewMode} view`, async ({ vscode }) => {
+            const repo = new TestRepo();
+            repo.init();
+            await buildGraph(repo, [
+                { label: 'base', files: { 'conflict.txt': 'base\n' } },
+                { label: 'left', parents: ['base'], description: 'left side', files: { 'conflict.txt': 'left\n' } },
+                { label: 'right', parents: ['base'], description: 'right side', files: { 'conflict.txt': 'right\n' } },
+                { label: 'merge', parents: ['left', 'right'], isCurrentWorkingCopy: true },
+            ]);
+            const workspacePath =
+                process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+            const { page } = await vscode.openWorkspace({ path: workspacePath });
+            await focusSCM(page);
+            await vscode.executeCommand(
+                viewMode === 'tree' ? 'workbench.scm.action.setTreeViewMode' : 'workbench.scm.action.setListViewMode',
+            );
+
+            const conflict = await expectFileInScmGroup(page, /Merge Conflicts/, 'conflict.txt');
+            await expect(conflict.locator('.monaco-icon-label')).toHaveAttribute('aria-label', /Conflicted/);
+            const ancestor = await expectFileInScmGroup(page, /left side/, 'conflict.txt');
+            await expect(ancestor.locator('.monaco-icon-label')).toHaveAttribute('aria-label', /Modified/);
+
+            repo.writeFile('conflict.txt', 'resolved\n');
+            await vscode.executeCommand('jj-view.refresh');
+
+            await expect(page.getByRole('treeitem', { name: /Merge Conflicts/ })).toHaveCount(0);
+            const resolved = await expectFileInScmGroup(page, /Working Copy/, 'conflict.txt');
+            await expect(resolved.locator('.monaco-icon-label')).toHaveAttribute('aria-label', /Modified/);
+            await expect(resolved.locator('.monaco-icon-label')).not.toHaveAttribute('aria-label', /Conflicted/);
+            await expect(ancestor.locator('.monaco-icon-label')).toHaveAttribute('aria-label', /Modified/);
+        });
+    }
+
     for (const filePath of ['conflict.txt', 'src/nested/conflict.txt', 'src/nested folder/conflict.txt']) {
         test(`Single conflicted file stays a leaf in Merge Conflicts: ${filePath}`, async ({ vscode }) => {
             const repo = new TestRepo();
