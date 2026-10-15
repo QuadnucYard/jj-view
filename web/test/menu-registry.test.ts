@@ -242,11 +242,11 @@ describe('MenuRegistry & Icon Resolution', () => {
         const actions = registry.getInlineActions('view/title', logContext);
         const commands = actions.map((a) => a.command);
 
-        expect(commands).toContain('jj-view.undo');
-        expect(commands).toContain('jj-view.redo');
-        expect(commands).toContain('jj-view.workspaceAdd');
+        expect(commands).toContain('jj-view.graph.undo');
+        expect(commands).toContain('jj-view.graph.redo');
+        expect(commands).toContain('jj-view.graph.workspaceAdd');
 
-        const wsAction = actions.find((a) => a.command === 'jj-view.workspaceAdd');
+        const wsAction = actions.find((a) => a.command === 'jj-view.graph.workspaceAdd');
         expect(wsAction?.title).toBe('Add Workspace');
         expect(wsAction?.iconClass).toContain('jj-icon-workspace-add');
         expect(wsAction?.iconClass).toContain('codicon-new-collection');

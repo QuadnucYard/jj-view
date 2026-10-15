@@ -412,6 +412,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         },
         context,
         outputChannel,
+        repositoryManager,
     );
     context.subscriptions.push(
         logWebviewProvider,
@@ -470,10 +471,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
             scmProviders.set(repo.rootUri.fsPath, scmProvider);
             activeScmSubscriptions.set(repo.rootUri.fsPath, composite);
 
-            if (
-                !logWebviewProvider.repository ||
-                repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath
-            ) {
+            if (repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath) {
                 logWebviewProvider.updateRepository(repo).catch((err) => {
                     outputChannel.error('[Extension] Failed to update webview repository', toError(err));
                 });
@@ -498,10 +496,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     context.subscriptions.push(
         repositoryManager.onDidChangeFocusedRepository((repo) => {
             focusedRepoActiveProviderSub?.dispose();
+            logWebviewProvider.updateRepository(repo).catch((err) => {
+                outputChannel.error('[Extension] Failed to update webview repository', toError(err));
+            });
             if (repo) {
-                logWebviewProvider.updateRepository(repo).catch((err) => {
-                    outputChannel.error('[Extension] Failed to update webview repository', toError(err));
-                });
                 commitDetailsProvider.refresh().catch((err) => {
                     outputChannel.error('[Extension] Failed to refresh commit details for focused repo', toError(err));
                 });

@@ -34,6 +34,12 @@ export type ActionPayload = z.infer<typeof ActionPayloadSchema>;
 
 export const LogViewToHostMessageSchema = z.discriminatedUnion('type', [
     z.object({ type: z.literal('webviewLoaded') }),
+    z.object({ type: z.literal('setFollowEditor'), payload: z.object({ enabled: z.boolean() }) }),
+    z.object({
+        type: z.literal('setRepositoryIncluded'),
+        payload: z.object({ path: z.string(), included: z.boolean() }),
+    }),
+    z.object({ type: z.literal('showRepository'), payload: z.object({ path: z.string() }) }),
     z.object({ type: z.literal('new') }),
     z.object({
         type: z.literal('newChild'),
@@ -144,6 +150,9 @@ export type LogViewToHostMessage = z.infer<typeof LogViewToHostMessageSchema>;
 
 export const LogViewPayloadSchema = z.object({
     commits: z.array(JjLogEntrySchema),
+    repositoryPath: z.string().optional(),
+    selectedCommitIds: z.array(z.string()).optional(),
+    loading: z.boolean().optional(),
     minChangeIdLength: z.number().optional(),
     theme: z.string().optional(),
     graphLabelAlignment: z.string().optional(),
@@ -152,6 +161,14 @@ export const LogViewPayloadSchema = z.object({
 export type LogViewPayload = z.infer<typeof LogViewPayloadSchema>;
 
 export const LogViewHostToWebviewMessageSchema = z.discriminatedUnion('type', [
+    z.object({
+        type: z.literal('repositoryFocus'),
+        payload: z.object({
+            followEditor: z.boolean(),
+            focusedPath: z.string().optional(),
+            repositories: z.array(z.object({ path: z.string(), name: z.string(), included: z.boolean() })),
+        }),
+    }),
     z.object({
         type: z.literal('update'),
         payload: LogViewPayloadSchema,

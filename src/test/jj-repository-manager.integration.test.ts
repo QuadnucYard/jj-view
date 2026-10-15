@@ -358,15 +358,14 @@ suite('JjRepositoryManager Integration Test', () => {
         await using _workspace = await setWorkspaceFolders([Uri.file(mainRepo.path), Uri.file(otherRepo.path)]);
 
         await manager.scanForRepositories();
-        const initialFocus = manager.focusedRepository?.rootUri.fsPath;
-        assert.ok(
-            initialFocus === mainRepo.path || initialFocus === otherRepo.path,
-            'Should focus one of the registered repositories',
-        );
-
-        const targetPath = initialFocus === mainRepo.path ? otherRepo.path : mainRepo.path;
+        const initialFocus = manager.focusedRepository;
+        assert.ok(initialFocus && manager.repositories.includes(initialFocus), 'Should focus a registered repository');
+        const target = manager.repositories.find((repo) => repo !== initialFocus);
+        assert.ok(target, 'Should have another repository to follow');
+        const targetPath = target.rootUri.fsPath;
 
         const fileUri = Uri.file(path.join(targetPath, 'file.ts'));
+        await manager.setFollowEditor(true);
         manager.tryAutoSwitch(fileUri);
 
         assert.strictEqual(manager.focusedRepository?.rootUri.fsPath, targetPath);

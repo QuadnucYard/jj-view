@@ -72,9 +72,13 @@ describe('registerWebCommands', () => {
         const mockRepoManager = createMock<JjRepositoryManager>({
             repositories: [mockRepo],
             focusedRepository: mockRepo,
+            getRepositoryForUri: () => mockRepo,
+            outputChannel: createMock<LoggerChannel>({ info: vi.fn() }),
         });
 
         const mockScmModel = createMock<ScmModel>({
+            repo: mockRepo,
+            getSelectedCommitIds: () => [],
             jj: mockJj,
             refresh: vi.fn(async (options?: unknown) => {
                 refreshCalls.push(options);

@@ -74,6 +74,11 @@ import { workspaceForgetCommand } from '../core/commands/workspace-forget';
 import { workspaceOpenInCurrentWindowCommand, workspaceOpenInNewWindowCommand } from '../core/commands/workspace-open';
 import type { CommentsManager } from '../core/comments-manager';
 import type { CommandContext } from '../core/host/command-context';
+import {
+    extractGraphCommandScope,
+    getGraphCommandRepository,
+    registerGraphToolbarCommands,
+} from '../core/host/graph-command-scope';
 import { TOGGLEABLE_COMMIT_ACTIONS } from '../core/host/ipc/log-view-schemas';
 import { resolveRepository } from '../core/host/ui-helpers';
 import type { JjRepository } from '../core/jj-repository';
@@ -154,6 +159,7 @@ export function registerCommands(options: RegisterCommandsOptions): void {
     const { context, repositoryManager, scmProviders, outputChannel, commentsManager, logWebviewProvider } = options;
     const host = options.hostEnvironment ?? new VsCodeHostEnvironment({ context });
     context.subscriptions.push(registerOpenSyncTracking());
+    context.subscriptions.push(...registerGraphToolbarCommands(host.commands, repositoryManager));
 
     function resolveRepositoryLocal(
         args: unknown[],
@@ -182,11 +188,14 @@ export function registerCommands(options: RegisterCommandsOptions): void {
         handler: (ctx: CommandContext, payload: TPayload) => Promise<TReturn>,
     ): vscode.Disposable {
         return vscode.commands.registerCommand(commandId, async (...args: unknown[]) => {
-            const resolved = resolveRepositoryLocal(args, host);
+            const scoped = extractGraphCommandScope(args);
+            const graphRepo = scoped.rootUri ? getGraphCommandRepository(repositoryManager, scoped.rootUri) : undefined;
+            const resolved = scoped.rootUri
+                ? graphRepo && { repo: graphRepo, scm: scmProviders.get(graphRepo.rootUri.fsPath) }
+                : resolveRepositoryLocal(scoped.args, host);
             if (resolved?.repo) {
-                repositoryManager.setFocusedRepository(resolved.repo);
                 const cmdCtx = new VSCodeCommandContext(resolved.repo, host, outputChannel, commentsManager);
-                const payload = payloadCreator(args, resolved.scm);
+                const payload = payloadCreator(scoped.args, resolved.scm);
                 return await handler(cmdCtx, payload);
             } else {
                 const message = `[Command Error] Failed to resolve repository for command: ${commandId}`;
@@ -202,11 +211,14 @@ export function registerCommands(options: RegisterCommandsOptions): void {
         handler: (ctx: CommandContext, ...args: unknown[]) => Promise<TReturn>,
     ): vscode.Disposable {
         return vscode.commands.registerCommand(commandId, async (...args: unknown[]) => {
-            const resolved = resolveRepositoryLocal(args, host);
+            const scoped = extractGraphCommandScope(args);
+            const graphRepo = scoped.rootUri ? getGraphCommandRepository(repositoryManager, scoped.rootUri) : undefined;
+            const resolved = scoped.rootUri
+                ? graphRepo && { repo: graphRepo, scm: scmProviders.get(graphRepo.rootUri.fsPath) }
+                : resolveRepositoryLocal(scoped.args, host);
             if (resolved?.repo) {
-                repositoryManager.setFocusedRepository(resolved.repo);
                 const cmdCtx = new VSCodeCommandContext(resolved.repo, host, outputChannel, commentsManager);
-                return await handler(cmdCtx, ...args);
+                return await handler(cmdCtx, ...scoped.args);
             } else {
                 const message = `[Command Error] Failed to resolve repository for command: ${commandId}`;
                 outputChannel.error(message);
@@ -217,8 +229,8 @@ export function registerCommands(options: RegisterCommandsOptions): void {
     }
 
     context.subscriptions.push(
-        registerCommand('jj-view.focusRepository', async () => {
-            // No-op: registerCommand automatically resolves the clicked repository's rootUri and sets it as the focused repository.
+        registerCommand('jj-view.focusRepository', async (ctx) => {
+            await repositoryManager.showRepository(ctx.repo);
         }),
         registerCommandWithPayload('jj-view.new', createNewPayload, newCommand),
         registerCommandWithPayload('jj-view.newMergeChange', createNewMergeChangePayload, newMergeChangeCommand),

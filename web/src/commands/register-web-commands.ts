@@ -11,6 +11,7 @@ import { setBookmarkCommand } from '../../../src/core/commands/bookmark';
 import { advanceBookmarkCommand } from '../../../src/core/commands/bookmark-advance';
 import { advanceBookmarkAndUploadCommand } from '../../../src/core/commands/bookmark-advance-upload';
 import { deleteBookmarkCommand } from '../../../src/core/commands/bookmark-delete';
+import { extractRevisions } from '../../../src/core/commands/command-utils';
 import {
     ackCommentCommand,
     copyUnresolvedCommentsCommand,
@@ -77,8 +78,14 @@ import {
 } from '../../../src/core/commands/workspace-open';
 import type { LogViewController } from '../../../src/core/controllers/log-view-controller';
 import { BaseCommandContext, type CommandContext } from '../../../src/core/host/command-context';
+import {
+    extractGraphCommandScope,
+    getGraphCommandRepository,
+    registerGraphToolbarCommands,
+} from '../../../src/core/host/graph-command-scope';
 import type { HostEnvironment } from '../../../src/core/host/host-environment';
 import { TOGGLEABLE_COMMIT_ACTIONS } from '../../../src/core/host/ipc/log-view-schemas';
+import { resolveRepository } from '../../../src/core/host/ui-helpers';
 import type { JjRepository } from '../../../src/core/jj-repository';
 import type { JjRepositoryManager } from '../../../src/core/jj-repository-manager';
 import type { ScmModel } from '../../../src/core/scm-model';
@@ -149,9 +156,10 @@ export interface RegisterWebCommandsOptions {
 
 export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     const { repositoryManager, hostEnvironment, logger, scmModel, logViewController, authManager } = options;
+    registerGraphToolbarCommands(hostEnvironment.commands, repositoryManager);
 
     function getActiveRepo(): JjRepository | undefined {
-        return repositoryManager.focusedRepository ?? repositoryManager.repositories[0] ?? scmModel.repo;
+        return repositoryManager.focusedRepository;
     }
 
     function createCmdContext(repo: JjRepository): CommandContext {
@@ -160,18 +168,27 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
 
     function registerWithPayload<TPayload, TReturn = unknown>(
         commandId: string,
-        payloadCreator: (args: unknown[], hostEnvironment?: HostEnvironment) => TPayload,
+        payloadCreator: (args: unknown[], hostEnvironment?: HostEnvironment, selectedCommitIds?: string[]) => TPayload,
         handler: (ctx: CommandContext, payload: TPayload) => Promise<TReturn>,
     ): void {
         hostEnvironment.commands.registerCommand(commandId, async (...args: unknown[]) => {
-            const repo = getActiveRepo();
+            const scoped = extractGraphCommandScope(args);
+            const repo = scoped.rootUri
+                ? getGraphCommandRepository(repositoryManager, scoped.rootUri)
+                : resolveRepository(repositoryManager, { args: scoped.args, activeUri: scmModel.repo.rootUri });
             if (!repo) {
                 logger.error(`[Command Error] No active repository for command: ${commandId}`);
                 await hostEnvironment.ui.showErrorMessage(`No active repository for command: ${commandId}`);
                 return;
             }
             const ctx = createCmdContext(repo);
-            const payload = payloadCreator(args, hostEnvironment);
+            const selection =
+                scoped.rootUri && logViewController?.repository === repo
+                    ? [...logViewController.selectedCommitIds]
+                    : scmModel.repo === repo
+                      ? scmModel.getSelectedCommitIds()
+                      : [];
+            const payload = payloadCreator(scoped.args, hostEnvironment, selection);
             const result = await handler(ctx, payload);
             await repo.refresh();
             return result;
@@ -183,24 +200,27 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         handler: (ctx: CommandContext, ...args: unknown[]) => Promise<TReturn>,
     ): void {
         hostEnvironment.commands.registerCommand(commandId, async (...args: unknown[]) => {
-            const repo = getActiveRepo();
+            const scoped = extractGraphCommandScope(args);
+            const repo = scoped.rootUri
+                ? getGraphCommandRepository(repositoryManager, scoped.rootUri)
+                : resolveRepository(repositoryManager, { args: scoped.args, activeUri: scmModel.repo.rootUri });
             if (!repo) {
                 logger.error(`[Command Error] No active repository for command: ${commandId}`);
                 await hostEnvironment.ui.showErrorMessage(`No active repository for command: ${commandId}`);
                 return;
             }
             const ctx = createCmdContext(repo);
-            const result = await handler(ctx, ...args);
+            const result = await handler(ctx, ...scoped.args);
             await repo.refresh();
             return result;
         });
     }
 
     // 1. Navigation & Focus Commands
-    hostEnvironment.commands.registerCommand('jj-view.focusRepository', async () => {
-        const repo = getActiveRepo();
+    hostEnvironment.commands.registerCommand('jj-view.focusRepository', async (...args: unknown[]) => {
+        const repo = resolveRepository(repositoryManager, { args, activeUri: scmModel.repo.rootUri });
         if (repo) {
-            repositoryManager.setFocusedRepository(repo);
+            await repositoryManager.showRepository(repo);
         }
     });
 
@@ -210,9 +230,22 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
 
     // 2. Commit, Describe, New
     registerWithPayload('jj-view.new', createNewPayload, newCommand);
-    registerWithPayload('jj-view.newMergeChange', createNewMergeChangePayload, newMergeChangeCommand);
-    registerWithPayload('jj-view.newBefore', createNewBeforePayload, newBeforeCommand);
-    registerWithPayload('jj-view.newAfter', createNewAfterPayload, newAfterCommand);
+    registerWithPayload(
+        'jj-view.newMergeChange',
+        (args, _host, selection) =>
+            createNewMergeChangePayload(extractRevisions(args).length ? args : (selection ?? [])),
+        newMergeChangeCommand,
+    );
+    registerWithPayload(
+        'jj-view.newBefore',
+        (args, _host, selection) => createNewBeforePayload(extractRevisions(args).length ? args : (selection ?? [])),
+        newBeforeCommand,
+    );
+    registerWithPayload(
+        'jj-view.newAfter',
+        (args, _host, selection) => createNewAfterPayload(extractRevisions(args).length ? args : (selection ?? [])),
+        newAfterCommand,
+    );
 
     registerWithPayload('jj-view.commit', (args) => createCommitPayload(args, scmModel), commitCommand);
 
@@ -251,24 +284,24 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     // 5. Revision Manipulation
     registerWithPayload(
         'jj-view.abandon',
-        (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()),
+        (args, _host, selection) => createAbandonPayload(args, selection),
         abandonCommand,
     );
     registerWithPayload(
         'jj-view.abandonDescendants',
-        (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()),
+        (args, _host, selection) => createAbandonPayload(args, selection),
         abandonDescendantsCommand,
     );
     registerWithPayload(
         'jj-view.squashDescendants',
-        (args) => createAbandonPayload(args, scmModel.getSelectedCommitIds()),
+        (args, _host, selection) => createAbandonPayload(args, selection),
         squashDescendantsCommand,
     );
     registerWithPayload('jj-view.edit', createEditPayload, editCommand);
     registerWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand);
     registerWithPayload(
         'jj-view.rebaseOntoSelected',
-        (args) => createRebaseOntoSelectedPayload(args, scmModel.getSelectedCommitIds()),
+        (args, _host, selection) => createRebaseOntoSelectedPayload(args, selection),
         rebaseOntoSelectedCommand,
     );
     registerWithPayload('jj-view.absorb', createAbsorbPayload, absorbCommand);

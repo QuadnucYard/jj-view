@@ -207,11 +207,14 @@ export async function bootstrap(): Promise<void> {
             }
         });
 
-        logController = new LogViewController(repo, webHostEnv, {
+        logController = new LogViewController(repoManager.focusedRepository, webHostEnv, {
+            repositoryManager: repoManager,
             messenger: logBridge.messenger,
             logger: NO_OP_LOGGER,
             onSelectionChange: (ids) => {
-                scmModel.handleSelectionChange(ids);
+                if (repoManager.focusedRepository === scmModel.repo) {
+                    scmModel.handleSelectionChange(ids);
+                }
             },
         });
 

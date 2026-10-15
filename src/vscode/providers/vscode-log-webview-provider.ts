@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import type * as vscode from 'vscode';
 import { LogViewController } from '../../core/controllers/log-view-controller';
 import type { JjRepository } from '../../core/jj-repository';
+import type { JjRepositoryManager } from '../../core/jj-repository-manager';
 import type { Uri } from '../../core/uri-utils';
 import type { LoggerChannel } from '../../utils/output-channel';
 import { VsCodeHostEnvironment } from '../vscode-host-environment';
@@ -27,6 +28,7 @@ export class VsCodeLogWebviewProvider implements vscode.WebviewViewProvider, vsc
         onSelectionChange: (commits: string[]) => void,
         context: vscode.ExtensionContext,
         outputChannel?: LoggerChannel,
+        repositoryManager?: JjRepositoryManager,
     ) {
         this.outputChannel = outputChannel;
 
@@ -36,6 +38,7 @@ export class VsCodeLogWebviewProvider implements vscode.WebviewViewProvider, vsc
         });
 
         this.controller = new LogViewController(initialRepo, host, {
+            repositoryManager,
             logger: outputChannel,
             onSelectionChange,
         });

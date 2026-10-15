@@ -24,6 +24,12 @@ interface DetectedRepoInfo {
     isMain: boolean;
 }
 
+interface StoredGraphFocus {
+    followEditor: boolean;
+    includedPaths?: string[];
+    recentPaths: string[];
+}
+
 /**
  * Discovers and manages multiple Jujutsu repositories within the workspace.
  */
@@ -41,6 +47,13 @@ export class JjRepositoryManager implements HostDisposable {
     private _disposed = false;
     private _normalizedWorkspaceFolders: string[] | undefined;
     private readonly _realNormalizedPathCache = new AsyncCache<string, string>({ maxEntries: 250 });
+    private _followEditor = false;
+    private _includedPaths: Set<string> | undefined;
+    private _recentPaths: string[] = [];
+    private _lastFocusedPath: string | undefined;
+    readonly focusReady: Promise<void>;
+    private readonly _onDidChangeGraphFocus = new EventEmitter<void>();
+    readonly onDidChangeGraphFocus = this._onDidChangeGraphFocus.event;
 
     private readonly _onDidOpenRepository = new EventEmitter<JjRepository>();
     readonly onDidOpenRepository: Event<JjRepository> = this._onDidOpenRepository.event;
@@ -56,6 +69,7 @@ export class JjRepositoryManager implements HostDisposable {
 
     private static readonly LAST_FOCUSED_REPO_KEY = 'jj-view.lastFocusedRepoPath';
     private static readonly DISCOVERED_REPOS_KEY = 'jj-view.discoveredRepoPaths';
+    private static readonly GRAPH_FOCUS_KEY = 'jj-view.graphFocus';
 
     constructor(
         private readonly _codeForgeRegistry: CodeForgeRegistry,
@@ -65,24 +79,18 @@ export class JjRepositoryManager implements HostDisposable {
         private readonly _processTracker?: JjProcessTracker,
     ) {
         this._binaryPath = initialBinaryPath;
+        this.focusReady = this.loadGraphFocus();
         this.updateIgnoredPaths();
 
         // 1. Scan and register open editors at startup (only if configured to detect from open editors)
         if (this.shouldDetectFromOpenEditors()) {
             for (const uri of this.getOpenEditorUris()) {
-                this.maybeRegisterRepositoryContainingUri(uri)
-                    .then(() => {
-                        const activeUriNow = this._host.documents.getActiveDocumentUri?.();
-                        if (activeUriNow && activeUriNow.toString() === uri.toString()) {
-                            this.tryAutoSwitch(uri);
-                        }
-                    })
-                    .catch((err) => {
-                        this._outputChannel.error(
-                            '[RepositoryManager] Error checking open editor URI at start',
-                            toError(err),
-                        );
-                    });
+                this.maybeRegisterRepositoryContainingUri(uri).catch((err) => {
+                    this._outputChannel.error(
+                        '[RepositoryManager] Error checking open editor URI at start',
+                        toError(err),
+                    );
+                });
             }
         }
 
@@ -93,25 +101,23 @@ export class JjRepositoryManager implements HostDisposable {
                     if (!uri) {
                         return;
                     }
-                    if (this.tryAutoSwitch(uri)) {
+                    if (this.getRepositoryForUri(uri)) {
+                        void this.focusReady.then(() => {
+                            if (this._host.documents.getActiveDocumentUri?.()?.toString() === uri.toString()) {
+                                this.tryAutoSwitch(uri);
+                            }
+                        });
                         return;
                     }
                     if (!this.shouldDetectFromOpenEditors()) {
                         return;
                     }
-                    this.maybeRegisterRepositoryContainingUri(uri)
-                        .then(() => {
-                            const activeUriNow = this._host.documents.getActiveDocumentUri?.();
-                            if (activeUriNow && activeUriNow.toString() === uri.toString()) {
-                                this.tryAutoSwitch(uri);
-                            }
-                        })
-                        .catch((err) => {
-                            this._outputChannel.error(
-                                '[RepositoryManager] Error checking active document URI',
-                                toError(err),
-                            );
-                        });
+                    this.maybeRegisterRepositoryContainingUri(uri).catch((err) => {
+                        this._outputChannel.error(
+                            '[RepositoryManager] Error checking active document URI',
+                            toError(err),
+                        );
+                    });
                 }),
             );
         }
@@ -133,6 +139,92 @@ export class JjRepositoryManager implements HostDisposable {
 
     get focusedRepository(): JjRepository | undefined {
         return this._focusedRepository;
+    }
+
+    get followEditor(): boolean {
+        return this._followEditor;
+    }
+
+    isRepositoryIncluded(repo: JjRepository): boolean {
+        return !this._includedPaths || this._includedPaths.has(this.normalizePath(repo.rootUri.fsPath));
+    }
+
+    async setFollowEditor(enabled: boolean): Promise<void> {
+        await this.focusReady;
+        if (this._disposed || enabled === this._followEditor) {
+            return;
+        }
+        this._followEditor = enabled;
+        await this.persistGraphFocus();
+        this._onDidChangeGraphFocus.fire();
+    }
+
+    async setRepositoryIncluded(repo: JjRepository, included: boolean): Promise<void> {
+        await this.focusReady;
+        if (this._disposed || !this._repositories.includes(repo) || this.isRepositoryIncluded(repo) === included) {
+            return;
+        }
+        this._includedPaths ??= new Set(this._repositories.map((r) => this.normalizePath(r.rootUri.fsPath)));
+        const root = this.normalizePath(repo.rootUri.fsPath);
+        if (included) {
+            this._includedPaths.add(root);
+        } else {
+            this._includedPaths.delete(root);
+        }
+        this.ensureGraphFocus();
+        await this.persistGraphFocus();
+        this._onDidChangeGraphFocus.fire();
+    }
+
+    async showRepository(repo: JjRepository): Promise<void> {
+        await this.setRepositoryIncluded(repo, true);
+        if (!this._disposed && this._repositories.includes(repo)) {
+            this.setFocusedRepository(repo);
+        }
+    }
+
+    private async loadGraphFocus(): Promise<void> {
+        const [stored, lastPath] = await Promise.all([
+            this._host.storage.get<StoredGraphFocus>(JjRepositoryManager.GRAPH_FOCUS_KEY),
+            this._host.storage.get<string>(JjRepositoryManager.LAST_FOCUSED_REPO_KEY),
+        ]);
+        if (this._disposed) {
+            return;
+        }
+        this._followEditor = stored?.followEditor === true;
+        this._includedPaths = Array.isArray(stored?.includedPaths)
+            ? new Set(stored.includedPaths.filter((p) => typeof p === 'string').map((p) => this.normalizePath(p)))
+            : undefined;
+        this._recentPaths = Array.isArray(stored?.recentPaths)
+            ? stored.recentPaths.filter((p) => typeof p === 'string').map((p) => this.normalizePath(p))
+            : [];
+        this._lastFocusedPath = this._focusedRepository?.rootUri.fsPath ?? lastPath;
+        this.ensureGraphFocus();
+        this._onDidChangeGraphFocus.fire();
+    }
+
+    private persistGraphFocus(): Promise<void> {
+        return this._host.storage.update(JjRepositoryManager.GRAPH_FOCUS_KEY, {
+            followEditor: this._followEditor,
+            includedPaths: this._includedPaths ? [...this._includedPaths] : undefined,
+            recentPaths: this._recentPaths,
+        } satisfies StoredGraphFocus);
+    }
+
+    private ensureGraphFocus(): void {
+        if (
+            this._focusedRepository &&
+            this._repositories.includes(this._focusedRepository) &&
+            this.isRepositoryIncluded(this._focusedRepository)
+        ) {
+            return;
+        }
+        const eligible = this._repositories.filter((repo) => this.isRepositoryIncluded(repo));
+        const preferred = [this._lastFocusedPath, ...this._recentPaths];
+        const target = preferred
+            .map((p) => eligible.find((repo) => this.isSamePath(repo.rootUri.fsPath, p)))
+            .find((repo) => repo !== undefined);
+        this.setFocusedRepository(target ?? eligible[0]);
     }
 
     get codeForgeRegistry(): CodeForgeRegistry {
@@ -190,7 +282,7 @@ export class JjRepositoryManager implements HostDisposable {
      * Set the focused repository. Fires `onDidChangeFocusedRepository` if changed.
      */
     setFocusedRepository(repo: JjRepository | undefined): void {
-        if (this._disposed) {
+        if (this._disposed || (repo && !this.isRepositoryIncluded(repo))) {
             return;
         }
         const currentPath = this._focusedRepository?.rootUri.fsPath;
@@ -204,8 +296,13 @@ export class JjRepositoryManager implements HostDisposable {
         this.fireEvent(this._onDidChangeFocusedRepository, repo);
 
         if (repo) {
+            this._lastFocusedPath = repo.rootUri.fsPath;
+            const normalized = this.normalizePath(repo.rootUri.fsPath);
+            this._recentPaths = [normalized, ...this._recentPaths.filter((p) => p !== normalized)].slice(0, 50);
             this._host.storage.update(JjRepositoryManager.LAST_FOCUSED_REPO_KEY, repo.rootUri.fsPath);
+            void this.persistGraphFocus();
         }
+        this._onDidChangeGraphFocus.fire();
     }
 
     private persistRepositories(): void {
@@ -222,6 +319,7 @@ export class JjRepositoryManager implements HostDisposable {
      * and registers them in bulk.
      */
     async restoreCachedRepositories(): Promise<void> {
+        await this.focusReady;
         if (this._disposed) {
             return;
         }
@@ -272,10 +370,7 @@ export class JjRepositoryManager implements HostDisposable {
 
         this.registerRepositories(loaded);
 
-        const lastPath = await this._host.storage.get<string>(JjRepositoryManager.LAST_FOCUSED_REPO_KEY);
-        const matched =
-            (lastPath ? loaded.find((r) => this.isSamePath(r.rootUri.fsPath, lastPath)) : undefined) || loaded[0];
-        this.setFocusedRepository(matched);
+        this.ensureGraphFocus();
     }
 
     /**
@@ -292,6 +387,7 @@ export class JjRepositoryManager implements HostDisposable {
     }
 
     private async doScan(): Promise<void> {
+        await this.focusReady;
         if (this._disposed) {
             return;
         }
@@ -493,21 +589,7 @@ export class JjRepositoryManager implements HostDisposable {
         this.fireEvent(this._onDidChangeRepositories, this._repositories);
         this._outputChannel.info(`[RepositoryManager] Total registered repositories: ${this._repositories.length}`);
 
-        // 5. Update focus
-        if (this._repositories.length > 0) {
-            if (
-                !this._focusedRepository ||
-                !this._repositories.some((r) =>
-                    this.isSamePath(r.rootUri.fsPath, this._focusedRepository?.rootUri.fsPath),
-                )
-            ) {
-                const activeUri = this._host.documents.getActiveDocumentUri?.();
-                const matched = activeUri ? this.getRepositoryForUri(activeUri) : undefined;
-                this.setFocusedRepository(matched ?? this._repositories[0]);
-            }
-        } else {
-            this.setFocusedRepository(undefined);
-        }
+        this.ensureGraphFocus();
     }
 
     /**
@@ -647,6 +729,7 @@ export class JjRepositoryManager implements HostDisposable {
      * @returns The registered JjRepository instance, or undefined if not in a valid workspace or if filtered.
      */
     async maybeRegisterRepositoryContainingUri(uri: Uri): Promise<JjRepository | undefined> {
+        await this.focusReady;
         if (this._disposed) {
             return undefined;
         }
@@ -857,7 +940,7 @@ export class JjRepositoryManager implements HostDisposable {
             this.fireEvent(this._onDidOpenRepository, repo);
             this.fireEvent(this._onDidChangeRepositories, this._repositories);
         }
-        this.setFocusedRepository(repo);
+        this.ensureGraphFocus();
     }
 
     private registerRepositories(repos: JjRepository[]): void {
@@ -1053,9 +1136,13 @@ export class JjRepositoryManager implements HostDisposable {
      * Attempt to switch active repository based on a file URI.
      */
     tryAutoSwitch(uri: Uri): boolean {
+        if (this._disposed || !this._followEditor) {
+            return false;
+        }
         const repo = this.getRepositoryForUri(uri);
         if (
             repo &&
+            this.isRepositoryIncluded(repo) &&
             (!this._focusedRepository || !this.isSamePath(repo.rootUri.fsPath, this._focusedRepository.rootUri.fsPath))
         ) {
             this.setFocusedRepository(repo);
@@ -1176,11 +1263,7 @@ export class JjRepositoryManager implements HostDisposable {
 
             // Re-evaluate focus if we closed the focused repository
             if (this._focusedRepository && this.isSamePath(this._focusedRepository.rootUri.fsPath, normalizedTarget)) {
-                if (this._repositories.length > 0) {
-                    this.setFocusedRepository(this._repositories[0]);
-                } else {
-                    this.setFocusedRepository(undefined);
-                }
+                this.ensureGraphFocus();
             }
         }
     }
@@ -1248,6 +1331,7 @@ export class JjRepositoryManager implements HostDisposable {
         this._onDidOpenRepository.dispose();
         this._onDidCloseRepository.dispose();
         this._onDidChangeFocusedRepository.dispose();
+        this._onDidChangeGraphFocus.dispose();
         this._onDidChangeRepositories.dispose();
 
         // 1. Await any active or queued scan

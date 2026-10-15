@@ -9,6 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test as baseTest, expect, type Page } from '@playwright/test';
 import type { HostEnvironment } from '../../core/host/host-environment';
+import type { JjRepositoryManager } from '../../core/jj-repository-manager';
 import { TestRepo } from '../test-repo';
 
 export { expect, type Page };
@@ -28,11 +29,7 @@ declare global {
                 setPosition(position: string): void;
             };
         };
-        __JJ_VIEW_REPO_MANAGER__?: {
-            readonly repositories: readonly {
-                readonly rootUri: { readonly fsPath: string };
-            }[];
-        };
+        __JJ_VIEW_REPO_MANAGER__?: JjRepositoryManager;
     }
 }
 export class StandaloneServer {

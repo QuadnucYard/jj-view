@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import path from 'pathe';
 import { CoalescingQueue } from '../../utils/coalescing-queue';
 import { toError } from '../../utils/error-utils';
 import { canAbsorbCommit } from '../../utils/jj-utils';
+import { LruCache } from '../../utils/lru-cache';
 import type { LoggerChannel } from '../../utils/output-channel';
 import type { CodeForgeService } from '../code-forge-service';
 import { type Disposable, type Event, EventEmitter } from '../host/events';
@@ -26,11 +28,13 @@ import {
 } from '../host/webview-rpc-dispatcher';
 import { JjContextKey } from '../jj-context-keys';
 import type { JjRepository } from '../jj-repository';
+import type { JjRepositoryManager } from '../jj-repository-manager';
 import type { JjService } from '../jj-service';
 import type { JjLogEntry } from '../jj-types';
 import { Uri } from '../uri-utils';
 
 export interface LogViewControllerOptions {
+    repositoryManager?: JjRepositoryManager;
     messenger?: WebviewPostMessageLike;
     logger?: LoggerChannel;
     onSelectionChange?: (commitIds: string[]) => void;
@@ -48,6 +52,8 @@ export class LogViewController implements Disposable {
 
     private _commits: readonly JjLogEntry[] = [];
     private _selectedCommitIds: readonly string[] = [];
+    private readonly _repositorySelections = new LruCache<string, readonly string[]>({ maxEntries: 50 });
+    private _loadingRepository = false;
     private _highlightedCommitId: string | undefined = undefined;
     private _hiddenActions: readonly ToggleableCommitAction[] = [];
     private _theme: string;
@@ -82,6 +88,16 @@ export class LogViewController implements Disposable {
         void this._loadStoredHiddenActions();
 
         this.bindRepo(this._repo);
+        const manager = _options?.repositoryManager;
+        if (manager) {
+            this._disposables.push(
+                manager.onDidChangeFocusedRepository((repo) => {
+                    this.repository = repo;
+                }),
+                manager.onDidChangeRepositories(() => this.sendRepositoryFocus()),
+                manager.onDidChangeGraphFocus(() => this.sendRepositoryFocus()),
+            );
+        }
 
         if (this._host.config.onDidChangeConfiguration) {
             this._disposables.push(
@@ -137,6 +153,9 @@ export class LogViewController implements Disposable {
     public getState(): LogViewPayload {
         return {
             commits: [...this._commits],
+            repositoryPath: this._repo?.rootUri.fsPath,
+            selectedCommitIds: [...this._selectedCommitIds],
+            loading: this._loadingRepository,
             minChangeIdLength: this._minChangeIdLength,
             theme: this._theme,
             graphLabelAlignment: this._graphLabelAlignment,
@@ -152,12 +171,36 @@ export class LogViewController implements Disposable {
         if (this._disposed || this._repo?.rootUri.fsPath === repo?.rootUri.fsPath) {
             return;
         }
+        if (this._repo) {
+            this._repositorySelections.set(this._repo.rootUri.fsPath, this._selectedCommitIds);
+        }
         this._repo = repo;
-        this._selectedCommitIds = [];
+        this._selectedCommitIds = repo ? (this._repositorySelections.get(repo.rootUri.fsPath) ?? []) : [];
+        this._commits = [];
+        this._loadingRepository = !!repo;
         this._highlightedCommitId = undefined;
         this._updateSelectionContextKeys(this._selectedCommitIds);
         this.bindRepo(repo);
-        this.refresh('repoChanged');
+        this._receiver.sender.setHighlight({ changeId: undefined });
+        this._receiver.sender.update(this.getState());
+        this._options?.onSelectionChange?.([...this._selectedCommitIds]);
+        void this.refresh('repoChanged');
+    }
+
+    private sendRepositoryFocus(): void {
+        const manager = this._options?.repositoryManager;
+        if (!manager || this._disposed) {
+            return;
+        }
+        this._receiver.sender.repositoryFocus({
+            followEditor: manager.followEditor,
+            focusedPath: manager.focusedRepository?.rootUri.fsPath,
+            repositories: manager.repositories.map((repo) => ({
+                path: repo.rootUri.fsPath,
+                name: path.basename(repo.rootUri.fsPath),
+                included: manager.isRepositoryIncluded(repo),
+            })),
+        });
     }
 
     public get jj(): JjService | undefined {
@@ -216,7 +259,12 @@ export class LogViewController implements Disposable {
     }
 
     private async _doRefresh(): Promise<void> {
-        if (!this._repo || !(await this._repo.isValid())) {
+        const repo = this._repo;
+        const valid = repo && (await repo.isValid());
+        if (this._disposed || repo !== this._repo) {
+            return;
+        }
+        if (!repo || !valid) {
             this._logger?.info?.(
                 `[LogViewController] ${this._repo ? this._repo.rootUri.fsPath : 'No repository'} is not valid. Clearing commits.`,
             );
@@ -224,8 +272,8 @@ export class LogViewController implements Disposable {
             return;
         }
 
-        const jj = this._repo.jj;
-        const targetRepoPath = this._repo.rootUri.fsPath;
+        const jj = repo.jj;
+        const targetRepoPath = repo.rootUri.fsPath;
 
         try {
             const start = performance.now();
@@ -249,6 +297,9 @@ export class LogViewController implements Disposable {
             );
         } catch (e) {
             this._logger?.error('[LogViewController] Failed to fetch log', toError(e));
+            if (this._repo === repo && this._loadingRepository) {
+                this.setCommits([]);
+            }
             return;
         }
 
@@ -258,6 +309,7 @@ export class LogViewController implements Disposable {
     }
 
     public setCommits(commits: readonly JjLogEntry[]): void {
+        this._loadingRepository = false;
         if (commits !== this._commits) {
             this._codeForgeFetchVersion++;
         }
@@ -541,10 +593,17 @@ export class LogViewController implements Disposable {
                 await operation(jj);
             });
             await this.refresh('mutationComplete');
-            await this._host.commands.executeCommand('jj-view.refresh');
+            await this.executeGraphCommand('jj-view.refresh');
         } catch (err) {
             await showJjError(this._host.ui, err, failureMessage, jj, this._logger);
         }
+    }
+
+    private async executeGraphCommand(commandId: string, ...args: unknown[]): Promise<unknown> {
+        if (!this._repo) {
+            return;
+        }
+        return this._host.commands.executeCommand(commandId, ...args, { graphRepositoryRoot: this._repo.rootUri });
     }
 
     private _createRpcReceiver(): WebviewRpcReceiver<LogViewToHostMessage, LogViewHostToWebviewMessage> {
@@ -552,7 +611,26 @@ export class LogViewController implements Disposable {
             LogViewToHostMessageSchema,
             {
                 webviewLoaded: async () => {
+                    await this._options?.repositoryManager?.focusReady;
+                    this.sendRepositoryFocus();
                     await this.refresh('webviewLoaded');
+                },
+                setFollowEditor: async ({ enabled }) => {
+                    await this._options?.repositoryManager?.setFollowEditor(enabled);
+                },
+                setRepositoryIncluded: async ({ path, included }) => {
+                    const manager = this._options?.repositoryManager;
+                    const repo = manager?.repositories.find((repo) => repo.rootUri.fsPath === path);
+                    if (repo) {
+                        await manager?.setRepositoryIncluded(repo, included);
+                    }
+                },
+                showRepository: async ({ path }) => {
+                    const manager = this._options?.repositoryManager;
+                    const repo = manager?.repositories.find((repo) => repo.rootUri.fsPath === path);
+                    if (repo) {
+                        await manager?.showRepository(repo);
+                    }
                 },
                 openCodeForge: async (msg) => {
                     if (!msg.url) {
@@ -570,16 +648,16 @@ export class LogViewController implements Disposable {
                     }
                 },
                 newChild: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.new', msg);
+                    await this.executeGraphCommand('jj-view.new', msg);
                 },
                 squash: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.squashRevisionIntoParent', msg);
+                    await this.executeGraphCommand('jj-view.squashRevisionIntoParent', msg);
                 },
                 edit: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.edit', msg);
+                    await this.executeGraphCommand('jj-view.edit', msg);
                 },
                 describe: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.describe', msg);
+                    await this.executeGraphCommand('jj-view.describe', msg);
                 },
                 select: async (msg) => {
                     if (!this.jj) {
@@ -588,16 +666,16 @@ export class LogViewController implements Disposable {
                     const details = await this.jj.showDetails(msg.changeId);
                     // biome-ignore lint/suspicious/noControlCharactersInRegex: Standard regex for stripping ANSI escape codes
                     const cleanDetails = details.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
-                    await this._host.commands.executeCommand('jj-view.showDetails', cleanDetails);
+                    await this.executeGraphCommand('jj-view.showDetails', cleanDetails);
                 },
                 undo: async () => {
-                    await this._host.commands.executeCommand('jj-view.undo');
+                    await this.executeGraphCommand('jj-view.undo');
                 },
                 redo: async () => {
-                    await this._host.commands.executeCommand('jj-view.redo');
+                    await this.executeGraphCommand('jj-view.redo');
                 },
                 abandon: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.abandon', msg);
+                    await this.executeGraphCommand('jj-view.abandon', msg);
                 },
                 getDetails: async (msg) => {
                     if (this._repo) {
@@ -612,13 +690,13 @@ export class LogViewController implements Disposable {
                     }
                 },
                 new: async () => {
-                    await this._host.commands.executeCommand('jj-view.new');
+                    await this.executeGraphCommand('jj-view.new');
                 },
                 newBefore: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.newBefore', ...(msg.changeIds || []));
+                    await this.executeGraphCommand('jj-view.newBefore', ...(msg.changeIds || []));
                 },
                 newAfter: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.newAfter', ...(msg.changeIds || []));
+                    await this.executeGraphCommand('jj-view.newAfter', ...(msg.changeIds || []));
                 },
                 resolve: async (msg) => {
                     await this.executeJjMutation('Resolving conflict...', 'Failed to resolve conflict', async (jj) => {
@@ -678,16 +756,16 @@ export class LogViewController implements Disposable {
                     );
                 },
                 upload: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.upload', { ...msg, mode: 'auto' });
+                    await this.executeGraphCommand('jj-view.upload', { ...msg, mode: 'auto' });
                 },
                 showComments: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.showComments', msg.changeId);
+                    await this.executeGraphCommand('jj-view.showComments', msg.changeId);
                 },
                 setContextKey: async (msg) => {
                     await this._host.commands.setContextKey(msg.key, msg.value);
                 },
                 contextMenu: async (msg) => {
-                    await this._host.commands.executeCommand('jj-view.contextMenu', msg);
+                    await this.executeGraphCommand('jj-view.contextMenu', msg);
                 },
                 selectionChange: async (msg) => {
                     const hasImmutable = Boolean(msg.hasImmutableSelection);

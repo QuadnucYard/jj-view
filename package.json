@@ -744,6 +744,42 @@
                 "title": "Copy Unresolved Comments",
                 "category": "JJ View",
                 "icon": "$(copy)"
+            },
+            {
+                "command": "jj-view.graph.undo",
+                "title": "Undo",
+                "category": "JJ View",
+                "icon": "$(discard)"
+            },
+            {
+                "command": "jj-view.graph.redo",
+                "title": "Redo",
+                "category": "JJ View",
+                "icon": "$(redo)"
+            },
+            {
+                "command": "jj-view.graph.abandon",
+                "title": "Abandon",
+                "category": "JJ View",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "jj-view.graph.newMergeChange",
+                "title": "New Merge Change",
+                "category": "JJ View",
+                "icon": "$(git-merge)"
+            },
+            {
+                "command": "jj-view.graph.newBefore",
+                "title": "New Before",
+                "category": "JJ View",
+                "icon": "$(arrow-small-down)"
+            },
+            {
+                "command": "jj-view.graph.workspaceAdd",
+                "title": "Add Workspace",
+                "category": "JJ View",
+                "icon": "$(jj-icon-workspace-add)"
             }
         ],
         "keybindings": [
@@ -915,36 +951,60 @@
                 {
                     "command": "jj-view.toggleCommitAction.describe.off",
                     "when": "false"
+                },
+                {
+                    "command": "jj-view.graph.undo",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.graph.redo",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.graph.abandon",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.graph.newMergeChange",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.graph.newBefore",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.graph.workspaceAdd",
+                    "when": "false"
                 }
             ],
             "view/title": [
                 {
-                    "command": "jj-view.undo",
+                    "command": "jj-view.graph.undo",
                     "group": "navigation@1",
                     "when": "view == jj-view.logView"
                 },
                 {
-                    "command": "jj-view.redo",
+                    "command": "jj-view.graph.redo",
                     "group": "navigation@2",
                     "when": "view == jj-view.logView"
                 },
                 {
-                    "command": "jj-view.abandon",
+                    "command": "jj-view.graph.abandon",
                     "group": "navigation@3",
                     "when": "view == jj-view.logView && jj.selection.allowAbandon"
                 },
                 {
-                    "command": "jj-view.newMergeChange",
+                    "command": "jj-view.graph.newMergeChange",
                     "group": "navigation@4",
                     "when": "view == jj-view.logView && jj.selection.allowMerge"
                 },
                 {
-                    "command": "jj-view.newBefore",
+                    "command": "jj-view.graph.newBefore",
                     "group": "navigation@5",
                     "when": "view == jj-view.logView && jj.selection.allowNewBefore"
                 },
                 {
-                    "command": "jj-view.workspaceAdd",
+                    "command": "jj-view.graph.workspaceAdd",
                     "group": "navigation@10",
                     "when": "view == jj-view.logView"
                 },

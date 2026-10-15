@@ -3,6 +3,8 @@
   SPDX-License-Identifier: Apache-2.0
 -->
 <script lang="ts">
+import { tick } from 'svelte';
+import { LruCache } from '../../../utils/lru-cache';
 import {
     type ActionPayload,
     type CommitAction,
@@ -16,6 +18,7 @@ import { BookmarkPill, TagPill } from '../common/components';
 import { useRpcReceiver, useRpcSender } from '../transport/bridge.svelte';
 import CommitDragPreview from './components/CommitDragPreview.svelte';
 import CommitGraph from './components/CommitGraph.svelte';
+import RepositoryToolbar from './components/RepositoryToolbar.svelte';
 import { DragManager } from './drag-manager.svelte';
 import { findMatchingCommit } from './utils/commit-utils';
 import { calculateNextSelection, hasImmutableSelection } from './utils/selection-utils';
@@ -30,6 +33,11 @@ let rawHighlightQuery = $state<string | undefined>(undefined);
 const highlightedCommit = $derived(findMatchingCommit(commits, rawHighlightQuery));
 const highlightedCommitId = $derived(highlightedCommit?.change_id);
 let hiddenActions = $state<Set<CommitAction>>(new Set());
+let repositoryFocus = $state<Extract<LogViewHostToWebviewMessage, { type: 'repositoryFocus' }>['payload']>();
+let repositoryPath = $state<string | undefined>();
+let scrollContainer: HTMLDivElement | undefined;
+const scrollPositions = new LruCache<string, number>({ maxEntries: 50 });
+let pendingScrollRestore = false;
 
 function scrollToCommit(changeId: string) {
     if (typeof document === 'undefined') {
@@ -113,13 +121,30 @@ $effect(() => {
 });
 
 useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
+    repositoryFocus: (state) => {
+        repositoryFocus = state;
+    },
     update: ({
         commits: newCommits,
         minChangeIdLength: minLen,
         theme: th,
         graphLabelAlignment: align,
         hiddenActions: hidden,
+        repositoryPath: nextPath,
+        selectedCommitIds: selection,
+        loading: isLoading,
     }) => {
+        if (nextPath !== repositoryPath) {
+            if (repositoryPath && scrollContainer) {
+                scrollPositions.set(repositoryPath, scrollContainer.scrollTop);
+            }
+            repositoryPath = nextPath;
+            pendingScrollRestore = true;
+            rawHighlightQuery = undefined;
+        }
+        if (selection) {
+            selectedCommitIds = new Set(selection);
+        }
         commits = newCommits;
         if (minLen !== undefined) {
             minChangeIdLength = minLen;
@@ -133,9 +158,18 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
         if (hidden !== undefined) {
             hiddenActions = new Set(hidden);
         }
-        loading = false;
+        loading = isLoading ?? false;
+        if (pendingScrollRestore && !loading) {
+            pendingScrollRestore = false;
+            const restorePath = repositoryPath;
+            void tick().then(() => {
+                if (scrollContainer && repositoryPath === restorePath) {
+                    scrollContainer.scrollTop = restorePath ? (scrollPositions.get(restorePath) ?? 0) : 0;
+                }
+            });
+        }
 
-        if (selectedCommitIds.size > 0) {
+        if (!loading && selectedCommitIds.size > 0) {
             const validIds = Array.from(selectedCommitIds).filter((id) =>
                 newCommits.some((c: JjLogEntry) => c.change_id === id),
             );
@@ -275,7 +309,18 @@ function handleGraphAction(action: string, payload: ActionPayload) {
     onblur={() => dragManager.handleWindowBlur()}
 />
 
-{#if loading}
+<div class="log-view" data-vscode-context={JSON.stringify({ graphRepositoryPath: repositoryPath })}>
+{#if repositoryFocus}
+    <RepositoryToolbar
+        state={repositoryFocus}
+        onShowRepository={(path) => { void sender.showRepository({ path }); }}
+        onSetIncluded={(path, included) => { void sender.setRepositoryIncluded({ path, included }); }}
+        onSetFollowEditor={(enabled) => { void sender.setFollowEditor({ enabled }); }}
+    />
+{/if}
+{#if repositoryFocus && !repositoryFocus.focusedPath}
+    <div class="loading-state">Choose repositories above to display the graph.</div>
+{:else if loading}
     <div class="loading-state">
         Loading changes...
     </div>
@@ -288,6 +333,7 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
             class="scroll-container"
+            bind:this={scrollContainer}
             onclick={(e) => {
                 if (e.target === e.currentTarget) {
                     selectedCommitIds = new Set();
@@ -347,7 +393,16 @@ function handleGraphAction(action: string, payload: ActionPayload) {
     </div>
 {/if}
 
+</div>
+
 <style>
+    .log-view {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        overflow: hidden;
+    }
+    .app-container { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .loading-state {
         padding: 20px;
         color: var(--vscode-descriptionForeground);
@@ -356,7 +411,7 @@ function handleGraphAction(action: string, payload: ActionPayload) {
     .scroll-container {
         flex: 1;
         overflow: auto;
-        min-height: 100vh;
+        min-height: 0;
     }
 
     .drag-preview-overlay {

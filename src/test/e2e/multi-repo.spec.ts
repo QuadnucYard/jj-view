@@ -11,6 +11,7 @@ import {
     clickScmAction,
     focusJJLog,
     focusSCM,
+    getLogWebview,
     openFileInEditor,
     SCM_ACTIONS,
     test,
@@ -97,6 +98,13 @@ test.describe('Multi-Repo Switching E2E', () => {
             timeout: 5000,
         });
         await waitForLogCommitRow(page, 'main base commit');
+
+        await openFileInEditor(vscode, page, 'second_file.txt');
+        await focusJJLog(page);
+        await waitForLogCommitRow(page, 'main base commit');
+        const logFrame = await getLogWebview(page);
+        await logFrame.getByRole('button', { name: 'Follow Editor' }).click();
+        await openFileInEditor(vscode, page, 'main_file.txt');
 
         // Open second_file.txt from Explorer to trigger switch
         await openFileInEditor(vscode, page, 'second_file.txt');

@@ -97,8 +97,9 @@ _Multi-File Diff editor reviewing changes across revisions (Theme: Autumn)._
 Full support for working with multiple repositories and Jujutsu workspaces:
 
 - **Automatic Repository Detection**: Recursively scans workspace folders to discover and register all `jj` repositories.
-- **Automatic Active Repository Switching**: Dynamically switches the active repository when navigating files and tabs across different repos.
-- **Manual Switching**: Focus specific repositories in the JJ Log view via SCM title actions or the `Show Repository in JJ Log` command.
+- **Stable Graph Focus**: The graph stays on your chosen repository while you navigate files. Enable **Follow Editor** in the graph toolbar to follow editors within your chosen repositories. This preference is remembered per workspace.
+- **Graph Repository Scope**: Use **Repositories** in the graph toolbar to choose which repositories it can follow. With one chosen repository, the graph stays focused on it. This selection is independent of VS Code's SCM repository visibility.
+- **Manual Switching**: Choose a repository in the graph toolbar, use SCM title actions, or run `Show Repository in JJ Log`. Explicitly showing an excluded repository includes it in the graph scope. Each repository retains its graph selection and scroll position while the view remains open.
 - **Workspace Management**: Create new `jj` workspaces directly from the UI, with configurable default locations (`.workspaces`).
 - **Workspace Actions**: Add, forget, or delete workspaces directly from the Log View context menu or workspace pills.
 
