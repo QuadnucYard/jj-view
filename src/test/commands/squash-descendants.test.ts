@@ -25,10 +25,12 @@ beforeEach(() => {
     );
 });
 afterEach(() => repo.dispose());
-test('squashes descendant content into the root and preserves its description', async () => {
+test('squashes all descendant branches into the root while preserving its description and siblings', async () => {
     const ids = await buildGraph(repo, [
         { label: 'A', description: 'keep this', files: { 'a.txt': 'root' } },
         { label: 'B', parents: ['A'], files: { 'b.txt': 'child' } },
+        { label: 'D', parents: ['A'], files: { 'd.txt': 'other branch' } },
+        { label: 'sibling', parents: ['root()'], files: { 'sibling.txt': 'unrelated' } },
         { label: 'C', parents: ['B'], files: { 'c.txt': 'grandchild' }, isCurrentWorkingCopy: true },
     ]);
     ctx.host.ui.setNextWarningResponse('Squash');
@@ -36,9 +38,12 @@ test('squashes descendant content into the root and preserves its description', 
     expect(ctx.host.ui.errorMessages).toEqual([]);
     expect(repo.getFileContent(ids.A.changeId, 'b.txt')).toBe('child');
     expect(repo.getFileContent(ids.A.changeId, 'c.txt')).toBe('grandchild');
+    expect(repo.getFileContent(ids.A.changeId, 'd.txt')).toBe('other branch');
     expect(await ctx.repo.jj.getDescription(ids.A.changeId)).toBe('keep this');
     expect(repo.getLog('all()', 'change_id')).not.toContain(ids.B.changeId);
     expect(repo.getLog('all()', 'change_id')).not.toContain(ids.C.changeId);
+    expect(repo.getLog('all()', 'change_id')).not.toContain(ids.D.changeId);
+    expect(repo.getLog('all()', 'change_id')).toContain(ids.sibling.changeId);
 });
 test('a leaf revision does not prompt or mutate', async () => {
     repo.new([], 'leaf');

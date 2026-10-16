@@ -44,7 +44,7 @@ export async function abandonDescendantsCommand(ctx: CommandContext, payload?: A
             return;
         }
         await ctx.host.ui.withProgress('Abandoning descendants...', () =>
-            ctx.repo.jj.abandon(affected.map((entry) => entry.commit_id)),
+            ctx.repo.jj.abandon(`${roots[0].commit_id}::`),
         );
         await ctx.repo.refresh({ reason: 'abandon descendants' });
         await ctx.host.commands.executeCommand('jj-view.refreshGraph');

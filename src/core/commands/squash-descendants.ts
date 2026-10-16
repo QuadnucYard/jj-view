@@ -46,7 +46,7 @@ export async function squashDescendantsCommand(ctx: CommandContext, payload?: Ab
         }
         await ctx.host.ui.withProgress('Squashing descendants...', () =>
             ctx.repo.jj.squashRevision({
-                revision: descendants.map((entry) => entry.commit_id).join(' | '),
+                revision: `${roots[0].commit_id}:: ~ ${roots[0].commit_id}`,
                 intoRevision: roots[0].commit_id,
                 useDestinationMessage: true,
             }),
