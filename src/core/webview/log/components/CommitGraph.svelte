@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
 import type { ActionPayload, CommitAction } from '../../../host/ipc/log-view-schemas';
-import type { JjLogEntry } from '../../../jj-types';
+import type { JjLogEntry, JjWorkspace } from '../../../jj-types';
 import type { DragManager } from '../drag-manager.svelte';
 import { computeGraphLayout } from '../graph-compute';
 import { isElisionRow } from '../graph-model';
@@ -23,6 +23,7 @@ import GraphRail from './GraphRail.svelte';
 
 interface Props {
     commits: JjLogEntry[];
+    workspaces?: JjWorkspace[];
     onAction: (action: string, payload: ActionPayload) => void;
     selectedCommitIds?: Set<string>;
     highlightedCommitId?: string;
@@ -35,6 +36,7 @@ interface Props {
 
 let {
     commits,
+    workspaces = [],
     onAction,
     selectedCommitIds = new Set(),
     highlightedCommitId,
@@ -57,6 +59,7 @@ $effect(() => {
 
 const GAP = $derived(computeGap(fontSize));
 const layout = $derived(computeGraphLayout(commits, theme));
+const workspacePaths = $derived(new Map(workspaces.map((workspace) => [workspace.name, workspace.path])));
 const displayRows = $derived(layout.rows || commits);
 
 const compactPaddingMap = $derived.by(() => {
@@ -146,6 +149,7 @@ const graphAreaWidth = $derived(computeGraphAreaWidth(layout.width, LANE_WIDTH, 
                 >
                     <CommitNode
                         commit={row}
+                        {workspacePaths}
                         onClick={(modifiers) =>
                             onAction('select', {
                                 changeId: row.change_id,

@@ -15,6 +15,7 @@ import DraggableTag from './DraggableTag.svelte';
 
 interface Props {
     commit: JjLogEntry;
+    workspacePaths?: ReadonlyMap<string, string>;
     onClick: (modifiers: { multiSelect: boolean; preview?: boolean }) => void;
     onAction: (action: string, payload: ActionPayload) => void;
     isSelected?: boolean;
@@ -28,6 +29,7 @@ interface Props {
 
 let {
     commit,
+    workspacePaths,
     onClick,
     onAction,
     isSelected = false,
@@ -379,7 +381,7 @@ const hasActiveBookmarkAlready = $derived(
                     {/if}
                 {/if}
                 {#each commit.working_copies || [] as workspace (workspace)}
-                    <WorkspacePill {workspace} />
+                    <WorkspacePill {workspace} path={workspacePaths?.get(workspace)} />
                 {/each}
                 {#each tagBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
                     <DraggableTag tag={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />

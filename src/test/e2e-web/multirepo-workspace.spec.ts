@@ -7,6 +7,36 @@ import { ScopedTestRepo } from '../test-repo';
 import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
 
 test.describe('Standalone Web Multirepo Workspace', () => {
+    test('shows registered workspace paths in graph badge tooltips', async ({ page, server, testRepo }) => {
+        const secondaryPath = path.join(testRepo.path, 'custom workspace location');
+        testRepo.workspaceAdd('review:workspace', undefined, secondaryPath);
+        await page.goto(server.serverUrl);
+        await waitForScmReady(page);
+
+        const graph = page.locator('[data-testid="log-content"]');
+        const normalize = (value: string) =>
+            value.replace(/\\/g, '/').replace(/(^|\n)[A-Z]:/g, (drive) => drive.toLowerCase());
+        await recordGifFlow(
+            page,
+            async (capture) => {
+                for (const [name, root] of [
+                    ['default', testRepo.path],
+                    ['review:workspace', secondaryPath],
+                ]) {
+                    const badge = graph.locator('.workspace-wrapper .bookmark-pill').filter({ hasText: `${name}@` });
+                    await expect(badge).toBeVisible();
+                    await badge.hover();
+                    await expect
+                        .poll(async () => normalize((await badge.getAttribute('title')) ?? ''))
+                        .toBe(`${name}@\n${normalize(root)}`);
+                    await capture();
+                }
+                await page.screenshot({ path: path.join(ARTIFACT_DIR, 'workspace-path-tooltip.png'), fullPage: true });
+            },
+            { outputPath: path.join(ARTIFACT_DIR, 'workspace-path-tooltip.gif') },
+        );
+    });
+
     test('keeps graph focus within chosen repositories and restores workspace preferences', async ({
         page,
         server,

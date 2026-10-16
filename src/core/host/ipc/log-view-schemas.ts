@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { z } from 'zod';
-import { JjLogEntrySchema } from '../../jj-schemas';
+import { JjLogEntrySchema, JjWorkspaceSchema } from '../../jj-schemas';
 
 export const CommitActionSchema = z.enum([
     'newChild',
@@ -150,6 +150,7 @@ export type LogViewToHostMessage = z.infer<typeof LogViewToHostMessageSchema>;
 
 export const LogViewPayloadSchema = z.object({
     commits: z.array(JjLogEntrySchema),
+    workspaces: z.array(JjWorkspaceSchema).optional(),
     repositoryPath: z.string().optional(),
     selectedCommitIds: z.array(z.string()).optional(),
     loading: z.boolean().optional(),

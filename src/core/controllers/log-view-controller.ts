@@ -30,7 +30,7 @@ import { JjContextKey } from '../jj-context-keys';
 import type { JjRepository } from '../jj-repository';
 import type { JjRepositoryManager } from '../jj-repository-manager';
 import type { JjService } from '../jj-service';
-import type { JjLogEntry } from '../jj-types';
+import type { JjLogEntry, JjWorkspace } from '../jj-types';
 import { Uri } from '../uri-utils';
 
 export interface LogViewControllerOptions {
@@ -51,6 +51,7 @@ export class LogViewController implements Disposable {
     private readonly _refreshQueue: CoalescingQueue;
 
     private _commits: readonly JjLogEntry[] = [];
+    private _workspaces: JjWorkspace[] = [];
     private _selectedCommitIds: readonly string[] = [];
     private readonly _repositorySelections = new LruCache<string, readonly string[]>({ maxEntries: 50 });
     private _loadingRepository = false;
@@ -153,6 +154,7 @@ export class LogViewController implements Disposable {
     public getState(): LogViewPayload {
         return {
             commits: [...this._commits],
+            workspaces: this._workspaces,
             repositoryPath: this._repo?.rootUri.fsPath,
             selectedCommitIds: [...this._selectedCommitIds],
             loading: this._loadingRepository,
@@ -177,6 +179,7 @@ export class LogViewController implements Disposable {
         this._repo = repo;
         this._selectedCommitIds = repo ? (this._repositorySelections.get(repo.rootUri.fsPath) ?? []) : [];
         this._commits = [];
+        this._workspaces = [];
         this._loadingRepository = !!repo;
         this._highlightedCommitId = undefined;
         this._updateSelectionContextKeys(this._selectedCommitIds);
@@ -274,6 +277,7 @@ export class LogViewController implements Disposable {
             return;
         }
         if (!repo || !valid) {
+            this._workspaces = [];
             this._logger?.info?.(
                 `[LogViewController] ${this._repo ? this._repo.rootUri.fsPath : 'No repository'} is not valid. Clearing commits.`,
             );
@@ -286,10 +290,16 @@ export class LogViewController implements Disposable {
 
         try {
             const start = performance.now();
-            const commits = await jj.getLog({
-                omitChanges: true,
-                includeNearestVisibleAncestors: true,
-            });
+            const [commits, workspaces] = await Promise.all([
+                jj.getLog({
+                    omitChanges: true,
+                    includeNearestVisibleAncestors: true,
+                }),
+                jj.getWorkspaces().catch((error: unknown) => {
+                    this._logger?.error('[LogViewController] Failed to fetch workspaces', toError(error));
+                    return [];
+                }),
+            ]);
 
             if (this._repo?.rootUri.fsPath !== targetRepoPath || this._disposed) {
                 this._logger?.info?.(
@@ -298,6 +308,7 @@ export class LogViewController implements Disposable {
                 return;
             }
 
+            this._workspaces = workspaces;
             this.setCommits(commits);
 
             const duration = performance.now() - start;

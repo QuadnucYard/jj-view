@@ -7,10 +7,11 @@ import BasePill from './BasePill.svelte';
 
 interface Props {
     workspace: string;
+    path?: string;
     style?: string;
 }
 
-let { workspace, style = '' }: Props = $props();
+let { workspace, path, style = '' }: Props = $props();
 
 const accentColor = 'var(--vscode-charts-yellow)';
 const backgroundColor = `color-mix(in srgb, ${accentColor}, transparent 90%)`;
@@ -30,7 +31,7 @@ let vscodeContext = $derived(
     class="workspace-wrapper"
 >
     <BasePill
-        title="{workspace}@"
+        title={path ? `${workspace}@\n${path}` : `${workspace}@`}
         style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
     >
         <span class="pill-label">

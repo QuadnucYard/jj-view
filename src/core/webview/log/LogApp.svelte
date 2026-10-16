@@ -13,7 +13,7 @@ import {
     type LogViewToHostMessage,
     LogViewToHostMessageSchema,
 } from '../../host/ipc/log-view-schemas';
-import type { JjLogEntry } from '../../jj-types';
+import type { JjLogEntry, JjWorkspace } from '../../jj-types';
 import { BookmarkPill, TagPill } from '../common/components';
 import { useRpcReceiver, useRpcSender } from '../transport/bridge.svelte';
 import CommitDragPreview from './components/CommitDragPreview.svelte';
@@ -24,6 +24,7 @@ import { findMatchingCommit } from './utils/commit-utils';
 import { calculateNextSelection, hasImmutableSelection } from './utils/selection-utils';
 
 let commits = $state<JjLogEntry[]>([]);
+let workspaces = $state<JjWorkspace[]>([]);
 let minChangeIdLength = $state(1);
 let theme = $state('default');
 let graphLabelAlignment = $state('aligned');
@@ -126,6 +127,7 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
     },
     update: ({
         commits: newCommits,
+        workspaces: newWorkspaces,
         minChangeIdLength: minLen,
         theme: th,
         graphLabelAlignment: align,
@@ -146,6 +148,7 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
             selectedCommitIds = new Set(selection);
         }
         commits = newCommits;
+        workspaces = newWorkspaces ?? [];
         if (minLen !== undefined) {
             minChangeIdLength = minLen;
         }
@@ -346,6 +349,7 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         >
             <CommitGraph
                 {commits}
+                {workspaces}
                 onAction={handleGraphAction}
                 {selectedCommitIds}
                 {highlightedCommitId}

@@ -206,6 +206,21 @@ describe('LogViewController Domain Unit Tests', () => {
         expect(controller.commits[0].description).toContain('feature: add example');
     });
 
+    test('refreshes workspace paths and clears them when the repository changes', async () => {
+        const secondary = testRepo.workspaceAdd('secondary');
+        await controller.refresh('test');
+
+        expect(controller.getState().workspaces).toEqual(
+            expect.arrayContaining([
+                { name: 'default', path: testRepo.path },
+                { name: 'secondary', path: secondary.path },
+            ]),
+        );
+
+        controller.repository = undefined;
+        expect(controller.getState().workspaces).toEqual([]);
+    });
+
     test('replays initial snapshot on setMessenger and updates context keys on setCommits', async () => {
         testRepo.writeFile('example.txt', 'test content\n');
         testRepo.describe('feature: add example');
