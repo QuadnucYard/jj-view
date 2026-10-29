@@ -411,6 +411,7 @@ const hasActiveBookmarkAlready = $derived(
                 {#if codeForgeChange.status === 'MERGED' || codeForgeChange.status === 'ABANDONED'}
                     <span
                         class="forge-status-badge"
+                        data-vscode-context={JSON.stringify({ copyName: codeForgeChange.status, preventDefaultContextMenuItems: true })}
                         style:border-color={codeForgeChange.status === 'MERGED'
                             ? 'var(--vscode-descriptionForeground)'
                             : 'var(--vscode-gitDecoration-ignoredResourceForeground)'}

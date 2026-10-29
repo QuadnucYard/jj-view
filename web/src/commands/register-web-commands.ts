@@ -26,6 +26,11 @@ import { commitCommand } from '../../../src/core/commands/commit';
 import { commitPromptCommand } from '../../../src/core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../../../src/core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../../../src/core/commands/compare-file-with-revision';
+import {
+    copyNameCommand,
+    copyWorkspacePathCommand,
+    createCopyBadgePayload,
+} from '../../../src/core/commands/copy-badge';
 import { copyRelativePathCommand, createCopyRelativePathPayload } from '../../../src/core/commands/copy-relative-path';
 import { setDescriptionCommand } from '../../../src/core/commands/describe';
 import { describeDialogCommand } from '../../../src/core/commands/describe-dialog';
@@ -278,6 +283,8 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     registerWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand);
     registerWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand);
     registerWithPayload('jj-view.copyRelativePath', createCopyRelativePathPayload, copyRelativePathCommand);
+    registerWithPayload('jj-view.copyName', createCopyBadgePayload, copyNameCommand);
+    registerWithPayload('jj-view.copyWorkspacePath', createCopyBadgePayload, copyWorkspacePathCommand);
     registerWithPayload('vscode.diff', createOpenChangesPayload, openChangesCommand);
     registerWithPayload('jj-view.openMergeEditor', createOpenMergeEditorPayload, openMergeEditorCommand);
 

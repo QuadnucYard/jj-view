@@ -5,6 +5,9 @@
 
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
+import BookmarkPill from '../../src/core/webview/common/components/BookmarkPill.svelte';
+import TagPill from '../../src/core/webview/common/components/TagPill.svelte';
+import WorkspacePill from '../../src/core/webview/common/components/WorkspacePill.svelte';
 import ContextMenu from '../src/menu/ContextMenu.svelte';
 import { ContextKeyService } from '../src/menu/context-key-service';
 import { type ContextNodeLike, extractVsCodeContext } from '../src/menu/context-menu-utils';
@@ -94,6 +97,31 @@ describe('Generalized Context Menu System', () => {
     describe('Webview Context Menu Contributed Actions', () => {
         const menuRegistry = new MenuRegistry();
         const rootContext = new ContextKeyService();
+
+        it('offers copying for local and remote badges and only copies paths for resolved workspaces', () => {
+            const bodies = [
+                render(BookmarkPill, { props: { bookmark: { name: 'feature' } } }).body,
+                render(BookmarkPill, { props: { bookmark: { name: 'feature', remote: 'origin' } } }).body,
+                render(TagPill, { props: { tag: { name: 'release' } } }).body,
+                render(TagPill, { props: { tag: { name: 'release', remote: 'upstream' } } }).body,
+                render(WorkspacePill, { props: { workspace: 'secondary', path: '/repo/secondary' } }).body,
+                render(WorkspacePill, { props: { workspace: 'secondary' } }).body,
+            ];
+            const names = ['feature', 'feature@origin', 'release', 'release@upstream', 'secondary', 'secondary'];
+            for (const [index, body] of bodies.entries()) {
+                let node: ContextNodeLike | null = null;
+                for (const match of body.matchAll(/data-vscode-context="([^"]*)"/g)) {
+                    node = createMockNode({ 'data-vscode-context': match[1].replaceAll('&quot;', '"') }, node);
+                }
+                const context = extractVsCodeContext(node);
+                expect(context?.copyName).toBe(names[index]);
+                const commands = menuRegistry
+                    .getContextActions('webview/context', rootContext.createScoped(context ?? {}))
+                    .flatMap((group) => group.items.map((item) => item.command));
+                expect(commands).toContain('jj-view.copyName');
+                expect(commands.includes('jj-view.copyWorkspacePath')).toBe(index === 4);
+            }
+        });
 
         it('returns commit context actions when webviewSection is commit', () => {
             const scopedContext = rootContext.createScoped({

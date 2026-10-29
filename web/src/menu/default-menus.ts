@@ -170,6 +170,18 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(copy)',
         },
         {
+            command: 'jj-view.copyName',
+            title: 'Copy Name',
+            category: 'JJ View',
+            icon: '$(copy)',
+        },
+        {
+            command: 'jj-view.copyWorkspacePath',
+            title: 'Copy Path',
+            category: 'JJ View',
+            icon: '$(copy)',
+        },
+        {
             command: 'jj-view.undo',
             title: 'Undo',
             category: 'JJ View',
@@ -521,6 +533,8 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
     ],
     menus: {
         commandPalette: [
+            { command: 'jj-view.copyName', when: 'false' },
+            { command: 'jj-view.copyWorkspacePath', when: 'false' },
             { command: 'jj-view.graph.undo', when: 'false' },
             { command: 'jj-view.graph.redo', when: 'false' },
             { command: 'jj-view.graph.abandon', when: 'false' },
@@ -826,6 +840,16 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             },
         ],
         'webview/context': [
+            {
+                command: 'jj-view.copyName',
+                when: 'copyName',
+                group: 'clipboard@1',
+            },
+            {
+                command: 'jj-view.copyWorkspacePath',
+                when: "webviewSection == 'workspace' && workspacePath",
+                group: 'clipboard@2',
+            },
             {
                 command: 'jj-view.describe',
                 when: "webviewSection == 'commit' && jj.canDescribe",

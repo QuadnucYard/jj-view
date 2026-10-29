@@ -10,12 +10,14 @@ interface Props {
     title?: string;
     className?: string;
     style?: string;
+    copyName?: string;
 }
 
-let { children, title, className = '', style = '' }: Props = $props();
+let { children, title, className = '', style = '', copyName }: Props = $props();
 </script>
 
 <span
+    data-vscode-context={copyName ? JSON.stringify({ copyName, preventDefaultContextMenuItems: true }) : undefined}
     {title}
     class="bookmark-pill {className}"
     {style}

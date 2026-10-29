@@ -21,6 +21,7 @@ let vscodeContext = $derived(
     JSON.stringify({
         webviewSection: 'workspace',
         workspaceName: workspace,
+        workspacePath: path,
         preventDefaultContextMenuItems: true,
     }),
 );
@@ -31,6 +32,7 @@ let vscodeContext = $derived(
     class="workspace-wrapper"
 >
     <BasePill
+        copyName={workspace}
         title={path ? `${workspace}@\n${path}` : `${workspace}@`}
         style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
     >

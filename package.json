@@ -398,6 +398,18 @@
                 "icon": "$(copy)"
             },
             {
+                "command": "jj-view.copyName",
+                "title": "Copy Name",
+                "category": "JJ View",
+                "icon": "$(copy)"
+            },
+            {
+                "command": "jj-view.copyWorkspacePath",
+                "title": "Copy Path",
+                "category": "JJ View",
+                "icon": "$(copy)"
+            },
+            {
                 "command": "jj-view.undo",
                 "title": "Undo",
                 "category": "JJ View",
@@ -805,6 +817,14 @@
         "menus": {
             "commandPalette": [
                 {
+                    "command": "jj-view.copyName",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.copyWorkspacePath",
+                    "when": "false"
+                },
+                {
                     "command": "jj-view.pushRef",
                     "when": "false"
                 },
@@ -1015,6 +1035,16 @@
                 }
             ],
             "webview/context": [
+                {
+                    "command": "jj-view.copyName",
+                    "when": "copyName",
+                    "group": "clipboard@1"
+                },
+                {
+                    "command": "jj-view.copyWorkspacePath",
+                    "when": "webviewSection == 'workspace' && workspacePath",
+                    "group": "clipboard@2"
+                },
                 {
                     "command": "jj-view.workspaceForget",
                     "when": "webviewSection == 'workspace'",

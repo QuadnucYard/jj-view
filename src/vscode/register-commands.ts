@@ -25,6 +25,7 @@ import { commitCommand } from '../core/commands/commit';
 import { commitPromptCommand } from '../core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../core/commands/compare-file-with-revision';
+import { copyNameCommand, copyWorkspacePathCommand, createCopyBadgePayload } from '../core/commands/copy-badge';
 import { copyRelativePathCommand, createCopyRelativePathPayload } from '../core/commands/copy-relative-path';
 import { setDescriptionCommand } from '../core/commands/describe';
 import { describeDialogCommand } from '../core/commands/describe-dialog';
@@ -305,6 +306,8 @@ export function registerCommands(options: RegisterCommandsOptions): void {
         registerCommandWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand),
         registerCommandWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand),
         registerCommandWithPayload('jj-view.copyRelativePath', createCopyRelativePathPayload, copyRelativePathCommand),
+        registerCommandWithPayload('jj-view.copyName', createCopyBadgePayload, copyNameCommand),
+        registerCommandWithPayload('jj-view.copyWorkspacePath', createCopyBadgePayload, copyWorkspacePathCommand),
         registerCommand('jj-view.undo', undoCommand),
         registerCommand('jj-view.redo', redoCommand),
         registerCommandWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand),

@@ -35,6 +35,7 @@ const borderColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 50%
     })}
 >
 <BasePill
+    copyName={displayName}
     {title}
     style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
 >

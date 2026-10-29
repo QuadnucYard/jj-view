@@ -39,6 +39,7 @@ let vscodeContext = $derived(
     class="bookmark-wrapper"
 >
     <BasePill
+        copyName={displayName}
         {title}
         style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
     >
