@@ -7,6 +7,7 @@ import path from 'pathe';
 import * as vscode from 'vscode';
 import type { JjMergeService } from '../../core/jj-merge-service';
 import { getFsPathFromUri, type Uri } from '../../core/uri-utils';
+import { getErrorMessage } from '../../utils/error-utils';
 
 /**
  * Publishes merge inputs together and protects unsaved results when their conflict changes.
@@ -17,7 +18,7 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
     private readonly _disposables: vscode.Disposable[] = [];
     private readonly contents = new Map<string, string>();
     private readonly warned = new Map<string, string>();
-    private readonly pending = new Map<string, { signature: string; publish: () => void }>();
+    private readonly pending = new Map<string, { signature: string; publish: () => void; approved: boolean }>();
     private generation = 0;
     private disposed = false;
 
@@ -72,6 +73,7 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
             documents.push(document);
             groups.set(file, documents);
         }
+        const errors: Error[] = [];
         for (const [file, documents] of groups) {
             if (!conflicts.has(path.normalize(file))) {
                 this.pending.delete(file);
@@ -91,12 +93,25 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
                 }
                 continue;
             }
-            const updates = await Promise.all(
-                documents.map(async (document) => ({
-                    uri: document.uri,
-                    content: await this.service.provideContent(document.uri),
-                })),
-            );
+            let updates: { uri: vscode.Uri; content: string }[];
+            try {
+                updates = await Promise.all(
+                    documents.map(async (document) => ({
+                        uri: document.uri,
+                        content: await this.service.provideContent(document.uri),
+                    })),
+                );
+            } catch (error: unknown) {
+                if (generation !== this.generation) {
+                    return;
+                }
+                errors.push(
+                    new Error(`Failed to refresh merge inputs for ${file}: ${getErrorMessage(error)}`, {
+                        cause: error,
+                    }),
+                );
+                continue;
+            }
             if (generation !== this.generation) {
                 return;
             }
@@ -128,7 +143,14 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
                 continue;
             }
             const signature = JSON.stringify(updates.map(({ content }) => content));
-            this.pending.set(file, { signature, publish });
+            const previous = this.pending.get(file);
+            const pending = { signature, publish, approved: previous?.signature === signature && previous.approved };
+            this.pending.set(file, pending);
+            // An action clicked during capture must survive until the current capture is ready.
+            if (pending.approved) {
+                publish();
+                continue;
+            }
             if (this.warned.get(file) === signature) {
                 continue;
             }
@@ -142,10 +164,14 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
                     if (action === 'Refresh Merge Inputs') {
                         const pending = this.pending.get(file);
                         if (pending?.signature === signature) {
+                            pending.approved = true;
                             pending.publish();
                         }
                     }
                 });
+        }
+        if (errors.length > 0) {
+            throw new AggregateError(errors, errors.map((error) => error.message).join('\n'));
         }
     }
 
