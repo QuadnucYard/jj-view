@@ -20,6 +20,7 @@ import { JjContextKey } from '../core/jj-context-keys';
 import { JjEditFsService } from '../core/jj-edit-fs-service';
 import { JjMergeService } from '../core/jj-merge-service';
 import { JjProcessTracker } from '../core/jj-process-tracker';
+import type { JjRepository } from '../core/jj-repository';
 import { JjRepositoryManager } from '../core/jj-repository-manager';
 import { JjViewFsService } from '../core/jj-view-fs-service';
 import { resolveJjBinary } from '../utils/binary-utils';
@@ -327,6 +328,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     // Register ContentProvider for virtual merge output documents
     const onDidChangeMergeEmitter = new vscode.EventEmitter<vscode.Uri>();
     const mergeProviders = new Map<string, VsCodeMergeContentProvider>();
+    const getMergeProvider = (repo: JjRepository): VsCodeMergeContentProvider => {
+        const repoKey = repo.rootUri.fsPath;
+        let provider = mergeProviders.get(repoKey);
+        if (!provider) {
+            provider = new VsCodeMergeContentProvider(
+                new JjMergeService(repo.jj),
+                (uri) => repositoryManager.getRepositoryForUri(uri) === repo,
+            );
+            provider.onDidChange((uri) => onDidChangeMergeEmitter.fire(uri));
+            mergeProviders.set(repoKey, provider);
+        }
+        return provider;
+    };
     context.subscriptions.push(
         new vscode.Disposable(() => {
             for (const provider of mergeProviders.values()) {
@@ -344,15 +358,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
                 if (!repo) {
                     throw new Error(`Repository not found for URI: ${uri.toString()}`);
                 }
-                const repoKey = repo.rootUri.fsPath;
-                let provider = mergeProviders.get(repoKey);
-                if (!provider) {
-                    const mergeService = new JjMergeService(repo.jj);
-                    provider = new VsCodeMergeContentProvider(mergeService);
-                    provider.onDidChange((e) => onDidChangeMergeEmitter.fire(e));
-                    mergeProviders.set(repoKey, provider);
-                }
-                return provider.provideTextDocumentContent(uri);
+                return getMergeProvider(repo).provideTextDocumentContent(uri);
             },
         }),
     );
@@ -450,6 +456,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     // SCM Discovery Lifecycle integration
     context.subscriptions.push(
         repositoryManager.onDidOpenRepository((repo) => {
+            const mergeProvider = getMergeProvider(repo);
             const repoPrefix = path.basename(repo.rootUri.fsPath);
             const repoOutputChannel = new OutputChannel(realOutputChannel, repoPrefix);
             const scmProvider = new VsCodeScmProvider(
@@ -465,9 +472,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
             const decorationProvider = vscode.window.registerFileDecorationProvider(scmProvider.decorationProvider);
             const mergeRefreshSub = scmProvider.scmModel.onDidChangeSnapshot(async (snapshot) => {
                 try {
-                    await mergeProviders
-                        .get(repo.rootUri.fsPath)
-                        ?.refresh(snapshot.conflictedPaths, repo.jj.workspaceRoot);
+                    await mergeProvider.refresh(snapshot.conflictedPaths, repo.jj.workspaceRoot);
                 } catch (error: unknown) {
                     outputChannel.error('[Extension] Failed to refresh merge inputs', toError(error));
                 }

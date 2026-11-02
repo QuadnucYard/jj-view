@@ -8,7 +8,7 @@ import type * as vscode from 'vscode';
 import { CodeForgeRegistry } from '../core/code-forge-registry';
 import { JjMergeService } from '../core/jj-merge-service';
 import { JjRepositoryManager } from '../core/jj-repository-manager';
-import { Uri } from '../core/uri-utils';
+import { getFsPathFromUri, Uri } from '../core/uri-utils';
 import { VsCodeMergeContentProvider } from '../vscode/providers/vscode-merge-provider';
 import { FakeHostEnvironment } from './fake-host-environment';
 import { buildGraph, TestRepo } from './test-repo';
@@ -216,6 +216,86 @@ describe('VsCodeMergeContentProvider', () => {
         await provider.refresh(['broken.txt', 'good.txt'], repo.path);
         expect(notifications).toEqual(broken.uris.map((uri) => uri.toString()));
         expect(await provider.provideTextDocumentContent(broken.uris[1])).toBe('broken.txt: new left\n');
+    });
+
+    test.each([
+        false,
+        true,
+    ])('recovers surviving merge documents after replacement with dirty=%s output', async (dirty) => {
+        const nodes = await buildConflicts(repo);
+        repo.edit(nodes.first.changeId);
+        const { uris, output } = await openConflict(repo, provider, 'conflict.txt', dirty);
+        provider.dispose();
+        const repository = repositoryManager.getRepositoryForUri(Uri.file(repo.path));
+        if (!repository) {
+            throw new Error('Repository was not registered');
+        }
+        provider = new VsCodeMergeContentProvider(new JjMergeService(repository.jj));
+        const notifications: string[] = [];
+        provider.onDidChange((uri) => notifications.push(uri.toString()));
+        let approve: ((action: string | undefined) => void) | undefined;
+        showWarningMessage.mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    approve = resolve;
+                }),
+        );
+        repo.edit(nodes.second.changeId);
+        await provider.refresh(['conflict.txt'], repo.path);
+        if (dirty) {
+            expect(showWarningMessage).toHaveBeenCalledOnce();
+            expect(notifications).toEqual([]);
+            expect(await provider.provideTextDocumentContent(uris[1])).toBe('left\n');
+            approve?.('Refresh Merge Inputs');
+            await Promise.resolve();
+        } else {
+            expect(showWarningMessage).not.toHaveBeenCalled();
+        }
+        expect(notifications).toEqual(uris.map((uri) => uri.toString()));
+        expect(await provider.provideTextDocumentContent(uris[1])).toBe('new left\n');
+        expect(output.getText()).toBe('my resolution\n');
+    });
+
+    test('adopts only owned merge inputs and ignores editor line-ending normalization', async () => {
+        const nodes = await buildConflicts(repo);
+        repo.edit(nodes.first.changeId);
+        const { uris } = await openConflict(repo, provider, 'conflict.txt', true);
+        for (let index = 0; index < uris.length; index++) {
+            const text = documents[index].getText().replace(/\n/g, '\r\n');
+            documents[index] = createMock<vscode.TextDocument>({ uri: uris[index], getText: () => text });
+        }
+        const unreadable = (uri: Uri) =>
+            createMock<vscode.TextDocument>({
+                uri,
+                getText: () => {
+                    throw new Error('Unrelated document must not be adopted');
+                },
+            });
+        const nested = Uri.joinPath(Uri.file(repo.path), 'nested', 'conflict.txt');
+        documents.push(
+            unreadable(
+                nested.with({
+                    scheme: 'jj-merge-output',
+                    fragment: new URLSearchParams({ path: nested.fsPath, part: 'left' }).toString(),
+                }),
+            ),
+        );
+        documents.push(unreadable(uris[1].with({ scheme: 'jj-view' })));
+        provider.dispose();
+        const repository = repositoryManager.getRepositoryForUri(Uri.file(repo.path));
+        if (!repository) {
+            throw new Error('Repository was not registered');
+        }
+        provider = new VsCodeMergeContentProvider(
+            new JjMergeService(repository.jj),
+            (uri) => getFsPathFromUri(uri) === getFsPathFromUri(uris[0]),
+        );
+        const changed: Uri[] = [];
+        provider.onDidChange((uri) => changed.push(uri));
+        await provider.refresh(['conflict.txt'], repo.path);
+        expect(changed).toEqual([]);
+        expect(showWarningMessage).not.toHaveBeenCalled();
+        expect(await provider.provideTextDocumentContent(uris[1])).toBe('left\r\n');
     });
 
     test('handles missing query parameters gracefully', async () => {

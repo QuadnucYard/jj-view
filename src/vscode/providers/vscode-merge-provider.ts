@@ -22,7 +22,10 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
     private generation = 0;
     private disposed = false;
 
-    constructor(public readonly service: JjMergeService) {
+    constructor(
+        public readonly service: JjMergeService,
+        private readonly belongsToRepository?: (uri: Uri) => boolean,
+    ) {
         this._disposables.push(
             vscode.workspace.onDidCloseTextDocument((document) => {
                 this.contents.delete(document.uri.toString());
@@ -65,10 +68,23 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
         const conflicts = new Set(conflictedPaths.map((file) => path.resolve(root, file)));
         const groups = new Map<string, vscode.TextDocument[]>();
         for (const document of vscode.workspace.textDocuments) {
-            if (!this.contents.has(document.uri.toString())) {
+            if (document.uri.scheme !== 'jj-merge-output') {
                 continue;
             }
             const file = getFsPathFromUri(document.uri);
+            const relative = path.relative(root, file);
+            const belongs =
+                this.belongsToRepository?.(document.uri) ??
+                (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('../'));
+            if (!belongs) {
+                continue;
+            }
+            const key = document.uri.toString();
+            if (!this.contents.has(key)) {
+                // The editor can outlive a repository/provider. Preserve what it displays
+                // until fresh inputs are ready and dirty-result protection has been checked.
+                this.contents.set(key, document.getText());
+            }
             const documents = groups.get(file) ?? [];
             documents.push(document);
             groups.set(file, documents);
@@ -115,7 +131,12 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
             if (generation !== this.generation) {
                 return;
             }
-            if (updates.every(({ uri, content }) => this.contents.get(uri.toString()) === content)) {
+            if (
+                updates.every(
+                    ({ uri, content }) =>
+                        this.contents.get(uri.toString())?.replace(/\r\n/g, '\n') === content.replace(/\r\n/g, '\n'),
+                )
+            ) {
                 this.warned.delete(file);
                 this.pending.delete(file);
                 continue;
