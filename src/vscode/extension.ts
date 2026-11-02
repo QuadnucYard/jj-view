@@ -328,6 +328,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     const onDidChangeMergeEmitter = new vscode.EventEmitter<vscode.Uri>();
     const mergeProviders = new Map<string, VsCodeMergeContentProvider>();
     context.subscriptions.push(
+        new vscode.Disposable(() => {
+            for (const provider of mergeProviders.values()) {
+                provider.dispose();
+            }
+            mergeProviders.clear();
+        }),
+    );
+    context.subscriptions.push(
         onDidChangeMergeEmitter,
         vscode.workspace.registerTextDocumentContentProvider('jj-merge-output', {
             onDidChange: onDidChangeMergeEmitter.event,
@@ -455,6 +463,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
             );
 
             const decorationProvider = vscode.window.registerFileDecorationProvider(scmProvider.decorationProvider);
+            const mergeRefreshSub = scmProvider.scmModel.onDidChangeSnapshot(async (snapshot) => {
+                try {
+                    await mergeProviders
+                        .get(repo.rootUri.fsPath)
+                        ?.refresh(snapshot.conflictedPaths, repo.jj.workspaceRoot);
+                } catch (error: unknown) {
+                    outputChannel.error('[Extension] Failed to refresh merge inputs', toError(error));
+                }
+            });
             const repoStatusSub = repo.onDidStatusChange((event) => {
                 if (repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath) {
                     // Refresh webview and commit details panel in parallel
@@ -467,7 +484,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
                 }
             });
 
-            const composite = vscode.Disposable.from(scmProvider, decorationProvider, repoStatusSub);
+            const composite = vscode.Disposable.from(scmProvider, decorationProvider, repoStatusSub, mergeRefreshSub);
             scmProviders.set(repo.rootUri.fsPath, scmProvider);
             activeScmSubscriptions.set(repo.rootUri.fsPath, composite);
 
@@ -489,6 +506,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
                 activeScmSubscriptions.delete(repo.rootUri.fsPath);
             }
             scmProviders.delete(repo.rootUri.fsPath);
+            mergeProviders.get(repo.rootUri.fsPath)?.dispose();
+            mergeProviders.delete(repo.rootUri.fsPath);
         }),
     );
 

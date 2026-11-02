@@ -545,6 +545,7 @@ export class VsCodeHostDocuments implements HostDocuments, HostDisposable {
             .map((tab) => ({
                 originalUri: tab.input.original,
                 modifiedUri: tab.input.modified,
+                isDirty: tab.isDirty,
                 close: async () => {
                     await vscode.window.tabGroups?.close(tab);
                 },

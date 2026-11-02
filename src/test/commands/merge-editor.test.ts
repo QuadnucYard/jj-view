@@ -18,6 +18,7 @@ describe('openMergeEditorCommand', () => {
     beforeEach(() => {
         mockJjRepo = createMock<JjRepository>({
             rootUri: Uri.file('/test'),
+            refresh: vi.fn().mockResolvedValue(undefined),
         });
         ctx = new FakeCommandContext(mockJjRepo);
         ctx.host.nav.openMergeEditor = vi.fn();
@@ -39,6 +40,8 @@ describe('openMergeEditorCommand', () => {
         await openMergeEditorCommand(ctx, { resourceStates: [resourceState] });
 
         expect(ctx.host.nav.openMergeEditor).toHaveBeenCalledWith(resourceUri);
+        expect(mockJjRepo.refresh).toHaveBeenCalledWith({ forceSnapshot: true, reason: 'before merge editor' });
+        expect(mockJjRepo.refresh).toHaveBeenCalledBefore(vi.mocked(ctx.host.nav.openMergeEditor));
     });
 
     test('handles error', async () => {

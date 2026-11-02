@@ -10,7 +10,7 @@ import { JjMergeService } from '../core/jj-merge-service';
 import { JjService, NO_OP_LOGGER } from '../core/jj-service';
 import { Uri } from '../core/uri-utils';
 import { VsCodeMergeContentProvider } from '../vscode/providers/vscode-merge-provider';
-import { TestRepo } from './test-repo';
+import { buildGraph, TestRepo } from './test-repo';
 
 suite('JJ Merge Provider Integration Test', () => {
     let jj: JjService;
@@ -32,6 +32,47 @@ suite('JJ Merge Provider Integration Test', () => {
         registration.dispose();
         provider.clearCache();
         await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+        provider.dispose();
+        await repo.dispose();
+    });
+
+    test('refreshes already open merge input documents after switching conflicts', async () => {
+        const nodes = await buildGraph(repo, [
+            { label: 'base', files: { 'conflict.txt': 'base\n' } },
+            { label: 'left', parents: ['base'], files: { 'conflict.txt': 'left\n' } },
+            { label: 'right', parents: ['base'], files: { 'conflict.txt': 'right\n' } },
+            { label: 'first', parents: ['left', 'right'] },
+            { label: 'new-left', parents: ['base'], files: { 'conflict.txt': 'new left\n' } },
+            { label: 'second', parents: ['new-left', 'right'] },
+        ]);
+        repo.edit(nodes.first.changeId);
+        const file = vscode.Uri.file(path.join(repo.path, 'conflict.txt'));
+        const uris = ['base', 'left', 'right'].map((part) =>
+            file.with({
+                scheme: 'jj-merge-output',
+                fragment: new URLSearchParams({ path: file.fsPath, part }).toString(),
+            }),
+        );
+        const documents = await Promise.all(uris.map((uri) => vscode.workspace.openTextDocument(uri)));
+        assert.deepStrictEqual(
+            documents.map((document) => document.getText()),
+            ['base\n', 'left\n', 'right\n'],
+        );
+        const editor = await vscode.window.showTextDocument(documents[1]);
+        repo.edit(nodes.second.changeId);
+        const changed = new Promise<void>((resolve) => {
+            const listener = vscode.workspace.onDidChangeTextDocument(({ document }) => {
+                if (document.uri.toString() === uris[1].toString() && document.getText() === 'new left\n') {
+                    listener.dispose();
+                    resolve();
+                }
+            });
+        });
+        await provider.refresh(['conflict.txt'], repo.path);
+        await changed;
+        assert.strictEqual(editor.document.getText(), 'new left\n');
+        assert.strictEqual(documents[0].getText(), 'base\n');
+        assert.strictEqual(documents[2].getText(), 'right\n');
     });
 
     test('Provider resolves conflict content', async () => {

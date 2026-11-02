@@ -248,7 +248,7 @@ export class VsCodeScmProvider implements vscode.Disposable {
         this.editProvider?.invalidateCache();
         this._sourceControl.quickDiffProvider = this;
 
-        await this._diffTabCleaner.closeInvalidDiffEditors();
+        await this._diffTabCleaner.closeInvalidDiffEditors(snapshot.workingCopyChanges);
     }
 
     private toResourceState(

@@ -21,6 +21,7 @@ export async function openMergeEditorCommand(ctx: CommandContext, payload?: Open
     try {
         const r = resourceStates[0];
         if (r?.resourceUri) {
+            await ctx.repo.refresh({ forceSnapshot: true, reason: 'before merge editor' });
             await ctx.host.nav.openMergeEditor(r.resourceUri);
         }
     } catch (e: unknown) {

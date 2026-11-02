@@ -3,20 +3,31 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import path from 'pathe';
 import * as vscode from 'vscode';
 import type { JjMergeService } from '../../core/jj-merge-service';
-import type { Uri } from '../../core/uri-utils';
+import { getFsPathFromUri, type Uri } from '../../core/uri-utils';
 
 /**
- * Thin VS Code TextDocumentContentProvider adapting JjMergeService to VS Code's merge editor input.
+ * Publishes merge inputs together and protects unsaved results when their conflict changes.
  */
 export class VsCodeMergeContentProvider implements vscode.TextDocumentContentProvider, vscode.Disposable {
     private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>();
     readonly onDidChange: vscode.Event<vscode.Uri> = this._onDidChange.event;
     private readonly _disposables: vscode.Disposable[] = [];
+    private readonly contents = new Map<string, string>();
+    private readonly warned = new Map<string, string>();
+    private readonly pending = new Map<string, { signature: string; publish: () => void }>();
+    private generation = 0;
+    private disposed = false;
 
     constructor(public readonly service: JjMergeService) {
         this._disposables.push(
+            vscode.workspace.onDidCloseTextDocument((document) => {
+                this.contents.delete(document.uri.toString());
+                this.warned.delete(getFsPathFromUri(document.uri));
+                this.pending.delete(getFsPathFromUri(document.uri));
+            }),
             this.service.onDidChange((uri) => {
                 this._onDidChange.fire(vscode.Uri.parse(uri.toString()));
             }),
@@ -24,18 +35,143 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
     }
 
     async provideTextDocumentContent(uri: Uri): Promise<string> {
-        return this.service.provideContent(uri);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (this.disposed) {
+                throw new Error('Merge provider is disposed');
+            }
+            const generation = this.generation;
+            const key = uri.toString();
+            const existing = this.contents.get(key);
+            if (existing !== undefined) {
+                return existing;
+            }
+            const content = await this.service.provideContent(uri);
+            if (generation === this.generation && !this.disposed) {
+                this.contents.set(key, content);
+                return content;
+            }
+        }
+        throw new Error('Repository changed repeatedly while opening merge inputs');
+    }
+
+    /** Refresh open inputs together without replacing unsaved merge results. */
+    async refresh(conflictedPaths: readonly string[], root: string): Promise<void> {
+        if (this.disposed) {
+            return;
+        }
+        const generation = ++this.generation;
+        this.service.clearCache();
+        const conflicts = new Set(conflictedPaths.map((file) => path.resolve(root, file)));
+        const groups = new Map<string, vscode.TextDocument[]>();
+        for (const document of vscode.workspace.textDocuments) {
+            if (!this.contents.has(document.uri.toString())) {
+                continue;
+            }
+            const file = getFsPathFromUri(document.uri);
+            const documents = groups.get(file) ?? [];
+            documents.push(document);
+            groups.set(file, documents);
+        }
+        for (const [file, documents] of groups) {
+            if (!conflicts.has(path.normalize(file))) {
+                this.pending.delete(file);
+                const signature = 'resolved';
+                if (this.warned.get(file) !== signature) {
+                    this.warned.set(file, signature);
+                    void vscode.window
+                        .showWarningMessage(
+                            `Merge inputs for ${path.basename(file)} are no longer current because the file is no longer conflicted.`,
+                            'Open Working File',
+                        )
+                        .then((action) => {
+                            if (action === 'Open Working File') {
+                                void vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file));
+                            }
+                        });
+                }
+                continue;
+            }
+            const updates = await Promise.all(
+                documents.map(async (document) => ({
+                    uri: document.uri,
+                    content: await this.service.provideContent(document.uri),
+                })),
+            );
+            if (generation !== this.generation) {
+                return;
+            }
+            if (updates.every(({ uri, content }) => this.contents.get(uri.toString()) === content)) {
+                this.warned.delete(file);
+                this.pending.delete(file);
+                continue;
+            }
+            const publish = () => {
+                if (generation !== this.generation) {
+                    return;
+                }
+                // Publish the complete capture before VS Code starts rereading any input.
+                for (const { uri, content } of updates) {
+                    this.contents.set(uri.toString(), content);
+                }
+                for (const { uri } of updates) {
+                    this._onDidChange.fire(uri);
+                }
+                this.warned.delete(file);
+                this.pending.delete(file);
+            };
+            const result = vscode.workspace.textDocuments.find(
+                (document) =>
+                    document.uri.scheme === 'file' && path.normalize(document.uri.fsPath) === path.normalize(file),
+            );
+            if (!result?.isDirty) {
+                publish();
+                continue;
+            }
+            const signature = JSON.stringify(updates.map(({ content }) => content));
+            this.pending.set(file, { signature, publish });
+            if (this.warned.get(file) === signature) {
+                continue;
+            }
+            this.warned.set(file, signature);
+            void vscode.window
+                .showWarningMessage(
+                    `Conflict inputs for ${path.basename(file)} changed. Your unsaved resolution has been preserved.`,
+                    'Refresh Merge Inputs',
+                )
+                .then((action) => {
+                    if (action === 'Refresh Merge Inputs') {
+                        const pending = this.pending.get(file);
+                        if (pending?.signature === signature) {
+                            pending.publish();
+                        }
+                    }
+                });
+        }
     }
 
     update(uri: Uri): void {
+        this.contents.delete(uri.toString());
         this.service.update(uri);
     }
 
     clearCache(fsPath?: string): void {
+        this.generation++;
+        this.pending.clear();
+        this.warned.clear();
+        for (const key of this.contents.keys()) {
+            if (!fsPath || path.normalize(getFsPathFromUri(vscode.Uri.parse(key))) === path.normalize(fsPath)) {
+                this.contents.delete(key);
+            }
+        }
         this.service.clearCache(fsPath);
     }
 
     dispose(): void {
+        this.disposed = true;
+        this.generation++;
+        this.contents.clear();
+        this.warned.clear();
+        this.pending.clear();
         this._onDidChange.dispose();
         for (const d of this._disposables) {
             d.dispose();

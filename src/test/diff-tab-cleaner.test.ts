@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DiffTabCleaner } from '../core/diff-tab-cleaner';
 import type { HostDiffTab } from '../core/host/host-environment';
 import { JjService, NO_OP_LOGGER } from '../core/jj-service';
-import { getFsPathFromUri, Uri } from '../core/uri-utils';
+import { createDiffUris, createRevisionUri, getFsPathFromUri, toAbsoluteEditorUri, Uri } from '../core/uri-utils';
 import { FakeHostEnvironment } from './fake-host-environment';
 import { buildGraph, TestRepo } from './test-repo';
 import { exposePrivate } from './test-utils';
@@ -254,6 +254,31 @@ describe('Diff Tab Cleaner', () => {
     });
 
     describe('closeInvalidDiffEditors', () => {
+        it.each([
+            'deleted',
+            'renamed',
+        ] as const)('retires clean working-copy diffs after a file becomes %s and preserves dirty tabs', async (status) => {
+            const old = createDiffUris({ path: 'file.txt', status: 'modified' }, '@', repo.path);
+            const clean = createMockDiffTab(toAbsoluteEditorUri(old.leftUri), toAbsoluteEditorUri(old.rightUri));
+            const dirty = { ...createMockDiffTab(clean.originalUri, clean.modifiedUri), isDirty: true };
+            const entry = { path: 'file.txt', oldPath: 'old.txt', status };
+            const current = createDiffUris(entry, '@', repo.path);
+            const valid = createMockDiffTab(
+                toAbsoluteEditorUri(current.leftUri),
+                toAbsoluteEditorUri(current.rightUri),
+            );
+            const comparison = createMockDiffTab(
+                createRevisionUri(repo.path, clean.modifiedUri.fsPath, '@'),
+                clean.modifiedUri,
+            );
+            host.documents.openDiffTabs = [clean, dirty, valid, comparison];
+            await cleaner.closeInvalidDiffEditors([entry]);
+            expect(clean.close).toHaveBeenCalledOnce();
+            expect(dirty.close).not.toHaveBeenCalled();
+            expect(valid.close).not.toHaveBeenCalled();
+            expect(comparison.close).not.toHaveBeenCalled();
+        });
+
         it('orchestrates collecting, checking, and closing invalid tabs using real repository state', async () => {
             const ids = await buildGraph(repo, [{ label: 'commitA', description: 'desc A' }]);
             const validRev = ids.commitA.changeId;

@@ -111,7 +111,7 @@ describe('JjMergeService Unit Tests', () => {
         // Now resolve the first request with stale content
         resolveFirst({ base: 'stale base', left: 'stale left', right: 'stale right' });
 
-        expect(await firstPromise).toBe('stale left');
+        expect(await firstPromise).toBe('new left');
         expect(await secondPromise).toBe('new left');
         expect(getConflictPartsMock).toHaveBeenCalledTimes(2);
 

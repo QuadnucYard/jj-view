@@ -159,6 +159,7 @@ export function createDiffUris(
     options: { editable?: boolean; workingCopyChangeId?: string } = {},
 ): { leftUri: Uri; rightUri: Uri; resourceUri: Uri } {
     const isCurrentWorkingCopy = isWorkingCopyRevision(revision, options.workingCopyChangeId);
+    const contentRevision = isCurrentWorkingCopy ? '@' : revision;
     const relPath = entry.path.startsWith('/') ? entry.path : `/${entry.path}`;
 
     // For renames/copies, the left side shows the old path
@@ -170,7 +171,7 @@ export function createDiffUris(
     const leftUri = Uri.from({
         scheme: 'jj-view',
         path: leftRelPath,
-        fragment: encodeJjViewQuery({ mode: 'diff', root, base: revision, side: 'left' }),
+        fragment: encodeJjViewQuery({ mode: 'diff', root, base: contentRevision, side: 'left' }),
     });
 
     const resourceParams = new URLSearchParams();
@@ -194,7 +195,7 @@ export function createDiffUris(
             : Uri.from({
                   scheme: 'jj-view',
                   path: relPath,
-                  fragment: encodeJjViewQuery({ mode: 'diff', root, base: revision, side: 'right' }),
+                  fragment: encodeJjViewQuery({ mode: 'diff', root, base: contentRevision, side: 'right' }),
               });
 
     return { leftUri, rightUri, resourceUri };

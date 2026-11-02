@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodeForgeRegistry } from '../core/code-forge-registry';
 import { JjRepositoryManager } from '../core/jj-repository-manager';
 import { JjViewFsService } from '../core/jj-view-fs-service';
-import { Uri } from '../core/uri-utils';
+import { createDiffUris, Uri } from '../core/uri-utils';
 import { FakeHostEnvironment } from './fake-host-environment';
 import { buildGraph, TestRepo } from './test-repo';
 import { createMockLogOutputChannel } from './test-utils';
@@ -103,6 +103,34 @@ describe('JjViewFsService Unit Tests', () => {
     it('throws error when no repository is found', async () => {
         const outsideUri = Uri.parse('jj-view:///outside/file.txt#root=/outside&revision=@');
         await expect(service.readFile(outsideUri)).rejects.toThrowError('No Jujutsu repository found');
+    });
+
+    it('keeps both working-copy diff sides current after switching changes', async () => {
+        const nodes = await buildGraph(repo, [
+            { label: 'first-base', parents: ['root()'], files: { 'f.txt': 'first base\n' } },
+            { label: 'first', parents: ['first-base'], files: { 'f.txt': 'first edit\n' } },
+            { label: 'second-base', parents: ['root()'], files: { 'f.txt': 'second base\n' } },
+            { label: 'second', parents: ['second-base'], files: { 'f.txt': 'second edit\n' } },
+        ]);
+        repo.edit(nodes.first.changeId);
+        const repository = repoManager.getRepositoryForUri(Uri.file(repo.path));
+        if (!repository) {
+            throw new Error('Repository was not registered');
+        }
+        const { leftUri, rightUri } = createDiffUris(
+            { path: 'f.txt', status: 'modified' },
+            nodes.first.changeId,
+            repo.path,
+            {
+                workingCopyChangeId: nodes.first.changeId,
+            },
+        );
+        expect(new TextDecoder().decode(await service.readFile(leftUri))).toBe('first base\n');
+        repo.edit(nodes.second.changeId);
+        await repository.refresh({ forceSnapshot: true });
+        service.invalidateCache();
+        expect(new TextDecoder().decode(await service.readFile(leftUri))).toBe('second base\n');
+        expect(await repository.host.system?.fs.readTextFile(rightUri.fsPath)).toBe('second edit\n');
     });
 
     it('reads file content at a specific revision', async () => {

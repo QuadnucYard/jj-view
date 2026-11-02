@@ -8,7 +8,16 @@ import { toError } from '../utils/error-utils';
 import type { LoggerChannel } from '../utils/output-channel';
 import type { HostDiffTab, HostEnvironment } from './host/host-environment';
 import type { JjService } from './jj-service';
-import { fnv1aHash, getRevisionFromUri, isJjScheme, type Uri } from './uri-utils';
+import type { JjStatusEntry } from './jj-types';
+import {
+    createDiffUris,
+    fnv1aHash,
+    getRevisionFromUri,
+    getUriParams,
+    isJjScheme,
+    toAbsoluteEditorUri,
+    type Uri,
+} from './uri-utils';
 
 interface CollectedTabs {
     uniqueRevisions: Set<string>;
@@ -32,9 +41,31 @@ export class DiffTabCleaner {
      * change ID that is no longer valid (e.g., because the revision has been
      * squashed, abandoned, or no longer exists in the Jujutsu repository history).
      */
-    public async closeInvalidDiffEditors(): Promise<void> {
+    public async closeInvalidDiffEditors(workingCopyChanges?: readonly JjStatusEntry[]): Promise<void> {
         try {
             const diffTabs = this.host.documents.getOpenDiffTabs?.() ?? [];
+            if (workingCopyChanges) {
+                const expected = new Set(
+                    workingCopyChanges.map((entry) => {
+                        const { leftUri, rightUri } = createDiffUris(entry, '@', this.jj.workspaceRoot);
+                        return `${toAbsoluteEditorUri(leftUri).toString()}|${toAbsoluteEditorUri(rightUri).toString()}`;
+                    }),
+                );
+                for (const tab of diffTabs) {
+                    if (
+                        !tab.isDirty &&
+                        tab.originalUri.scheme === 'jj-view' &&
+                        this.belongsToRepo(tab.originalUri) &&
+                        getUriParams(tab.originalUri).get('side') === 'left' &&
+                        getRevisionFromUri(tab.originalUri) === '@' &&
+                        !expected.has(
+                            `${toAbsoluteEditorUri(tab.originalUri).toString()}|${toAbsoluteEditorUri(tab.modifiedUri).toString()}`,
+                        )
+                    ) {
+                        await tab.close();
+                    }
+                }
+            }
             const { uniqueRevisions, tabToRevisions } = this.collectDiffTabs(diffTabs);
             if (uniqueRevisions.size === 0) {
                 return;

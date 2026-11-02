@@ -73,6 +73,23 @@ describe('toForwardSlash', () => {
 describe('createDiffUris', () => {
     const root = '/root';
 
+    it.each([
+        'modified',
+        'deleted',
+        'renamed',
+    ] as const)('uses live content for %s working-copy change IDs', (status) => {
+        const entry: JjStatusEntry = { path: 'file.txt', oldPath: 'old.txt', status };
+        const { leftUri, rightUri } = createDiffUris(entry, 'change-id', root, { workingCopyChangeId: 'change-id' });
+        expect(decodeJjViewQuery(leftUri)).toMatchObject({ base: '@', side: 'left' });
+        if (status === 'deleted') {
+            expect(decodeJjViewQuery(rightUri)).toMatchObject({ base: '@', side: 'right' });
+        } else {
+            expect(rightUri.scheme).toBe('file');
+        }
+        const historical = createDiffUris(entry, 'change-id', root);
+        expect(decodeJjViewQuery(historical.leftUri)).toMatchObject({ base: 'change-id' });
+    });
+
     it('creates correct URIs for modified file', () => {
         const entry: JjStatusEntry = {
             path: 'file.txt',
