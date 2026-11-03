@@ -34,6 +34,7 @@ export type ActionPayload = z.infer<typeof ActionPayloadSchema>;
 
 export const LogViewToHostMessageSchema = z.discriminatedUnion('type', [
     z.object({ type: z.literal('webviewLoaded') }),
+    z.object({ type: z.literal('setGraphShowCommitId'), payload: z.object({ enabled: z.boolean() }) }),
     z.object({ type: z.literal('setFollowEditor'), payload: z.object({ enabled: z.boolean() }) }),
     z.object({
         type: z.literal('setRepositoryIncluded'),

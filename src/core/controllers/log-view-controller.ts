@@ -656,6 +656,10 @@ export class LogViewController implements Disposable {
                 setFollowEditor: async ({ enabled }) => {
                     await this._options?.repositoryManager?.setFollowEditor(enabled);
                 },
+                setGraphShowCommitId: async ({ enabled }) => {
+                    await this._host.config.update?.('graphShowCommitId', enabled);
+                    this.updateConfig({ graphShowCommitId: enabled });
+                },
                 setRepositoryIncluded: async ({ path, included }) => {
                     const manager = this._options?.repositoryManager;
                     const repo = manager?.repositories.find((repo) => repo.rootUri.fsPath === path);

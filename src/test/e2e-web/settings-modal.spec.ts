@@ -27,14 +27,11 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
             page,
             async (capture) => {
                 await capture();
-                await page.locator('[data-testid="scm-settings-button"]').click();
-                await page.locator('[data-testid="settings-search-input"]').fill('graphShowCommitId');
-                const checkbox = page.locator('[data-testid="setting-control-graphShowCommitId"]');
-                await expect(checkbox).not.toBeChecked();
-                await checkbox.check();
-                await expect(checkbox).toBeChecked();
+                const toggle = page.getByRole('button', { name: 'Show Git commit IDs', exact: true });
+                await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+                await toggle.click();
+                await expect(toggle).toHaveAttribute('aria-pressed', 'true');
                 await capture();
-                await page.keyboard.press('Escape');
                 const hash = row.locator('.git-commit-id');
                 await expect(hash).toHaveText(commitId.substring(0, 8));
                 await expect(hash).toHaveAttribute('title', `Git commit ID: ${commitId}`);
@@ -54,10 +51,16 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
         await page.reload();
         await waitForScmReady(page);
         await expect(row.locator('.git-commit-id')).toHaveText(commitId.substring(0, 8));
+        const toggle = page.getByRole('button', { name: 'Show Git commit IDs', exact: true });
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
         await page.locator('[data-testid="scm-settings-button"]').click();
         await page.locator('[data-testid="settings-search-input"]').fill('graphShowCommitId');
         await page.locator('[data-testid="setting-control-graphShowCommitId"]').uncheck();
         await page.keyboard.press('Escape');
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+        await toggle.click();
+        await expect(row.locator('.git-commit-id')).toBeVisible();
+        await toggle.click();
         await expect(page.locator('.git-commit-id')).toHaveCount(0);
     });
 

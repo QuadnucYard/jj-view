@@ -321,6 +321,8 @@ function handleGraphAction(action: string, payload: ActionPayload) {
 {#if repositoryFocus}
     <RepositoryToolbar
         state={repositoryFocus}
+        {graphShowCommitId}
+        onSetGraphShowCommitId={(enabled) => { void sender.setGraphShowCommitId({ enabled }); }}
         onShowRepository={(path) => { void sender.showRepository({ path }); }}
         onSetIncluded={(path, included) => { void sender.setRepositoryIncluded({ path, included }); }}
         onSetFollowEditor={(enabled) => { void sender.setFollowEditor({ enabled }); }}

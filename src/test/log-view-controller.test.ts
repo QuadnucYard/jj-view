@@ -182,6 +182,19 @@ describe('LogViewController Domain Unit Tests', () => {
         }
     });
 
+    test('persists Git commit ID visibility from the graph panel and broadcasts it', async () => {
+        for (const enabled of [true, false]) {
+            postedMessages.length = 0;
+            expect(await controller.handleMessage({ type: 'setGraphShowCommitId', payload: { enabled } })).toBe(true);
+            expect(fakeHost.config.get('graphShowCommitId')).toBe(enabled);
+            expect(controller.getState().graphShowCommitId).toBe(enabled);
+            expect(postedMessages).toContainEqual({
+                type: 'update',
+                payload: expect.objectContaining({ graphShowCommitId: enabled }),
+            });
+        }
+    });
+
     test('opens graph details in preview unless keep open is requested', async () => {
         const changeId = testRepo.getChangeId('@');
         await controller.handleMessage({ type: 'getDetails', payload: { changeId } });

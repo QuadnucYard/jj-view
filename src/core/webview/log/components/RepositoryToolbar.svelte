@@ -11,11 +11,15 @@ let {
     onShowRepository,
     onSetIncluded,
     onSetFollowEditor,
+    graphShowCommitId,
+    onSetGraphShowCommitId,
 }: {
     state: FocusState;
     onShowRepository: (path: string) => void;
     onSetIncluded: (path: string, included: boolean) => void;
     onSetFollowEditor: (enabled: boolean) => void;
+    graphShowCommitId: boolean;
+    onSetGraphShowCommitId: (enabled: boolean) => void;
 } = $props();
 const included = $derived(state.repositories.filter((repo) => repo.included));
 const excluded = $derived(state.repositories.filter((repo) => !repo.included));
@@ -53,12 +57,15 @@ const excluded = $derived(state.repositories.filter((repo) => !repo.included));
     <button class:enabled={state.followEditor} type="button" aria-label="Follow Editor" aria-pressed={state.followEditor}
         title="Switch graph repositories when the active editor belongs to a chosen repository"
         onclick={() => onSetFollowEditor(!state.followEditor)}><span class="codicon codicon-link" aria-hidden="true"></span><span class="follow-label">Follow Editor</span></button>
+    <button class:enabled={graphShowCommitId} type="button" aria-label="Show Git commit IDs" aria-pressed={graphShowCommitId}
+        title="Show short Git commit IDs beside change IDs"
+        onclick={() => onSetGraphShowCommitId(!graphShowCommitId)}><span class="codicon codicon-git-commit" aria-hidden="true"></span><span>Git IDs</span></button>
 </div>
 
 <style>
     .repository-toolbar {
         container-type: inline-size;
-        display: flex; align-items: center; gap: 6px; min-height: 35px; padding: 0 8px;
+        display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 35px; padding: 0 8px;
         border-bottom: 1px solid var(--vscode-editorGroupHeader-tabsBorder);
         background: var(--vscode-editorGroupHeader-tabsBackground); color: var(--vscode-foreground);
         font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
