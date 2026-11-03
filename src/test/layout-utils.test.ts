@@ -23,6 +23,18 @@ describe('Layout Utils', () => {
     });
 
     describe('computeMaxShortestIdLength', () => {
+        it('pads Git IDs to their own longest shortest prefix', () => {
+            const commits = [
+                { change_id_shortest: 'abcdef', commit_id_shortest: 'a' },
+                { change_id_shortest: 'bc', commit_id_shortest: 'bc' },
+                { change_id_shortest: 'c', commit_id_shortest: 'cde' },
+                {},
+            ];
+            expect(computeMaxShortestIdLength(commits, 1, 'commit_id_shortest')).toBe(3);
+            expect(computeMaxShortestIdLength(commits, 1)).toBe(6);
+            expect(computeMaxShortestIdLength([], 1, 'commit_id_shortest')).toBe(1);
+        });
+
         it('should return minLen for empty commit list', () => {
             expect(computeMaxShortestIdLength([], 8)).toBe(8);
             expect(computeMaxShortestIdLength([], 1)).toBe(1);

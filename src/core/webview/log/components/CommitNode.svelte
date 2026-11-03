@@ -23,6 +23,7 @@ interface Props {
     selectionCount: number;
     hasImmutableSelection: boolean;
     idDisplayLength: number;
+    commitIdDisplayLength: number;
     graphShowCommitId?: boolean;
     hiddenActions?: Set<CommitAction>;
     dragManager: DragManager;
@@ -38,6 +39,7 @@ let {
     selectionCount,
     hasImmutableSelection,
     idDisplayLength,
+    commitIdDisplayLength,
     graphShowCommitId = false,
     hiddenActions = new Set(),
     dragManager,
@@ -253,8 +255,12 @@ const hasActiveBookmarkAlready = $derived(
         </span>
 
         {#if graphShowCommitId && commit.commit_id_shortest}
-            <span class="git-commit-id" title={`Git commit ID: ${commit.commit_id}`}>
-                {commit.commit_id_shortest}
+            <span class="git-commit-id" title={`Git commit ID: ${commit.commit_id}`}
+                style:min-width={`${commitIdDisplayLength}ch`}>
+                <span class="git-commit-prefix" style:font-weight="bold">{commit.commit_id_shortest}</span>
+                {#if commit.commit_id.length > commit.commit_id_shortest.length}
+                    <span style:opacity="0.6">{commit.commit_id.substring(commit.commit_id_shortest.length, commitIdDisplayLength)}</span>
+                {/if}
             </span>
         {/if}
 
@@ -560,8 +566,9 @@ const hasActiveBookmarkAlready = $derived(
     }
 
     .git-commit-id {
+        display: flex;
+        align-items: center;
         font-family: monospace;
-        font-weight: bold;
         color: var(--vscode-charts-blue);
         flex-shrink: 0;
         margin-left: 8px;

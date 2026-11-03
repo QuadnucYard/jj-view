@@ -35,7 +35,7 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
                 await expect(toggle).toHaveAttribute('aria-pressed', 'true');
                 await capture();
                 const hash = row.locator('.git-commit-id');
-                await expect(hash).toHaveText(shortCommitId);
+                await expect(hash.locator('.git-commit-prefix')).toHaveText(shortCommitId);
                 await expect(hash).toHaveAttribute('title', `Git commit ID: ${commitId}`);
                 const changeColor = await row
                     .locator('.commit-id')
@@ -49,6 +49,17 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
                 if (changeBounds && hashBounds) {
                     expect(hashBounds.x).toBeGreaterThanOrEqual(changeBounds.x + changeBounds.width);
                 }
+                const idColumns = await page.locator('.git-commit-id').evaluateAll((elements) =>
+                    elements.map((element) => ({
+                        left: element.getBoundingClientRect().left,
+                        width: element.getBoundingClientRect().width,
+                    })),
+                );
+                expect(idColumns.length).toBeGreaterThan(1);
+                for (const column of idColumns) {
+                    expect(column.left).toBeCloseTo(idColumns[0].left, 0);
+                    expect(column.width).toBeCloseTo(idColumns[0].width, 0);
+                }
                 await page.screenshot({ path: path.join(ARTIFACT_DIR, 'graph-commit-id.png') });
                 await capture();
             },
@@ -57,7 +68,7 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
 
         await page.reload();
         await waitForScmReady(page);
-        await expect(row.locator('.git-commit-id')).toHaveText(shortCommitId);
+        await expect(row.locator('.git-commit-prefix')).toHaveText(shortCommitId);
         const toggle = page.getByRole('button', { name: 'Show Git commit IDs', exact: true });
         await expect(toggle).toHaveAttribute('aria-pressed', 'true');
         await page.locator('[data-testid="scm-settings-button"]').click();

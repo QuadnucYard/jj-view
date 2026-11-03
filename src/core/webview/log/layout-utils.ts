@@ -67,17 +67,19 @@ export function computeGap(fontSize: number): number {
  */
 export interface ShortestIdCommit {
     change_id_shortest?: string;
+    commit_id_shortest?: string;
 }
 
 /**
- * Determines the maximum length of the shortest unique change ID prefix in the given list of commits,
+ * Determines the maximum length of the selected shortest unique ID prefix in the given list of commits,
  * but at least minLen.
  */
-export function computeMaxShortestIdLength(commits: ShortestIdCommit[], minLen: number): number {
-    return commits.reduce(
-        (max, commit) => Math.max(max, getChangeIdDisplayLength(commit.change_id_shortest, minLen)),
-        minLen,
-    );
+export function computeMaxShortestIdLength(
+    commits: ShortestIdCommit[],
+    minLen: number,
+    idField: keyof ShortestIdCommit = 'change_id_shortest',
+): number {
+    return commits.reduce((max, commit) => Math.max(max, getChangeIdDisplayLength(commit[idField], minLen)), minLen);
 }
 
 /**

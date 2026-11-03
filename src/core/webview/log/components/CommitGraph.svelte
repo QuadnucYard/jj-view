@@ -97,6 +97,7 @@ const rowOffsetsData = $derived.by(() => {
 });
 
 const maxShortestIdLength = $derived(computeMaxShortestIdLength(commits, minChangeIdLength));
+const maxShortestCommitIdLength = $derived(computeMaxShortestIdLength(commits, 1, 'commit_id_shortest'));
 
 const hasImmutable = $derived.by(() => {
     if (!selectedCommitIds || selectedCommitIds.size === 0) {
@@ -167,6 +168,7 @@ const graphAreaWidth = $derived(computeGraphAreaWidth(layout.width, LANE_WIDTH, 
                         selectionCount={selectedCommitIds.size}
                         hasImmutableSelection={hasImmutable}
                         idDisplayLength={maxShortestIdLength}
+                        commitIdDisplayLength={maxShortestCommitIdLength}
                         {graphShowCommitId}
                         {hiddenActions}
                         {dragManager}
