@@ -150,6 +150,8 @@ export type CodeForgeChangeInfo = z.infer<typeof CodeForgeChangeInfoSchema>;
 export const JjLogEntrySchema = z.object({
     /** The unique SHA-1 identifier for the commit. */
     commit_id: z.string(),
+    /** The shortest unique prefix of the commit ID. */
+    commit_id_shortest: z.string().optional(),
     /** The stable change ID (retains value across history rewrites). */
     change_id: z.string(),
     /** The shortest unique prefix of the change ID. */

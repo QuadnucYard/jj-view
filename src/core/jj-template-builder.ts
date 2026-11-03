@@ -108,6 +108,7 @@ export function buildDiffFileSchema(varName: 'item' | 'self'): Record<string, Jj
 // Schema for JjLogEntry - defines how to serialize each field
 export const LOG_ENTRY_SCHEMA: Record<string, JjTemplateField> = {
     commit_id: { type: 'string', expr: 'commit_id' },
+    commit_id_shortest: { type: 'string', expr: 'commit_id.shortest()' },
     change_id: { type: 'string', expr: CHANGE_ID_EXPR },
     change_id_shortest: { type: 'string', expr: 'change_id.shortest()' },
     description: { type: 'json', expr: 'description' },

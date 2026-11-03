@@ -426,6 +426,11 @@ export class TestRepo {
         return this.exec(['log', '--ignore-working-copy', '-r', revision, '-T', 'commit_id', '--no-graph']).stdout;
     }
 
+    getShortestCommitId(revision: string): string {
+        return this.exec(['log', '--ignore-working-copy', '-r', revision, '-T', 'commit_id.shortest()', '--no-graph'])
+            .stdout;
+    }
+
     getChangeAndCommitId(revision: string): { changeId: string; commitId: string } {
         const output = this.exec([
             'log',

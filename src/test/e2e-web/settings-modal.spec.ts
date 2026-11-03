@@ -17,6 +17,7 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
         testRepo.describe('feat: example commit');
         testRepo.new();
         const commitId = testRepo.getCommitId('@-');
+        const shortCommitId = testRepo.getShortestCommitId('@-');
         await page.goto(server.serverUrl);
         await waitForScmReady(page);
         const row = page.locator('.commit-row').filter({ hasText: 'feat: example commit' });
@@ -29,12 +30,18 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
                 await capture();
                 const toggle = page.getByRole('button', { name: 'Show Git commit IDs', exact: true });
                 await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+                await expect(toggle).toHaveText('');
                 await toggle.click();
                 await expect(toggle).toHaveAttribute('aria-pressed', 'true');
                 await capture();
                 const hash = row.locator('.git-commit-id');
-                await expect(hash).toHaveText(commitId.substring(0, 8));
+                await expect(hash).toHaveText(shortCommitId);
                 await expect(hash).toHaveAttribute('title', `Git commit ID: ${commitId}`);
+                const changeColor = await row
+                    .locator('.commit-id')
+                    .evaluate((element) => getComputedStyle(element).color);
+                const commitColor = await hash.evaluate((element) => getComputedStyle(element).color);
+                expect(commitColor).not.toBe(changeColor);
                 const changeBounds = await row.locator('.commit-id').boundingBox();
                 const hashBounds = await hash.boundingBox();
                 expect(changeBounds).not.toBeNull();
@@ -50,7 +57,7 @@ test.describe('Standalone Web Settings Modal & Configuration System', () => {
 
         await page.reload();
         await waitForScmReady(page);
-        await expect(row.locator('.git-commit-id')).toHaveText(commitId.substring(0, 8));
+        await expect(row.locator('.git-commit-id')).toHaveText(shortCommitId);
         const toggle = page.getByRole('button', { name: 'Show Git commit IDs', exact: true });
         await expect(toggle).toHaveAttribute('aria-pressed', 'true');
         await page.locator('[data-testid="scm-settings-button"]').click();

@@ -252,9 +252,9 @@ const hasActiveBookmarkAlready = $derived(
             {/if}
         </span>
 
-        {#if graphShowCommitId}
+        {#if graphShowCommitId && commit.commit_id_shortest}
             <span class="git-commit-id" title={`Git commit ID: ${commit.commit_id}`}>
-                {commit.commit_id.substring(0, 8)}
+                {commit.commit_id_shortest}
             </span>
         {/if}
 
@@ -561,7 +561,8 @@ const hasActiveBookmarkAlready = $derived(
 
     .git-commit-id {
         font-family: monospace;
-        color: var(--vscode-descriptionForeground);
+        font-weight: bold;
+        color: var(--vscode-charts-blue);
         flex-shrink: 0;
         margin-left: 8px;
     }

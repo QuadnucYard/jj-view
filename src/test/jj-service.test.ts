@@ -789,6 +789,11 @@ log = "none()"
         expect(log.change_id.startsWith(shortestId)).toBe(true);
         expect(log.change_id_shortest?.length).toBeGreaterThan(0);
         expect(log.change_id_shortest?.length).toBeLessThan(log.change_id.length);
+        const shortestCommitId = repo.getShortestCommitId('@');
+        expect(log.commit_id_shortest).toBe(shortestCommitId);
+        expect(shortestCommitId.length).toBeGreaterThan(0);
+        expect(shortestCommitId.length).toBeLessThan(8);
+        expect(log.commit_id.startsWith(shortestCommitId)).toBe(true);
     });
 
     test('getLog populates nearest_visible_ancestors with gaps', async () => {

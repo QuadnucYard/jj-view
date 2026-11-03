@@ -59,7 +59,7 @@ const excluded = $derived(state.repositories.filter((repo) => !repo.included));
         onclick={() => onSetFollowEditor(!state.followEditor)}><span class="codicon codicon-link" aria-hidden="true"></span><span class="follow-label">Follow Editor</span></button>
     <button class:enabled={graphShowCommitId} type="button" aria-label="Show Git commit IDs" aria-pressed={graphShowCommitId}
         title="Show short Git commit IDs beside change IDs"
-        onclick={() => onSetGraphShowCommitId(!graphShowCommitId)}><span class="codicon codicon-git-commit" aria-hidden="true"></span><span>Git IDs</span></button>
+        onclick={() => onSetGraphShowCommitId(!graphShowCommitId)}><span class="codicon codicon-git-commit" aria-hidden="true"></span></button>
 </div>
 
 <style>
