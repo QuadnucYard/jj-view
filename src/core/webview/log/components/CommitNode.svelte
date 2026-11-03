@@ -23,6 +23,7 @@ interface Props {
     selectionCount: number;
     hasImmutableSelection: boolean;
     idDisplayLength: number;
+    graphShowCommitId?: boolean;
     hiddenActions?: Set<CommitAction>;
     dragManager: DragManager;
 }
@@ -37,6 +38,7 @@ let {
     selectionCount,
     hasImmutableSelection,
     idDisplayLength,
+    graphShowCommitId = false,
     hiddenActions = new Set(),
     dragManager,
 }: Props = $props();
@@ -249,6 +251,12 @@ const hasActiveBookmarkAlready = $derived(
                 </span>
             {/if}
         </span>
+
+        {#if graphShowCommitId}
+            <span class="git-commit-id" title={`Git commit ID: ${commit.commit_id}`}>
+                {commit.commit_id.substring(0, 8)}
+            </span>
+        {/if}
 
         <!-- Overlay Actions -->
         {#if isHovered && !dragManager.isDragging && !(selectionCount > 1)}
@@ -549,6 +557,13 @@ const hasActiveBookmarkAlready = $derived(
         display: flex;
         align-items: center;
         height: 28px;
+    }
+
+    .git-commit-id {
+        font-family: monospace;
+        color: var(--vscode-descriptionForeground);
+        flex-shrink: 0;
+        margin-left: 8px;
     }
 
     .commit-id {

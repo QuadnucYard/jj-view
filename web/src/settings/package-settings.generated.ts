@@ -166,6 +166,14 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
         ],
     },
     {
+        key: 'graphShowCommitId',
+        title: 'Graph Show Commit Id',
+        description: 'Show the short Git commit ID to the right of each change ID in the graph view.',
+        category: 'Log Graph',
+        type: 'boolean',
+        default: false,
+    },
+    {
         key: 'graphLabelAlignment',
         title: 'Graph Label Alignment',
         description: 'Controls the horizontal alignment of commit messages in the log view.',

@@ -169,6 +169,19 @@ describe('LogViewController Domain Unit Tests', () => {
         expect(controller.minChangeIdLength).toBe(8);
     });
 
+    test('broadcasts Git commit ID visibility on configuration changes', () => {
+        expect(controller.getState().graphShowCommitId).toBe(false);
+        for (const enabled of [true, false]) {
+            postedMessages.length = 0;
+            fakeHost.config.set('graphShowCommitId', enabled);
+            expect(controller.getState().graphShowCommitId).toBe(enabled);
+            expect(postedMessages).toContainEqual({
+                type: 'update',
+                payload: expect.objectContaining({ graphShowCommitId: enabled }),
+            });
+        }
+    });
+
     test('opens graph details in preview unless keep open is requested', async () => {
         const changeId = testRepo.getChangeId('@');
         await controller.handleMessage({ type: 'getDetails', payload: { changeId } });

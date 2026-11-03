@@ -8,6 +8,59 @@ import * as path from 'node:path';
 import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
 
 test.describe('Standalone Web Settings Modal & Configuration System', () => {
+    test('should toggle short Git commit IDs beside change IDs and retain the setting', async ({
+        page,
+        server,
+        testRepo,
+    }) => {
+        testRepo.writeFile('example.txt', 'example\n');
+        testRepo.describe('feat: example commit');
+        testRepo.new();
+        const commitId = testRepo.getCommitId('@-');
+        await page.goto(server.serverUrl);
+        await waitForScmReady(page);
+        const row = page.locator('.commit-row').filter({ hasText: 'feat: example commit' });
+        await expect(row).toBeVisible();
+        await expect(page.locator('.git-commit-id')).toHaveCount(0);
+
+        await recordGifFlow(
+            page,
+            async (capture) => {
+                await capture();
+                await page.locator('[data-testid="scm-settings-button"]').click();
+                await page.locator('[data-testid="settings-search-input"]').fill('graphShowCommitId');
+                const checkbox = page.locator('[data-testid="setting-control-graphShowCommitId"]');
+                await expect(checkbox).not.toBeChecked();
+                await checkbox.check();
+                await expect(checkbox).toBeChecked();
+                await capture();
+                await page.keyboard.press('Escape');
+                const hash = row.locator('.git-commit-id');
+                await expect(hash).toHaveText(commitId.substring(0, 8));
+                await expect(hash).toHaveAttribute('title', `Git commit ID: ${commitId}`);
+                const changeBounds = await row.locator('.commit-id').boundingBox();
+                const hashBounds = await hash.boundingBox();
+                expect(changeBounds).not.toBeNull();
+                expect(hashBounds).not.toBeNull();
+                if (changeBounds && hashBounds) {
+                    expect(hashBounds.x).toBeGreaterThanOrEqual(changeBounds.x + changeBounds.width);
+                }
+                await page.screenshot({ path: path.join(ARTIFACT_DIR, 'graph-commit-id.png') });
+                await capture();
+            },
+            { outputPath: path.join(ARTIFACT_DIR, 'graph-commit-id.gif') },
+        );
+
+        await page.reload();
+        await waitForScmReady(page);
+        await expect(row.locator('.git-commit-id')).toHaveText(commitId.substring(0, 8));
+        await page.locator('[data-testid="scm-settings-button"]').click();
+        await page.locator('[data-testid="settings-search-input"]').fill('graphShowCommitId');
+        await page.locator('[data-testid="setting-control-graphShowCommitId"]').uncheck();
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.git-commit-id')).toHaveCount(0);
+    });
+
     test('should open settings modal via gear button and close with Escape', async ({ page, server }) => {
         await page.goto(server.serverUrl);
         await waitForScmReady(page);

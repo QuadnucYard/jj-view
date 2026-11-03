@@ -29,6 +29,7 @@ interface Props {
     highlightedCommitId?: string;
     minChangeIdLength: number;
     graphLabelAlignment?: string;
+    graphShowCommitId?: boolean;
     theme?: string;
     hiddenActions?: Set<CommitAction>;
     dragManager: DragManager;
@@ -42,6 +43,7 @@ let {
     highlightedCommitId,
     minChangeIdLength,
     graphLabelAlignment = 'aligned',
+    graphShowCommitId = false,
     theme = 'default',
     hiddenActions = new Set(),
     dragManager,
@@ -165,6 +167,7 @@ const graphAreaWidth = $derived(computeGraphAreaWidth(layout.width, LANE_WIDTH, 
                         selectionCount={selectedCommitIds.size}
                         hasImmutableSelection={hasImmutable}
                         idDisplayLength={maxShortestIdLength}
+                        {graphShowCommitId}
                         {hiddenActions}
                         {dragManager}
                     />

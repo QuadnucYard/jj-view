@@ -28,6 +28,7 @@ let workspaces = $state<JjWorkspace[]>([]);
 let minChangeIdLength = $state(1);
 let theme = $state('default');
 let graphLabelAlignment = $state('aligned');
+let graphShowCommitId = $state(false);
 let loading = $state(true);
 let selectedCommitIds = $state<Set<string>>(new Set());
 let rawHighlightQuery = $state<string | undefined>(undefined);
@@ -131,6 +132,7 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
         minChangeIdLength: minLen,
         theme: th,
         graphLabelAlignment: align,
+        graphShowCommitId: showCommitId,
         hiddenActions: hidden,
         repositoryPath: nextPath,
         selectedCommitIds: selection,
@@ -157,6 +159,9 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
         }
         if (align !== undefined) {
             graphLabelAlignment = align;
+        }
+        if (showCommitId !== undefined) {
+            graphShowCommitId = showCommitId;
         }
         if (hidden !== undefined) {
             hiddenActions = new Set(hidden);
@@ -355,6 +360,7 @@ function handleGraphAction(action: string, payload: ActionPayload) {
                 {highlightedCommitId}
                 {minChangeIdLength}
                 {graphLabelAlignment}
+                {graphShowCommitId}
                 {theme}
                 {hiddenActions}
                 {dragManager}

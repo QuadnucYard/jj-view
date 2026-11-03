@@ -59,6 +59,7 @@ export class LogViewController implements Disposable {
     private _hiddenActions: readonly ToggleableCommitAction[] = [];
     private _theme: string;
     private _graphLabelAlignment: string;
+    private _graphShowCommitId: boolean;
     private _minChangeIdLength: number;
 
     private readonly _onDidUpdateCommits = new EventEmitter<readonly JjLogEntry[]>();
@@ -75,6 +76,7 @@ export class LogViewController implements Disposable {
         this._logger = _options?.logger;
         this._theme = this._host.config.get<string>('logTheme', 'default');
         this._graphLabelAlignment = this._host.config.get<string>('graphLabelAlignment', 'aligned');
+        this._graphShowCommitId = this._host.config.get<boolean>('graphShowCommitId', false);
         this._minChangeIdLength = this._host.config.get<number>('minChangeIdLength', 1);
 
         this._refreshQueue = new CoalescingQueue(async () => {
@@ -106,11 +108,13 @@ export class LogViewController implements Disposable {
                     if (
                         e.affectsConfiguration('jj-view.logTheme') ||
                         e.affectsConfiguration('jj-view.graphLabelAlignment') ||
+                        e.affectsConfiguration('jj-view.graphShowCommitId') ||
                         e.affectsConfiguration('jj-view.minChangeIdLength')
                     ) {
                         this.updateConfig({
                             theme: this._host.config.get<string>('logTheme', 'default'),
                             graphLabelAlignment: this._host.config.get<string>('graphLabelAlignment', 'aligned'),
+                            graphShowCommitId: this._host.config.get<boolean>('graphShowCommitId', false),
                             minChangeIdLength: this._host.config.get<number>('minChangeIdLength', 1),
                         });
                     }
@@ -161,6 +165,7 @@ export class LogViewController implements Disposable {
             minChangeIdLength: this._minChangeIdLength,
             theme: this._theme,
             graphLabelAlignment: this._graphLabelAlignment,
+            graphShowCommitId: this._graphShowCommitId,
             hiddenActions: [...this._hiddenActions],
         };
     }
@@ -454,7 +459,12 @@ export class LogViewController implements Disposable {
         return next;
     }
 
-    public updateConfig(config: { theme?: string; graphLabelAlignment?: string; minChangeIdLength?: number }): void {
+    public updateConfig(config: {
+        theme?: string;
+        graphLabelAlignment?: string;
+        graphShowCommitId?: boolean;
+        minChangeIdLength?: number;
+    }): void {
         if (config.theme !== undefined) {
             this._theme = config.theme;
         }
@@ -463,6 +473,9 @@ export class LogViewController implements Disposable {
         }
         if (config.minChangeIdLength !== undefined) {
             this._minChangeIdLength = config.minChangeIdLength;
+        }
+        if (config.graphShowCommitId !== undefined) {
+            this._graphShowCommitId = config.graphShowCommitId;
         }
 
         if (this._disposed) {
@@ -495,9 +508,14 @@ export class LogViewController implements Disposable {
     public refreshSettings(): void {
         const theme = this._host.config.get<string>('logTheme', 'default');
         const alignment = this._host.config.get<string>('graphLabelAlignment', 'aligned');
+        const showCommitId = this._host.config.get<boolean>('graphShowCommitId', false);
         const minLength = this._host.config.get<number>('minChangeIdLength', 1);
 
         let changed = false;
+        if (this._graphShowCommitId !== showCommitId) {
+            this._graphShowCommitId = showCommitId;
+            changed = true;
+        }
         if (this._theme !== theme) {
             this._theme = theme;
             changed = true;
