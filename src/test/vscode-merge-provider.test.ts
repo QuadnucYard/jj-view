@@ -298,6 +298,48 @@ describe('VsCodeMergeContentProvider', () => {
         expect(await provider.provideTextDocumentContent(uris[1])).toBe('left\r\n');
     });
 
+    test.each([
+        false,
+        true,
+    ])('silently preserves merge inputs after resolution with pending refresh=%s', async (pending) => {
+        const nodes = await buildConflicts(repo);
+        repo.edit(nodes.first.changeId);
+        const { uris } = await openConflict(repo, provider, 'conflict.txt', pending);
+        const original = await Promise.all(uris.map((uri) => provider.provideTextDocumentContent(uri)));
+        const changed: Uri[] = [];
+        provider.onDidChange((uri) => changed.push(uri));
+        let approve: ((action: string | undefined) => void) | undefined;
+        showWarningMessage.mockImplementation(
+            () =>
+                new Promise((resolve) => {
+                    approve = resolve;
+                }),
+        );
+        if (pending) {
+            repo.edit(nodes.second.changeId);
+            await provider.refresh(['conflict.txt'], repo.path);
+            expect(showWarningMessage).toHaveBeenCalledOnce();
+            showWarningMessage.mockClear();
+        }
+        repo.writeFile('conflict.txt', 'resolved\n');
+        const repository = repositoryManager.getRepositoryForUri(Uri.file(repo.path));
+        if (!repository) {
+            throw new Error('Repository was not registered');
+        }
+        await repository.refresh({ forceSnapshot: true });
+        expect(await repository.jj.getConflictedFiles()).toEqual([]);
+        await provider.refresh([], repo.path);
+        await provider.refresh([], repo.path);
+        approve?.('Refresh Merge Inputs');
+        await Promise.resolve();
+        expect(showWarningMessage).not.toHaveBeenCalled();
+        expect(changed).toEqual([]);
+        expect(await Promise.all(uris.map((uri) => provider.provideTextDocumentContent(uri)))).toEqual(original);
+        expect(
+            await repository.jj.system.fs.readTextFile(Uri.joinPath(Uri.file(repo.path), 'conflict.txt').fsPath),
+        ).toBe('resolved\n');
+    });
+
     test('handles missing query parameters gracefully', async () => {
         const uri = Uri.from({ scheme: 'jj-merge', path: '/test.txt' });
         const content = await provider.provideTextDocumentContent(uri);

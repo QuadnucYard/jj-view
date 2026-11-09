@@ -5,6 +5,7 @@
 
 import * as assert from 'node:assert';
 import * as path from 'node:path';
+import * as sinon from 'sinon';
 import * as vscode from 'vscode';
 import type { Api } from '../vscode/extension';
 import { buildGraph, TestRepo } from './test-repo';
@@ -49,6 +50,64 @@ suite('Merge input repository lifecycle', function () {
         await vscode.commands.executeCommand('workbench.action.closeAllEditors');
         await setRepositoryFolder(false);
         await repo.dispose();
+    });
+
+    test('saving a resolution in the merge editor does not warn that inputs are stale', async () => {
+        await buildGraph(repo, [
+            { label: 'base', files: { 'solution.rs': 'base\n' } },
+            { label: 'left', parents: ['base'], files: { 'solution.rs': 'left\n' } },
+            { label: 'right', parents: ['base'], files: { 'solution.rs': 'right\n' } },
+            { label: 'merge', parents: ['left', 'right'] },
+        ]);
+        await setRepositoryFolder(true);
+        const file = vscode.Uri.file(path.join(repo.path, 'solution.rs'));
+        const repository = api.repositoryManager.getRepositoryForUri(file);
+        assert.ok(repository);
+        await repository.refresh({ forceSnapshot: true });
+        const warnings = sinon.spy(vscode.window, 'showWarningMessage');
+        try {
+            await vscode.commands.executeCommand('jj-view.openMergeEditor', { resourceUri: file });
+            const inputs = await Promise.all(
+                ['base', 'left', 'right'].map((part) =>
+                    vscode.workspace.openTextDocument(
+                        file.with({
+                            scheme: 'jj-merge-output',
+                            authority: 'jj-merge',
+                            fragment: `path=${encodeURIComponent(file.fsPath)}&part=${part}`,
+                        }),
+                    ),
+                ),
+            );
+            assert.strictEqual(inputs.length, 3, 'The native merge editor must load all three inputs');
+            const before = inputs.map((document) => document.getText());
+            // _open.mergeEditor returns before its editor pane has initialized. Wait for
+            // the native Accept All + Save actions to reach the actual result on disk.
+            let saved = false;
+            for (let attempt = 0; attempt < 50; attempt++) {
+                await vscode.commands.executeCommand('merge.acceptAllInput1');
+                await vscode.commands.executeCommand('workbench.action.files.save');
+                if ((await repository.jj.system.fs.readTextFile(file.fsPath)) === 'left\n') {
+                    saved = true;
+                    break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            assert.ok(saved, 'The native merge editor should save the accepted resolution');
+            await repository.refresh({ forceSnapshot: true });
+            assert.deepStrictEqual(await repository.jj.getConflictedFiles(), []);
+            assert.strictEqual(await repository.jj.system.fs.readTextFile(file.fsPath), 'left\n');
+            assert.deepStrictEqual(
+                inputs.map((document) => document.getText()),
+                before,
+            );
+            assert.strictEqual(
+                warnings.getCalls().some((call) => call.args[0].includes('Merge inputs for solution.rs')),
+                false,
+            );
+        } finally {
+            await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+            warnings.restore();
+        }
     });
 
     test('refreshes surviving merge inputs when the repository is rediscovered', async () => {

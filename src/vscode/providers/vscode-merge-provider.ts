@@ -92,21 +92,10 @@ export class VsCodeMergeContentProvider implements vscode.TextDocumentContentPro
         const errors: Error[] = [];
         for (const [file, documents] of groups) {
             if (!conflicts.has(path.normalize(file))) {
+                // Saving a resolution normally removes the conflict. Its original inputs
+                // remain useful in the open merge editor; completion is not invalidation.
                 this.pending.delete(file);
-                const signature = 'resolved';
-                if (this.warned.get(file) !== signature) {
-                    this.warned.set(file, signature);
-                    void vscode.window
-                        .showWarningMessage(
-                            `Merge inputs for ${path.basename(file)} are no longer current because the file is no longer conflicted.`,
-                            'Open Working File',
-                        )
-                        .then((action) => {
-                            if (action === 'Open Working File') {
-                                void vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file));
-                            }
-                        });
-                }
+                this.warned.delete(file);
                 continue;
             }
             let updates: { uri: vscode.Uri; content: string }[];
