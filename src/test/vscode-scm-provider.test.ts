@@ -58,6 +58,8 @@ describe('VsCodeScmProvider Unit Tests', () => {
     test('creates vscode.SourceControl and resource groups', () => {
         expect(vscode.scm.createSourceControl).toHaveBeenCalled();
         expect(scmProvider.sourceControl).toBeDefined();
+        // A virtual root would exclude disk editors from quick diff.
+        expect(vscode.scm.createSourceControl).toHaveBeenCalledWith(expect.any(String), expect.any(String));
     });
 
     test('provides original resource for modified file', async () => {
@@ -81,7 +83,15 @@ describe('VsCodeScmProvider Unit Tests', () => {
         expect(originalUri).toBeDefined();
         if (originalUri && 'scheme' in originalUri) {
             expect(originalUri.scheme).toBe('jj-view');
+            expect(scmProvider.provideOriginalResource(originalUri)).toBeUndefined();
         }
+        const token = createMock<vscode.CancellationToken>({ isCancellationRequested: false });
+        const decoration = await scmProvider.decorationProvider.provideFileDecoration(
+            Uri.file(`${testRepo.path}/file.txt`),
+            token,
+        );
+        expect(decoration?.badge).toBe('M');
+        expect(scmProvider.provideOriginalResource(Uri.file(`${testRepo.path}-outside/file.txt`))).toBeUndefined();
     });
 
     test('disposes all VS Code resources cleanly', () => {

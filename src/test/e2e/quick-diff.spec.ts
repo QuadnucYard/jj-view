@@ -36,6 +36,34 @@ test.describe('Quick Diff E2E', () => {
         return { peekView, gutter };
     }
 
+    test('Gutter tracks parent changes while the open file stays unchanged', async ({ vscode }) => {
+        repo = new TestRepo();
+        repo.init();
+        const fileName = 'refresh-baseline.txt';
+        repo.writeFile(fileName, 'one\ntwo\nthree\n');
+        repo.new();
+        repo.writeFile(fileName, 'ONE\ntwo\nthree\n');
+        const workspacePath = repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
+        const { page } = await vscode.openWorkspace({ path: workspacePath }, { 'git.enabled': false });
+        const editor = await openFileInEditor(vscode, page, fileName, repo);
+        const markers = editor.locator('.dirty-diff-modified');
+        await expect(markers).toHaveCount(1);
+
+        // Moving the change into the parent leaves the disk buffer untouched.
+        repo.squash();
+        await vscode.evaluate(async (vscode) => {
+            await vscode.commands.executeCommand('jj-view.refresh');
+        });
+        await expect(markers).toHaveCount(0);
+
+        // The same editor must resume showing markers for later changes.
+        repo.writeFile(fileName, 'ONE\nTWO\nthree\n');
+        await vscode.evaluate(async (vscode) => {
+            await vscode.commands.executeCommand('jj-view.refresh');
+        });
+        await expect(markers).toHaveCount(1);
+    });
+
     test('Gutter decorations and Diff Editor refresh after squash', async ({ vscode }) => {
         repo = new TestRepo();
         repo.init();

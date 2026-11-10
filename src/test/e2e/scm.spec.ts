@@ -517,7 +517,7 @@ test.describe('SCM Pane E2E', () => {
                     const row = gitEnabled
                         ? page
                               .locator(
-                                  `//div[@role="treeitem"][@aria-level="3"][@aria-label="${scenario.file}"][(preceding-sibling::div[@role="treeitem"][@aria-level="2"])[last()][contains(@aria-label, "${scenario.group.source}")]]`,
+                                  `//div[@role="treeitem"][@aria-level="3"][@aria-label="${scenario.file}" or starts-with(@aria-label, "${scenario.file}, ")][(preceding-sibling::div[@role="treeitem"][@aria-level="2"])[last()][contains(@aria-label, "${scenario.group.source}")]]`,
                               )
                               .first()
                         : await expectFileInScmGroup(page, scenario.group, scenario.file);

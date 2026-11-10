@@ -80,15 +80,10 @@ export class VsCodeScmProvider implements vscode.Disposable {
 
         const workspaceRoot = repo.rootUri.fsPath;
         const folderName = path.basename(workspaceRoot);
-        // Decoration invalidations round-trip through URI strings, which normalize
-        // Windows drive letters. Keep the case-sensitive virtual SCM tree in that
-        // same canonical form so invalidations address the displayed rows.
-        this._scmRootUri = Uri.parse(repo.rootUri.with({ scheme: 'jj-scm' }).toString());
-        this._sourceControl = vscode.scm.createSourceControl(
-            `jj-${workspaceRoot}`,
-            `Jujutsu (${folderName})`,
-            this._scmRootUri,
-        );
+        // Keep virtual tree paths relative to the repository. With no SCM root,
+        // VS Code builds its tree from '/', while quick diff can serve disk URIs.
+        this._scmRootUri = Uri.from({ scheme: 'jj-scm', path: '/' });
+        this._sourceControl = vscode.scm.createSourceControl(`jj-${workspaceRoot}`, `Jujutsu (${folderName})`);
         const decorationModel = new JjDecorationModel(this.jj, workspaceRoot);
         this.decorationProvider = new VsCodeDecorationProvider(decorationModel);
 
@@ -246,6 +241,10 @@ export class VsCodeScmProvider implements vscode.Disposable {
 
         this.viewFileSystemProvider?.invalidateCache();
         this.editProvider?.invalidateCache();
+        // Setting an already-present provider does not notify VS Code's quick
+        // diff service. Renew it even when SCM rows have not changed (for
+        // example, after rewriting the parent with the same file statuses).
+        this._sourceControl.quickDiffProvider = undefined;
         this._sourceControl.quickDiffProvider = this;
 
         await this._diffTabCleaner.closeInvalidDiffEditors(snapshot.workingCopyChanges);
@@ -287,6 +286,11 @@ export class VsCodeScmProvider implements vscode.Disposable {
     }
 
     provideOriginalResource(uri: Uri): vscode.ProviderResult<Uri> {
+        // The SCM registration is unscoped so its virtual tree does not exclude
+        // disk editors from quick diff. Scope requests here, including nested repos.
+        if (uri.scheme !== 'file' || this.repositoryManager.getRepositoryForUri(uri) !== this.repo) {
+            return undefined;
+        }
         const originalUri = this.scmModel.getOriginalResourceUri(uri);
         return originalUri ? toAbsoluteEditorUri(originalUri) : undefined;
     }

@@ -579,6 +579,16 @@ describe('getOriginalResourceUri and getRepoRelativePath', () => {
         expect(getRepoRelativePath(rootUri, root)).toBe('/');
     });
 
+    it('maps relative SCM identities to repository files using their root', () => {
+        const scmUri = Uri.from({
+            scheme: 'jj-scm',
+            path: '/src/nested/file.ts',
+            fragment: new URLSearchParams({ root, 'jj-revision': 'rev1' }).toString(),
+        });
+        expect(getRepoRelativePath(scmUri, root)).toBe('/src/nested/file.ts');
+        expect(toFileUri(scmUri)).toEqual(Uri.file(path.join(root, 'src/nested/file.ts')));
+    });
+
     it('can clear canonical root cache', () => {
         expect(() => clearCanonicalRootCache()).not.toThrow();
     });
