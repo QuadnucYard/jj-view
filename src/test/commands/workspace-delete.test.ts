@@ -91,4 +91,55 @@ describe('workspace delete command', () => {
         expect(fs.existsSync(workspace.path)).toBe(true);
         expect(refreshSpy).not.toHaveBeenCalled();
     });
+
+    test('offers to forget a workspace whose directory is missing and refreshes when accepted', async () => {
+        const workspace = repo.workspaceAdd('feature');
+        fs.rmSync(workspace.path, { recursive: true });
+        ctx.host.ui.setNextWarningResponse('Yes, Delete Workspace');
+        ctx.host.ui.setNextWarningResponse('Yes, Forget Workspace');
+        const rm = vi.spyOn(ctx.host.system.fs, 'rm');
+
+        await workspaceDeleteCommand(ctx, { workspaceName: 'feature' });
+
+        expect(ctx.host.ui.warningMessages[1]).toContain('directory for workspace "feature" is missing');
+        expect(ctx.host.ui.warningMessages[1]).toContain(workspace.path);
+        expect(repo.listWorkspaces()).not.toContain('feature');
+        expect(mockJjRepo.refresh).toHaveBeenCalledOnce();
+        expect(rm).not.toHaveBeenCalled();
+        expect(ctx.host.ui.errorMessages).toHaveLength(0);
+    });
+
+    test('keeps a missing workspace registered when forgetting is cancelled', async () => {
+        const workspace = repo.workspaceAdd('feature');
+        fs.rmSync(workspace.path, { recursive: true });
+        ctx.host.ui.setNextWarningResponse('Yes, Delete Workspace');
+        ctx.host.ui.setNextWarningResponse(undefined);
+
+        await workspaceDeleteCommand(ctx, { workspaceName: 'feature' });
+
+        expect(ctx.host.ui.warningMessages).toHaveLength(2);
+        expect(repo.listWorkspaces()).toContain('feature');
+        expect(mockJjRepo.refresh).not.toHaveBeenCalled();
+        expect(ctx.host.ui.errorMessages).toHaveLength(0);
+    });
+
+    test('reports filesystem permission errors without offering to forget', async () => {
+        const workspace = repo.workspaceAdd('feature');
+        ctx.host.ui.setNextWarningResponse('Yes, Delete Workspace');
+        const stat = vi
+            .spyOn(ctx.host.system.fs, 'stat')
+            .mockRejectedValue(Object.assign(new Error('Permission denied'), { code: 'EACCES' }));
+
+        try {
+            await workspaceDeleteCommand(ctx, { workspaceName: 'feature' });
+        } finally {
+            stat.mockRestore();
+        }
+
+        expect(ctx.host.ui.warningMessages).toHaveLength(1);
+        expect(ctx.host.ui.errorMessages[0]).toContain('Permission denied');
+        expect(repo.listWorkspaces()).toContain('feature');
+        expect(fs.existsSync(workspace.path)).toBe(true);
+        expect(mockJjRepo.refresh).not.toHaveBeenCalled();
+    });
 });

@@ -29,16 +29,41 @@ export async function workspaceDeleteCommand(ctx: CommandContext, payload?: Work
     }
 
     try {
-        await ctx.host.ui.withProgress(`Deleting workspace "${workspaceName}"...`, async () => {
-            let dirPath: string | undefined;
-            try {
-                dirPath = await jj.getWorkspaceRoot(workspaceName);
-            } catch (_) {
-                throw new Error(`Failed to find directory for workspace "${workspaceName}"`);
+        // Use the registered path: resolving a workspace root can fail when its
+        // directory has already been removed.
+        const workspace = (await jj.getWorkspaces()).find((w) => w.name === workspaceName);
+        if (!workspace) {
+            throw new Error(`Workspace "${workspaceName}" is not registered`);
+        }
+        const dirPath = workspace.path;
+        let directoryMissing = false;
+        try {
+            await ctx.host.system?.fs.stat(dirPath);
+        } catch (e: unknown) {
+            if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') {
+                directoryMissing = true;
+            } else {
+                throw e;
             }
+        }
 
+        if (directoryMissing) {
+            const forget = 'Yes, Forget Workspace';
+            const message = `The directory for workspace "${workspaceName}" is missing: ${dirPath}. Do you want to forget the workspace directly?`;
+            const choice = ctx.host.ui.showModalWarning
+                ? await ctx.host.ui.showModalWarning(message, forget)
+                : await ctx.host.ui.showWarning(message, forget);
+            if (choice !== forget) {
+                return;
+            }
+        }
+
+        const progressTitle = directoryMissing
+            ? `Forgetting workspace "${workspaceName}"...`
+            : `Deleting workspace "${workspaceName}"...`;
+        await ctx.host.ui.withProgress(progressTitle, async () => {
             await jj.workspaceForget(workspaceName);
-            if (dirPath) {
+            if (!directoryMissing) {
                 await rmRecursive(ctx, dirPath);
             }
         });
