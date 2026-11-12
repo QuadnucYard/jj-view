@@ -362,6 +362,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(jj-icon-workspace-add)',
         },
         {
+            command: 'jj-view.workspaceRefresh',
+            title: 'Refresh Workspace',
+            category: 'JJ View',
+            icon: '$(refresh)',
+        },
+        {
             command: 'jj-view.workspaceForget',
             title: 'Forget Workspace',
             category: 'JJ View',
@@ -879,6 +885,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.toggleCommitAction.describe.off',
                 when: "(webviewSection == 'commitAction' || webviewSection == 'commitActions') && !jj.commitActionVisible.describe",
                 group: '9_visibility_2_toggle@5',
+            },
+            {
+                command: 'jj-view.workspaceRefresh',
+                when: "webviewSection == 'workspace'",
+                group: '0_refresh@1',
             },
             {
                 command: 'jj-view.workspaceForget',

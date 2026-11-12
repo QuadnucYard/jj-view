@@ -595,6 +595,12 @@
                 "icon": "$(jj-icon-workspace-add)"
             },
             {
+                "command": "jj-view.workspaceRefresh",
+                "title": "Refresh Workspace",
+                "category": "JJ View",
+                "icon": "$(refresh)"
+            },
+            {
                 "command": "jj-view.workspaceForget",
                 "title": "Forget Workspace",
                 "category": "JJ View",
@@ -1049,6 +1055,11 @@
                     "command": "jj-view.copyWorkspacePath",
                     "when": "webviewSection == 'workspace' && workspacePath",
                     "group": "clipboard@2"
+                },
+                {
+                    "command": "jj-view.workspaceRefresh",
+                    "when": "webviewSection == 'workspace'",
+                    "group": "0_refresh@1"
                 },
                 {
                     "command": "jj-view.workspaceForget",

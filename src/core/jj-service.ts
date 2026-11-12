@@ -1190,6 +1190,11 @@ export class JjService {
         await this.run('workspace', ['forget', workspaceName], { isMutation: true, label: 'workspaceForget' });
     }
 
+    async workspaceRefresh(workspaceName: string): Promise<void> {
+        const cwd = await this.getWorkspaceRoot(workspaceName);
+        await this.run('status', [], { cwd, isMutation: true, useCachedSnapshot: false, label: 'workspaceRefresh' });
+    }
+
     async getWorkspaces(): Promise<JjWorkspace[]> {
         const template = buildLogTemplate(WORKSPACE_SCHEMA);
         const output = await this.run('workspace', ['list', '-T', template], {

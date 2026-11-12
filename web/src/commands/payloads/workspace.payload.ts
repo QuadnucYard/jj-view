@@ -10,6 +10,7 @@ import type {
     WorkspaceOpenInCurrentWindowPayload,
     WorkspaceOpenInNewWindowPayload,
 } from '../../../../src/core/commands/workspace-open';
+import type { WorkspaceRefreshPayload } from '../../../../src/core/commands/workspace-refresh';
 
 export function createWorkspaceForgetPayload(args: unknown[]): WorkspaceForgetPayload {
     const first = args[0] as { name?: string } | undefined;
@@ -33,4 +34,20 @@ export function createWorkspaceOpenInNewWindowPayload(args: unknown[]): Workspac
     const first = args[0] as { name?: string } | undefined;
     const workspaceName = typeof first?.name === 'string' ? first.name : extractRevision(args);
     return { workspaceName };
+}
+
+export function createWorkspaceRefreshPayload(args: unknown[]): WorkspaceRefreshPayload {
+    const arg = args[0];
+    if (typeof arg === 'string') {
+        return { workspaceName: arg };
+    }
+    if (arg && typeof arg === 'object') {
+        if ('workspaceName' in arg && typeof arg.workspaceName === 'string') {
+            return { workspaceName: arg.workspaceName };
+        }
+        if ('name' in arg && typeof arg.name === 'string') {
+            return { workspaceName: arg.name };
+        }
+    }
+    return {};
 }

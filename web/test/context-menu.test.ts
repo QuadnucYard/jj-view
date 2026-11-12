@@ -191,6 +191,7 @@ describe('Generalized Context Menu System', () => {
             expect(groups.length).toBeGreaterThan(0);
 
             const allCommands = groups.flatMap((g) => g.items.map((i) => i.command));
+            expect(allCommands).toContain('jj-view.workspaceRefresh');
             expect(allCommands).toContain('jj-view.workspaceForget');
             expect(allCommands).toContain('jj-view.workspaceDelete');
         });
