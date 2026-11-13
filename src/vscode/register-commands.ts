@@ -82,8 +82,6 @@ import {
     registerGraphToolbarCommands,
 } from '../core/host/graph-command-scope';
 import { TOGGLEABLE_COMMIT_ACTIONS } from '../core/host/ipc/log-view-schemas';
-import { resolveRepository } from '../core/host/ui-helpers';
-import type { JjRepository } from '../core/jj-repository';
 import type { JjRepositoryManager } from '../core/jj-repository-manager';
 import type { LoggerChannel } from '../utils/output-channel';
 import { registerOpenSyncTracking } from './open-sync';
@@ -145,6 +143,7 @@ import {
 import { createWorkspaceRefreshPayload } from './payloads/workspace-refresh.payload';
 import type { VsCodeLogWebviewProvider } from './providers/vscode-log-webview-provider';
 import type { VsCodeScmProvider } from './providers/vscode-scm-provider';
+import { resolveScmCommand } from './scm-command-scope';
 import { VSCodeCommandContext } from './vscode-command-context';
 import { VsCodeHostEnvironment } from './vscode-host-environment';
 
@@ -156,6 +155,7 @@ export interface RegisterCommandsOptions {
     commentsManager: CommentsManager;
     logWebviewProvider: VsCodeLogWebviewProvider;
     hostEnvironment?: VsCodeHostEnvironment;
+    switchScmWorkspace: (provider: VsCodeScmProvider) => Promise<void>;
 }
 
 export function registerCommands(options: RegisterCommandsOptions): void {
@@ -163,27 +163,6 @@ export function registerCommands(options: RegisterCommandsOptions): void {
     const host = options.hostEnvironment ?? new VsCodeHostEnvironment({ context });
     context.subscriptions.push(registerOpenSyncTracking());
     context.subscriptions.push(...registerGraphToolbarCommands(host.commands, repositoryManager));
-
-    function resolveRepositoryLocal(
-        args: unknown[],
-        hostEnv: VsCodeHostEnvironment,
-    ): { repo: JjRepository; scm?: VsCodeScmProvider } | undefined {
-        const firstArg = args[0];
-        if (firstArg && typeof firstArg === 'object' && 'id' in firstArg && 'resourceStates' in firstArg) {
-            for (const scmProvider of scmProviders.values()) {
-                if (scmProvider.ownsGroup(firstArg as vscode.SourceControlResourceGroup)) {
-                    return { repo: scmProvider.repo, scm: scmProvider };
-                }
-            }
-        }
-
-        const repo = resolveRepository(repositoryManager, { args, host: hostEnv });
-        if (!repo) {
-            return undefined;
-        }
-        const scm = scmProviders.get(repo.rootUri.fsPath);
-        return { repo, scm };
-    }
 
     function registerCommandWithPayload<TPayload, TReturn = unknown>(
         commandId: string,
@@ -194,8 +173,11 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             const scoped = extractGraphCommandScope(args);
             const graphRepo = scoped.rootUri ? getGraphCommandRepository(repositoryManager, scoped.rootUri) : undefined;
             const resolved = scoped.rootUri
-                ? graphRepo && { repo: graphRepo, scm: scmProviders.get(graphRepo.rootUri.fsPath) }
-                : resolveRepositoryLocal(scoped.args, host);
+                ? graphRepo && {
+                      repo: graphRepo,
+                      scm: Array.from(scmProviders.values()).find((provider) => provider.repo === graphRepo),
+                  }
+                : resolveScmCommand(commandId, scoped.args, repositoryManager, scmProviders, host);
             if (resolved?.repo) {
                 const cmdCtx = new VSCodeCommandContext(resolved.repo, host, outputChannel, commentsManager);
                 const payload = payloadCreator(scoped.args, resolved.scm);
@@ -217,8 +199,11 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             const scoped = extractGraphCommandScope(args);
             const graphRepo = scoped.rootUri ? getGraphCommandRepository(repositoryManager, scoped.rootUri) : undefined;
             const resolved = scoped.rootUri
-                ? graphRepo && { repo: graphRepo, scm: scmProviders.get(graphRepo.rootUri.fsPath) }
-                : resolveRepositoryLocal(scoped.args, host);
+                ? graphRepo && {
+                      repo: graphRepo,
+                      scm: Array.from(scmProviders.values()).find((provider) => provider.repo === graphRepo),
+                  }
+                : resolveScmCommand(commandId, scoped.args, repositoryManager, scmProviders, host);
             if (resolved?.repo) {
                 const cmdCtx = new VSCodeCommandContext(resolved.repo, host, outputChannel, commentsManager);
                 return await handler(cmdCtx, ...scoped.args);
@@ -232,8 +217,23 @@ export function registerCommands(options: RegisterCommandsOptions): void {
     }
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('jj-view.switchScmWorkspace', async (...args: unknown[]) => {
+            const resolved = resolveScmCommand(
+                'jj-view.switchScmWorkspace',
+                args,
+                repositoryManager,
+                scmProviders,
+                host,
+            );
+            if (resolved?.scm) {
+                await options.switchScmWorkspace(resolved.scm);
+            }
+        }),
         registerCommand('jj-view.focusRepository', async (ctx) => {
-            await repositoryManager.showRepository(ctx.repo);
+            const owner = repositoryManager.repositories.find(
+                (repo) => scmProviders.get(repo.rootUri.fsPath)?.repo === ctx.repo,
+            );
+            await repositoryManager.showRepository(owner ?? ctx.repo);
         }),
         registerCommandWithPayload('jj-view.new', createNewPayload, newCommand),
         registerCommandWithPayload('jj-view.newMergeChange', createNewMergeChangePayload, newMergeChangeCommand),

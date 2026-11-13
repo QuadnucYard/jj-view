@@ -35,6 +35,8 @@ interface StoredGraphFocus {
  */
 export class JjRepositoryManager implements HostDisposable {
     private _repositories: JjRepository[] = [];
+    // SCM-only sessions resolve files without becoming graph repositories.
+    private readonly _workspaceSessions = new Map<string, JjRepository>();
     private _focusedRepository: JjRepository | undefined;
     private _binaryPath: string | undefined;
     private _disposables: HostDisposable[] = [];
@@ -139,6 +141,56 @@ export class JjRepositoryManager implements HostDisposable {
 
     get focusedRepository(): JjRepository | undefined {
         return this._focusedRepository;
+    }
+
+    async getWorkspaceRepository(owner: JjRepository, workspaceName: string): Promise<JjRepository> {
+        if (this._disposed || !this._repositories.includes(owner)) {
+            throw new Error('The repository is no longer open');
+        }
+        const root = await owner.jj.getWorkspaceRoot(workspaceName);
+        const key = this.normalizePath(root);
+        const existing = [...this._repositories, ...this._workspaceSessions.values()].find((repo) =>
+            this.isSamePath(repo.rootUri.fsPath, root),
+        );
+        if (existing) {
+            if (
+                !(await existing.isValid()) ||
+                !this.isSamePath(await existing.jj.getRepoStorePath(), owner.storePath)
+            ) {
+                throw new Error(`Workspace "${workspaceName}" is unavailable at ${root}`);
+            }
+            return existing;
+        }
+        const repo = await this.createRepository(root);
+        if (
+            this._disposed ||
+            !this._repositories.includes(owner) ||
+            !(await repo.isValid()) ||
+            !this.isSamePath(repo.storePath, owner.storePath)
+        ) {
+            await repo.dispose();
+            throw new Error(`Workspace "${workspaceName}" is unavailable or belongs to another repository`);
+        }
+        // Another caller may have resolved this workspace while we were awaiting IO.
+        const concurrent = this._workspaceSessions.get(key);
+        if (concurrent) {
+            await repo.dispose();
+            return concurrent;
+        }
+        this._workspaceSessions.set(key, repo);
+        return repo;
+    }
+
+    async releaseWorkspaceRepositories(owner: JjRepository): Promise<JjRepository[]> {
+        const released: JjRepository[] = [];
+        for (const [key, repo] of this._workspaceSessions) {
+            if (this.isSamePath(repo.storePath, owner.storePath)) {
+                this._workspaceSessions.delete(key);
+                released.push(repo);
+                await repo.dispose();
+            }
+        }
+        return released;
     }
 
     get followEditor(): boolean {
@@ -267,7 +319,7 @@ export class JjRepositoryManager implements HostDisposable {
         this._binaryPath = binPath;
         this._dirToRepoRoot.clear();
         this._pendingRepoRoots.clear();
-        for (const repo of this._repositories) {
+        for (const repo of [...this._repositories, ...this._workspaceSessions.values()]) {
             repo.jj.binaryPath = binPath;
             repo.refresh({ reason: 'binary path set' }).catch((err) => {
                 this._outputChannel.error(
@@ -1098,7 +1150,7 @@ export class JjRepositoryManager implements HostDisposable {
                 ? [...this._repositories, this._focusedRepository]
                 : this._repositories;
 
-        for (const repo of reposToSearch) {
+        for (const repo of [...reposToSearch, ...this._workspaceSessions.values()]) {
             const repoRoot = repo.rootUri.fsPath;
             const normalizedRepoRoot = this.normalizePath(repoRoot);
             if (
@@ -1139,9 +1191,15 @@ export class JjRepositoryManager implements HostDisposable {
         if (this._disposed || !this._followEditor) {
             return false;
         }
-        const repo = this.getRepositoryForUri(uri);
+        const resolved = this.getRepositoryForUri(uri);
+        const repo =
+            resolved &&
+            (this._repositories.includes(resolved)
+                ? resolved
+                : this._repositories.find((candidate) => this.isSamePath(candidate.storePath, resolved.storePath)));
         if (
             repo &&
+            this._repositories.includes(repo) &&
             this.isRepositoryIncluded(repo) &&
             (!this._focusedRepository || !this.isSamePath(repo.rootUri.fsPath, this._focusedRepository.rootUri.fsPath))
         ) {
@@ -1353,6 +1411,11 @@ export class JjRepositoryManager implements HostDisposable {
         }
         this._repositories = [];
         this._pendingRepoRoots.clear();
+
+        for (const repo of this._workspaceSessions.values()) {
+            await repo.dispose();
+        }
+        this._workspaceSessions.clear();
 
         // 4. Dispose pending repositories
         for (const repo of pendingRepos) {

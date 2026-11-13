@@ -28,6 +28,61 @@ import {
 } from './e2e-helpers';
 
 test.describe('SCM Pane E2E', () => {
+    test('Switch Workspace in SCM shows only the selected workspace and preserves drafts', async ({
+        vscode,
+    }, testInfo) => {
+        const repo = new TestRepo();
+        repo.init();
+        repo.writeFile('base.txt', 'base');
+        repo.snapshot();
+        repo.new(undefined, 'main description');
+        const feature = repo.workspaceAdd('feature');
+        feature.describe('feature description');
+        feature.writeFile('feature-only.txt', 'feature edit');
+        repo.writeFile('main-only.txt', 'main edit');
+        const workspacePath =
+            process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+        const { page } = await vscode.openWorkspace({ path: workspacePath });
+        await focusSCM(page);
+        await expectScmDescription(page, 'main description');
+        const graphRoot = await vscode.evaluate(
+            (_vscode, api) => api.repositoryManager.focusedRepository?.rootUri.fsPath,
+        );
+        await setScmDescription(page, 'main draft', vscode);
+
+        const switching = vscode.executeCommand('jj-view.switchScmWorkspace');
+        await expect(page.locator('.quick-input-widget').filter({ visible: true })).toBeVisible();
+        await page.screenshot({ path: testInfo.outputPath('workspace-picker.png') });
+        await pickQuickPickItem(page, 'feature');
+        await switching;
+        await expectScmDescription(page, 'feature description');
+        await expectFileInScmGroup(page, /Working Copy/, 'feature-only.txt');
+        await expect(page.getByRole('treeitem', { name: /main-only.txt/ })).toHaveCount(0);
+        expect(
+            await vscode.evaluate((_vscode, api) => ({
+                count: api.scmProviders.size,
+                graph: api.repositoryManager.focusedRepository?.rootUri.fsPath,
+                selected: Array.from(api.scmProviders.values())[0]?.sourceControl.label,
+            })),
+        ).toEqual({ count: 1, graph: graphRoot, selected: expect.stringContaining('feature') });
+        await page.screenshot({ path: testInfo.outputPath('selected-workspace.png') });
+
+        await setScmDescription(page, 'feature draft', vscode);
+        const returning = vscode.executeCommand('jj-view.switchScmWorkspace');
+        await pickQuickPickItem(page, 'default');
+        await returning;
+        await expectScmDescription(page, 'main draft');
+        await expectFileInScmGroup(page, /Working Copy/, 'main-only.txt');
+        const resuming = vscode.executeCommand('jj-view.switchScmWorkspace');
+        await pickQuickPickItem(page, 'feature');
+        await resuming;
+        await expectScmDescription(page, 'feature draft');
+        await page.getByRole('treeitem', { name: 'Source Control Input' }).click();
+        await save(page);
+        await expect.poll(() => feature.getDescription('@').trim()).toBe('feature draft');
+        expect(repo.getDescription('@').trim()).toBe('main description');
+    });
+
     for (const viewMode of ['list', 'tree']) {
         test(`Resolved conflicts refresh SCM badges in ${viewMode} view`, async ({ vscode }) => {
             const repo = new TestRepo();

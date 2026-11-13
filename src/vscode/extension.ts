@@ -23,6 +23,7 @@ import { JjProcessTracker } from '../core/jj-process-tracker';
 import type { JjRepository } from '../core/jj-repository';
 import { JjRepositoryManager } from '../core/jj-repository-manager';
 import { JjViewFsService } from '../core/jj-view-fs-service';
+import type { ScmModel } from '../core/scm-model';
 import { resolveJjBinary } from '../utils/binary-utils';
 import { toError } from '../utils/error-utils';
 import { type LoggerChannel, OutputChannel } from '../utils/output-channel';
@@ -38,6 +39,7 @@ import { VsCodeScmProvider } from './providers/vscode-scm-provider';
 import { VsCodeViewFsProvider } from './providers/vscode-view-fs-provider';
 import { registerVSCodeCommands } from './register-commands';
 import { registerProcessMonitorCommands } from './register-process-monitor-commands';
+import { ScmWorkspacePicker } from './scm-workspace-picker';
 import { VsCodeHostEnvironment, VsCodeHostNavigation } from './vscode-host-environment';
 import { prewarmWebviewCssCache } from './vscode-webview-html';
 
@@ -392,10 +394,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
 
     const scmProviders = new Map<string, VsCodeScmProvider>();
     const activeScmSubscriptions = new Map<string, vscode.Disposable>();
+    const scmWorkspacePickers = new Map<string, ScmWorkspacePicker>();
 
     // Wire up edit provider refresh
     editFileSystemProvider.onDidWrite = (repo) => {
-        const scm = scmProviders.get(repo.rootUri.fsPath);
+        const scm = Array.from(scmProviders.values()).find((provider) => provider.repo === repo);
         scm?.refresh();
     };
 
@@ -421,7 +424,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
             const focused = repositoryManager.focusedRepository;
             if (focused) {
                 const scm = scmProviders.get(focused.rootUri.fsPath);
-                scm?.handleSelectionChange(ids);
+                if (scm?.repo === focused) {
+                    scm.handleSelectionChange(ids);
+                }
             }
         },
         context,
@@ -453,45 +458,77 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         }),
     );
 
-    // SCM Discovery Lifecycle integration
+    function mountScmWorkspace(
+        owner: JjRepository,
+        repo: JjRepository,
+        model?: ScmModel,
+        workspaceName?: string,
+    ): VsCodeScmProvider {
+        const key = owner.rootUri.fsPath;
+        activeScmSubscriptions.get(key)?.dispose();
+        const mergeProvider = getMergeProvider(repo);
+        const repoPrefix = path.basename(repo.rootUri.fsPath);
+        const repoOutputChannel = new OutputChannel(realOutputChannel, repoPrefix);
+        const scmProvider = new VsCodeScmProvider(
+            context,
+            repo,
+            repoOutputChannel,
+            repositoryManager,
+            viewFileSystemProvider,
+            editFileSystemProvider,
+            () => repositoryManager.focusedRepository?.rootUri.fsPath === owner.rootUri.fsPath,
+            model,
+            workspaceName ? `Jujutsu · ${path.basename(owner.rootUri.fsPath)} · ${workspaceName}` : undefined,
+            workspaceName,
+        );
+
+        const decorationProvider = vscode.window.registerFileDecorationProvider(scmProvider.decorationProvider);
+        const mergeRefreshSub = scmProvider.scmModel.onDidChangeSnapshot(async (snapshot) => {
+            try {
+                await mergeProvider.refresh(snapshot.conflictedPaths, repo.jj.workspaceRoot);
+            } catch (error: unknown) {
+                outputChannel.error('[Extension] Failed to refresh merge inputs', toError(error));
+            }
+        });
+        if (model?.snapshot) {
+            void mergeProvider
+                .refresh(model.snapshot.conflictedPaths, repo.jj.workspaceRoot)
+                .catch((error: unknown) => {
+                    outputChannel.error('[Extension] Failed to refresh merge inputs', toError(error));
+                });
+        }
+        const composite = vscode.Disposable.from(scmProvider, decorationProvider, mergeRefreshSub);
+        scmProviders.set(key, scmProvider);
+        activeScmSubscriptions.set(key, composite);
+        return scmProvider;
+    }
+
+    // SCM selection is independent of graph focus and VS Code workspace folders.
     context.subscriptions.push(
         repositoryManager.onDidOpenRepository((repo) => {
-            const mergeProvider = getMergeProvider(repo);
-            const repoPrefix = path.basename(repo.rootUri.fsPath);
-            const repoOutputChannel = new OutputChannel(realOutputChannel, repoPrefix);
-            const scmProvider = new VsCodeScmProvider(
-                context,
+            const scmProvider = mountScmWorkspace(repo, repo);
+            const picker = new ScmWorkspacePicker(
                 repo,
-                repoOutputChannel,
                 repositoryManager,
-                viewFileSystemProvider,
-                editFileSystemProvider,
-                () => repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath,
+                scmProvider,
+                (selected, model, label) => mountScmWorkspace(repo, selected, model, label),
+                outputChannel,
             );
-
-            const decorationProvider = vscode.window.registerFileDecorationProvider(scmProvider.decorationProvider);
-            const mergeRefreshSub = scmProvider.scmModel.onDidChangeSnapshot(async (snapshot) => {
-                try {
-                    await mergeProvider.refresh(snapshot.conflictedPaths, repo.jj.workspaceRoot);
-                } catch (error: unknown) {
-                    outputChannel.error('[Extension] Failed to refresh merge inputs', toError(error));
-                }
-            });
-            const repoStatusSub = repo.onDidStatusChange((event) => {
-                if (repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath) {
-                    // Refresh webview and commit details panel in parallel
-                    Promise.all([
-                        logWebviewProvider.controller.refresh(event.reason),
-                        commitDetailsProvider.refresh(),
-                    ]).catch((err) => {
-                        outputChannel.error('[Extension] Failed to refresh views on status change', toError(err));
-                    });
-                }
-            });
-
-            const composite = vscode.Disposable.from(scmProvider, decorationProvider, repoStatusSub, mergeRefreshSub);
-            scmProviders.set(repo.rootUri.fsPath, scmProvider);
-            activeScmSubscriptions.set(repo.rootUri.fsPath, composite);
+            scmWorkspacePickers.set(repo.rootUri.fsPath, picker);
+            context.subscriptions.push(
+                repo.onDidStatusChange((event) => {
+                    if (repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath) {
+                        // Refresh webview and commit details panel in parallel
+                        Promise.all([
+                            logWebviewProvider.controller.refresh(event.reason),
+                            commitDetailsProvider.refresh(),
+                        ]).catch((err) => {
+                            outputChannel.error('[Extension] Failed to refresh views on status change', toError(err));
+                        });
+                    }
+                }),
+            );
+            void picker.restore();
 
             if (repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath) {
                 logWebviewProvider.updateRepository(repo).catch((err) => {
@@ -501,10 +538,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
 
             // Fire and forget: check if we should warn about git colocation
             checkGitColocation(repo.jj).catch((e) => {
-                outputChannel.error(`[Extension] Colocation check failed for ${repoPrefix}`, toError(e));
+                outputChannel.error(`[Extension] Colocation check failed for ${repo.rootUri.fsPath}`, toError(e));
             });
         }),
         repositoryManager.onDidCloseRepository(async (repo) => {
+            scmWorkspacePickers.get(repo.rootUri.fsPath)?.dispose();
+            scmWorkspacePickers.delete(repo.rootUri.fsPath);
             const sub = activeScmSubscriptions.get(repo.rootUri.fsPath);
             if (sub) {
                 sub.dispose();
@@ -513,6 +552,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
             scmProviders.delete(repo.rootUri.fsPath);
             mergeProviders.get(repo.rootUri.fsPath)?.dispose();
             mergeProviders.delete(repo.rootUri.fsPath);
+            for (const workspace of await repositoryManager.releaseWorkspaceRepositories(repo)) {
+                mergeProviders.get(workspace.rootUri.fsPath)?.dispose();
+                mergeProviders.delete(workspace.rootUri.fsPath);
+            }
         }),
     );
 
@@ -562,6 +605,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
                     sub.dispose();
                 }
                 activeScmSubscriptions.clear();
+                for (const picker of scmWorkspacePickers.values()) {
+                    picker.dispose();
+                }
+                scmWorkspacePickers.clear();
                 scmProviders.clear();
                 focusedRepoActiveProviderSub?.dispose();
             },
@@ -576,6 +623,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
         commentsManager,
         logWebviewProvider,
         hostEnvironment,
+        switchScmWorkspace: async (provider) => {
+            const entry = Array.from(scmProviders.entries()).find(([, current]) => current === provider);
+            if (entry) {
+                await scmWorkspacePickers.get(entry[0])?.pick();
+            }
+        },
     });
 
     context.subscriptions.push(

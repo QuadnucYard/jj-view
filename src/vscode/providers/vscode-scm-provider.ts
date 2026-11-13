@@ -34,6 +34,7 @@ export class VsCodeScmProvider implements vscode.Disposable {
 
     public readonly scmModel: ScmModel;
     public readonly decorationProvider: VsCodeDecorationProvider;
+    public readonly ready: Promise<void>;
 
     get parentMutable(): boolean {
         return this.scmModel.parentMutable;
@@ -47,8 +48,12 @@ export class VsCodeScmProvider implements vscode.Disposable {
         return this.repo.jj;
     }
 
-    public ownsGroup(group: vscode.SourceControlResourceGroup): boolean {
-        return group === this._workingCopyGroup || group === this._conflictGroup || this._parentGroups.includes(group);
+    public ownsGroup(group: unknown): boolean {
+        return (
+            group === this._workingCopyGroup ||
+            group === this._conflictGroup ||
+            this._parentGroups.some((parent) => parent === group)
+        );
     }
 
     get onDidChangeStatus(): vscode.Event<void> {
@@ -74,6 +79,8 @@ export class VsCodeScmProvider implements vscode.Disposable {
         public readonly editProvider?: VsCodeEditFsProvider,
         public readonly isFocused: () => boolean = () => true,
         scmModel?: ScmModel,
+        label?: string,
+        private readonly workspaceName?: string,
     ) {
         this.scmModel = scmModel ?? new ScmModel(repo, outputChannel);
         this.disposables.push(this.scmModel);
@@ -83,7 +90,7 @@ export class VsCodeScmProvider implements vscode.Disposable {
         // Keep virtual tree paths relative to the repository. With no SCM root,
         // VS Code builds its tree from '/', while quick diff can serve disk URIs.
         this._scmRootUri = Uri.from({ scheme: 'jj-scm', path: '/' });
-        this._sourceControl = vscode.scm.createSourceControl(`jj-${workspaceRoot}`, `Jujutsu (${folderName})`);
+        this._sourceControl = vscode.scm.createSourceControl(`jj-${workspaceRoot}`, label ?? `Jujutsu (${folderName})`);
         const decorationModel = new JjDecorationModel(this.jj, workspaceRoot);
         this.decorationProvider = new VsCodeDecorationProvider(decorationModel);
 
@@ -107,7 +114,11 @@ export class VsCodeScmProvider implements vscode.Disposable {
 
         this._sourceControl.quickDiffProvider = this;
         this._sourceControl.inputBox.placeholder = 'Describe your changes...';
-        this._sourceControl.acceptInputCommand = { command: 'jj-view.commit', title: 'Commit (Ctrl+Enter)' };
+        this._sourceControl.acceptInputCommand = {
+            command: 'jj-view.commit',
+            title: 'Commit (Ctrl+Enter)',
+            arguments: [this._sourceControl],
+        };
 
         this.disposables.push(this._sourceControl);
         this.disposables.push(this._conflictGroup);
@@ -121,7 +132,10 @@ export class VsCodeScmProvider implements vscode.Disposable {
         );
 
         // Initial refresh
-        this.refresh({ forceSnapshot: true, reason: 'initialization' }).catch((err) => {
+        this.ready = this.scmModel.snapshot
+            ? this.renderSnapshot(this.scmModel.snapshot)
+            : this.refresh({ forceSnapshot: true, reason: 'initialization' });
+        this.ready.catch((err) => {
             try {
                 this.outputChannel.error(`[VsCodeScmProvider] Initial refresh failed: ${err}`);
             } catch {
@@ -176,7 +190,9 @@ export class VsCodeScmProvider implements vscode.Disposable {
 
         const decorationMap = new Map<string, JjStatusEntry>();
 
-        this._workingCopyGroup.label = snapshot.workingCopyLabel;
+        this._workingCopyGroup.label = this.workspaceName
+            ? `${snapshot.workingCopyLabel} · ${this.workspaceName}`
+            : snapshot.workingCopyLabel;
         this._workingCopyGroup.contextValue = snapshot.workingCopyContextValue;
 
         this._workingCopyGroup.resourceStates = snapshot.workingCopyChanges.map((c) => {

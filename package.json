@@ -601,6 +601,12 @@
                 "icon": "$(refresh)"
             },
             {
+                "command": "jj-view.switchScmWorkspace",
+                "title": "Switch Workspace in SCM...",
+                "category": "JJ View",
+                "icon": "$(arrow-swap)"
+            },
+            {
                 "command": "jj-view.workspaceForget",
                 "title": "Forget Workspace",
                 "category": "JJ View",
@@ -1278,6 +1284,11 @@
                 }
             ],
             "scm/title": [
+                {
+                    "command": "jj-view.switchScmWorkspace",
+                    "group": "navigation@0.5",
+                    "when": "scmProvider =~ /^jj-/"
+                },
                 {
                     "command": "jj-view.focusRepository",
                     "group": "navigation@0",

@@ -102,6 +102,7 @@ Full support for working with multiple repositories and Jujutsu workspaces:
 - **Manual Switching**: Choose a repository in the graph toolbar, use SCM title actions, or run `Show Repository in JJ Log`. Explicitly showing an excluded repository includes it in the graph scope. Each repository retains its graph selection and scroll position while the view remains open.
 - **Workspace Management**: Create new `jj` workspaces directly from the UI, with configurable default locations (`.workspaces`).
 - **Workspace Actions**: Add, forget, or delete workspaces directly from the Log View context menu or workspace pills.
+- **SCM Workspace Picker**: Use **Switch Workspace in SCM...** in the Source Control toolbar or Command Palette to view another jj workspace. Each repository shows one workspace at a time, remembers the selection across reloads, and preserves unsaved description drafts while switching. SCM actions target the selected workspace; Explorer folders and graph focus stay independent.
 
 ## Commands & Keybindings
 
