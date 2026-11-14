@@ -671,7 +671,7 @@ $effect(() => {
             },
         });
         const messengerSub = bridge.messenger ? commitDetailsController.addMessenger(bridge.messenger) : undefined;
-        void commitDetailsController.load();
+        void commitDetailsController.open();
         return () => {
             messengerSub?.dispose();
             commitDetailsController?.dispose();

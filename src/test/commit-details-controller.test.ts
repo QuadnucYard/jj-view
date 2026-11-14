@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { writeFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { CodeForgeRegistry } from '../core/code-forge-registry';
 import { CommitDetailsController } from '../core/controllers/commit-details-controller';
@@ -72,6 +74,48 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         expect(controller.logEntry).toBeDefined();
         expect(controller.logEntry?.description).toContain('initial commit description');
         expect(controller.changes?.length).toBeGreaterThan(0);
+    });
+
+    test('snapshots unsaved files when opening details by default', async () => {
+        await controller.repo?.watcher.dispose();
+        await controller.load();
+        writeFileSync(path.join(testRepo.path, 'on-open.txt'), 'not snapshotted yet\n');
+        await controller.open();
+        expect(controller.changes?.map((file) => file.path)).toContain('on-open.txt');
+    });
+
+    test('disabling refresh on open leaves manual refresh available and preserves drafts', async () => {
+        await controller.repo?.watcher.dispose();
+        fakeHost.config.set('commit.refreshOnOpen', false);
+        await controller.load();
+        controller.updateDraft('unsaved draft');
+        writeFileSync(path.join(testRepo.path, 'manual.txt'), 'not snapshotted yet\n');
+        await controller.open();
+        expect(controller.changes?.map((file) => file.path)).not.toContain('manual.txt');
+
+        await controller.handleMessage({ type: 'refresh' });
+        expect(controller.changes?.map((file) => file.path)).toContain('manual.txt');
+        expect(controller.draftDescription).toBe('unsaved draft');
+    });
+
+    test('opening and manually refreshing snapshots a change in another workspace', async () => {
+        const other = testRepo.workspaceAdd('other');
+        const changeId = other.getChangeId('@');
+        controller.dispose();
+        controller = new CommitDetailsController(changeId, repositoryManager.repositories[0], fakeHost);
+        controller.addMessenger(client.webview);
+        try {
+            writeFileSync(path.join(other.path, 'other-open.txt'), 'new file in unopened workspace\n');
+            await controller.open();
+            expect(controller.changes?.map((file) => file.path)).toContain('other-open.txt');
+
+            writeFileSync(path.join(other.path, 'other-manual.txt'), 'another new file\n');
+            await controller.handleMessage({ type: 'refresh' });
+            expect(controller.changes?.map((file) => file.path)).toContain('other-manual.txt');
+            expect(testRepo.getChangeId('@')).not.toBe(changeId);
+        } finally {
+            other.dispose();
+        }
     });
 
     test('preserves draft description when reloading commit data', async () => {

@@ -193,6 +193,11 @@
                     "default": 72,
                     "description": "Width at which to display a ruler in the commit details description editor for the body."
                 },
+                "jj-view.commit.refreshOnOpen": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Refresh change details on open, snapshotting the workspaces containing the change even when they are not currently open."
+                },
                 "jj-view.commit.formatDescriptionOnSave": {
                     "type": "boolean",
                     "default": false,

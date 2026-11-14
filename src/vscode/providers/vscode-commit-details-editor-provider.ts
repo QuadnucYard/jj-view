@@ -261,7 +261,7 @@ export class VsCodeCommitDetailsEditorProvider
         panel.webview.html = html;
 
         void controller
-            .load()
+            .open()
             .then((log) => {
                 if (!log) {
                     panel.dispose();

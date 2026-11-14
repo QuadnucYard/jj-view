@@ -34,6 +34,8 @@ interface Props {
     bodyWidthRuler?: number;
     minChangeIdLength?: number;
     onSave: (description: string) => void;
+    onRefresh?: () => void;
+    isRefreshing?: boolean;
     onOpenDiff: (file: JjStatusEntry, isImmutable: boolean) => void;
     onOpenMultiDiff: () => void;
     onDescriptionChange?: (description: string, selectionStart: number, selectionEnd: number) => void;
@@ -59,6 +61,8 @@ let {
     bodyWidthRuler = 72,
     minChangeIdLength = 1,
     onSave,
+    onRefresh,
+    isRefreshing = false,
     onOpenDiff,
     onOpenMultiDiff,
     onDescriptionChange,
@@ -439,6 +443,18 @@ function getFileColor(status: string, conflicted?: boolean): string {
                     >
                         <span class="codicon {copiedId === 'change' ? 'codicon-check copied-icon' : 'codicon-copy'}"></span>
                     </button>
+                    {#if onRefresh}
+                        <button
+                            type="button"
+                            class="refresh-button"
+                            title="Refresh change details"
+                            aria-label="Refresh change details"
+                            onclick={onRefresh}
+                            disabled={isRefreshing}
+                        >
+                            <span class="codicon codicon-refresh" class:codicon-modifier-spin={isRefreshing} aria-hidden="true"></span>
+                        </button>
+                    {/if}
                 </div>
                 <div class="id-row">
                     <span class="id-label">Commit:</span>
@@ -713,6 +729,10 @@ function getFileColor(status: string, conflicted?: boolean): string {
         font-weight: normal;
     }
 
+    .pills-row:not(:has(> *)) {
+        display: none;
+    }
+
     :global(.badge-immutable) {
         border: 1px solid color-mix(in srgb, var(--vscode-gitDecoration-untrackedResourceForeground), transparent 40%) !important;
         background-color: color-mix(in srgb, var(--vscode-gitDecoration-untrackedResourceForeground), transparent 88%) !important;
@@ -793,7 +813,8 @@ function getFileColor(status: string, conflicted?: boolean): string {
         color: var(--vscode-charts-purple);
     }
 
-    .copy-button {
+    .copy-button,
+    .refresh-button {
         background: transparent;
         border: none;
         color: var(--vscode-descriptionForeground);
@@ -806,12 +827,19 @@ function getFileColor(status: string, conflicted?: boolean): string {
         transition: background-color 0.15s, color 0.15s;
     }
 
-    .copy-button:hover {
+    .copy-button:hover,
+    .refresh-button:hover:not(:disabled) {
         background-color: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
         color: var(--vscode-foreground);
     }
 
-    .copy-button .codicon {
+    .refresh-button:disabled {
+        opacity: 0.6;
+        cursor: default;
+    }
+
+    .copy-button .codicon,
+    .refresh-button .codicon {
         font-size: 12px;
     }
 

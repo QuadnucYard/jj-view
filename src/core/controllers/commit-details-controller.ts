@@ -38,6 +38,7 @@ export class CommitDetailsController implements Disposable {
     private _disposed = false;
     private readonly _disposables: Disposable[] = [];
     private readonly _loadQueue: CoalescingQueue;
+    private readonly _refreshQueue: CoalescingQueue;
     private readonly _logger?: LoggerChannel;
     private readonly _receiver: WebviewRpcReceiver<CommitDetailsToHostMessage, CommitDetailsHostToWebviewMessage>;
 
@@ -71,6 +72,26 @@ export class CommitDetailsController implements Disposable {
         this._receiver = this._createRpcReceiver();
         this._loadQueue = new CoalescingQueue(async () => {
             await this._doLoad();
+        });
+        this._refreshQueue = new CoalescingQueue(async () => {
+            if (!this.repo || this._disposed) {
+                return;
+            }
+            try {
+                await this.repo.jj.clearCache();
+                const logs = await this.repo.jj.getLog({ revision: this.changeId, omitChanges: true });
+                // JJ can omit workspace labels when there is only one workspace.
+                if (logs.some((log) => log.is_current_working_copy && !log.working_copies?.length)) {
+                    await this.repo.jj.status();
+                }
+                for (const workspace of new Set(logs.flatMap((log) => log.working_copies ?? []))) {
+                    await this.repo.jj.workspaceRefresh(workspace);
+                }
+                await this.repo.refresh({ reason: 'commit details refresh' });
+            } catch (err) {
+                await showJjError(this._host.ui, err, 'Failed to refresh change details', this.repo.jj, this._logger);
+            }
+            await this.load();
         });
     }
 
@@ -201,6 +222,18 @@ export class CommitDetailsController implements Disposable {
 
         await this._loadQueue.run();
         return this._logEntry;
+    }
+
+    public async open(): Promise<JjLogEntry | undefined> {
+        if (this._host.config.get<boolean>('commit.refreshOnOpen', true)) {
+            await this.refresh();
+            return this._logEntry;
+        }
+        return this.load();
+    }
+
+    public async refresh(): Promise<void> {
+        await this._refreshQueue.run();
     }
 
     private async _doLoad(): Promise<void> {
@@ -466,6 +499,7 @@ export class CommitDetailsController implements Disposable {
         return createWebviewRpcReceiver<CommitDetailsToHostMessage, CommitDetailsHostToWebviewMessage>(
             CommitDetailsToHostMessageSchema,
             {
+                refresh: () => this.refresh(),
                 descriptionChanged: async (payload) => {
                     const newText = payload.description;
                     const newSelection = {

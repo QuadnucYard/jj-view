@@ -41,6 +41,7 @@ function getInitialCommit(): CommitDetailsPayload | null {
 }
 
 let detailsCommit = $state<CommitDetailsPayload | null>(initialCommit ?? getInitialCommit());
+let isRefreshing = $state(false);
 
 $effect(() => {
     if (initialCommit) {
@@ -91,6 +92,15 @@ $effect(() => {
         titleWidthRuler={detailsCommit.titleWidthRuler}
         bodyWidthRuler={detailsCommit.bodyWidthRuler}
         minChangeIdLength={detailsCommit.minChangeIdLength}
+        {isRefreshing}
+        onRefresh={async () => {
+            isRefreshing = true;
+            try {
+                await sender.refresh();
+            } finally {
+                isRefreshing = false;
+            }
+        }}
         onSave={(description) => {
             if (detailsCommit?.changeId) {
                 void sender.saveDescription({ changeId: detailsCommit.changeId, description });

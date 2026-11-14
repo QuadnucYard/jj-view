@@ -203,6 +203,15 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
         default: 72,
     },
     {
+        key: 'commit.refreshOnOpen',
+        title: 'Commit Refresh On Open',
+        description:
+            'Refresh change details on open, snapshotting the workspaces containing the change even when they are not currently open.',
+        category: 'Commit Editor',
+        type: 'boolean',
+        default: true,
+    },
+    {
         key: 'commit.formatDescriptionOnSave',
         title: 'Commit Format Description On Save',
         description: 'Automatically format and wrap the commit description body when saving.',
