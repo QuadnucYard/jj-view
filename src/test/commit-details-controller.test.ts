@@ -270,7 +270,13 @@ describe('CommitDetailsController Domain Unit Tests', () => {
             type: 'update',
             payload: expect.objectContaining({
                 isConflict: true,
-                isLoadingFiles: true,
+                files: expect.arrayContaining([
+                    expect.objectContaining({
+                        path: 'file.txt',
+                        conflicted: true,
+                        conflictSides: 2,
+                    }),
+                ]),
             }),
         });
         expect(updates[updates.length - 1]).toEqual({
@@ -323,8 +329,8 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         divergentController.dispose();
     });
 
-    test('two-stage loading emits metadata immediately from cache before diff stats complete', async () => {
-        testRepo.writeFile('big-file.txt', 'a'.repeat(1000));
+    test('shows changed files before their line counts', async () => {
+        testRepo.writeFile('big-file.txt', 'first line\nsecond line\n');
         testRepo.describe('fast metadata commit');
         const changeId = testRepo.getChangeId('@');
 
@@ -333,10 +339,6 @@ describe('CommitDetailsController Domain Unit Tests', () => {
             throw new Error('repo not found');
         }
 
-        // 1. Simulate LogView fetching the log slice (which populates _logEntryCache in JjService)
-        await repo.jj.getLog({ omitChanges: true, includeNearestVisibleAncestors: true });
-
-        // 2. Open commit details with controller
         const detailsController = new CommitDetailsController(changeId, repo, fakeHost);
         const detailsClient = createMockWebviewClient({
             toHostSchema: CommitDetailsToHostMessageSchema,
@@ -344,26 +346,21 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         });
         detailsController.addMessenger(detailsClient.webview);
 
-        const loadPromise = detailsController.load();
-
-        // 3. Wait for load to complete
-        await loadPromise;
+        await detailsController.load();
 
         const updates = detailsClient.receivedMessages.filter((m) => m.type === 'update');
         expect(updates.length).toBe(2);
 
-        // First update: metadata available immediately, files loading
         expect(updates[0]).toEqual({
             type: 'update',
             payload: expect.objectContaining({
                 changeId,
                 description: 'fast metadata commit',
-                isLoadingFiles: true,
-                files: [],
+                isLoadingFiles: false,
+                files: [{ path: 'big-file.txt', status: 'added', conflicted: false }],
             }),
         });
 
-        // Second update: diff calculation finished, files populated
         expect(updates[1]).toEqual({
             type: 'update',
             payload: expect.objectContaining({
@@ -374,6 +371,8 @@ describe('CommitDetailsController Domain Unit Tests', () => {
                     expect.objectContaining({
                         path: 'big-file.txt',
                         status: 'added',
+                        additions: 2,
+                        deletions: 0,
                     }),
                 ]),
             }),
@@ -383,7 +382,7 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         detailsController.dispose();
     });
 
-    test('getInitialPayload preserves active dirty drafts and returns initial state', async () => {
+    test('initial payload includes files and preserves active dirty drafts', async () => {
         testRepo.writeFile('initial.txt', 'initial');
         testRepo.describe('persisted description');
         const commitId = testRepo.getChangeId('@');
@@ -400,7 +399,8 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         expect(payload).toBeDefined();
         expect(payload?.changeId).toBe(commitId);
         expect(detailsController.draftDescription).toBe('unsaved dirty description');
-        expect(payload?.isLoadingFiles).toBe(true);
+        expect(payload?.isLoadingFiles).toBe(false);
+        expect(payload?.files).toEqual([{ path: 'initial.txt', status: 'added', conflicted: false }]);
 
         detailsController.dispose();
     });

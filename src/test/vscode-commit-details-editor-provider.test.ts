@@ -316,7 +316,7 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         client2.dispose();
     });
 
-    test('resolveCustomEditor inlines cached commit metadata directly into webview HTML and renders SSR DOM', async () => {
+    test('resolveCustomEditor renders metadata and changed files in the initial HTML', async () => {
         const changeId = testRepo.getChangeId('@');
         testRepo.writeFile('preview.txt', 'preview content');
         testRepo.describe('preview commit');
@@ -358,6 +358,7 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         expect(rootBlock).toContain('commit-details-container');
         expect(rootBlock).toContain('preview commit');
         expect(rootBlock).toContain(changeId);
+        expect(rootBlock).toContain('preview.txt');
 
         client.dispose();
     });

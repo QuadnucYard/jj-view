@@ -34,6 +34,7 @@ import {
     buildDiffFileSchema,
     buildLogTemplate,
     CHANGE_ID_EXPR,
+    type JjTemplateField,
     LOG_ENTRY_SCHEMA,
     TAG_SCHEMA,
     WORKSPACE_SCHEMA,
@@ -50,6 +51,30 @@ export interface JjLogOptions {
     omitChanges?: boolean;
     includeNearestVisibleAncestors?: boolean;
 }
+
+const CONFLICTED_FILES_FIELD: JjTemplateField = {
+    type: 'array',
+    expr: 'self.conflicted_files()',
+    itemSchema: {
+        path: { type: 'json', expr: 'item.path().display()' },
+        conflictSides: { type: 'raw', expr: 'item.conflict_side_count()' },
+    },
+};
+
+const DIFF_STATS_FIELD: JjTemplateField = {
+    type: 'array',
+    expr: 'self.diff().stat().files()',
+    itemSchema: {
+        path: { type: 'json', expr: 'item.path().display()' },
+        additions: { type: 'raw', expr: 'item.lines_added()' },
+        deletions: { type: 'raw', expr: 'item.lines_removed()' },
+    },
+};
+
+const COMMIT_DETAILS_TEMPLATE = buildLogTemplate({ ...LOG_ENTRY_SCHEMA, conflicts: CONFLICTED_FILES_FIELD });
+const COMMIT_DETAILS_SCHEMA = JjLogEntrySchema.extend({ conflicts: ChangesAndStatsOutputSchema.shape.conflicts });
+const DIFF_STATS_TEMPLATE = buildLogTemplate({ stats: DIFF_STATS_FIELD });
+const DIFF_STATS_SCHEMA = ChangesAndStatsOutputSchema.pick({ stats: true });
 
 // Safety timeout: if a mutation takes longer than this, unblock file watcher
 const ONE_MINUTE = 60_000;
@@ -1432,6 +1457,28 @@ export class JjService {
         return this._changesCache.getOrFetch(revision, () => this._doGetChanges(revision));
     }
 
+    async getCommitDetails(revision: string): Promise<JjLogEntry | undefined> {
+        const output = await this.run('log', ['-r', revision, '--no-graph', '-T', COMMIT_DETAILS_TEMPLATE], {
+            useCachedSnapshot: true,
+            label: 'getCommitDetails',
+        });
+        const [entry] = this._parseJsonLines(output, COMMIT_DETAILS_SCHEMA, 'getCommitDetails');
+        if (!entry) {
+            return undefined;
+        }
+        const { conflicts, ...log } = entry;
+        return { ...log, changes: this._mergeFileConflicts(log.changes ?? [], conflicts) };
+    }
+
+    async getChangeStats(commitId: string): Promise<Map<string, DiffStatEntry>> {
+        const output = await this.run('log', ['-r', commitId, '--no-graph', '-T', DIFF_STATS_TEMPLATE], {
+            useCachedSnapshot: true,
+            label: 'getChangeStats',
+        });
+        const [entry] = this._parseJsonLines(output, DIFF_STATS_SCHEMA, 'getChangeStats');
+        return new Map(entry?.stats.map((stat) => [stat.path, stat]));
+    }
+
     /**
      * Retrieves the file changes between two revisions (`fromRevision` and `toRevision`).
      */
@@ -1442,28 +1489,9 @@ export class JjService {
 
     private async _doGetChanges(revision: string): Promise<JjFileChangeWithStats[]> {
         const combinedTemplate = buildLogTemplate({
-            changes: {
-                type: 'array',
-                expr: 'self.diff().files()',
-                itemSchema: buildDiffFileSchema('item'),
-            },
-            stats: {
-                type: 'array',
-                expr: 'self.diff().stat().files()',
-                itemSchema: {
-                    path: { type: 'json', expr: 'item.path().display()' },
-                    additions: { type: 'raw', expr: 'item.lines_added()' },
-                    deletions: { type: 'raw', expr: 'item.lines_removed()' },
-                },
-            },
-            conflicts: {
-                type: 'array',
-                expr: 'self.conflicted_files()',
-                itemSchema: {
-                    path: { type: 'json', expr: 'item.path().display()' },
-                    conflictSides: { type: 'raw', expr: 'item.conflict_side_count()' },
-                },
-            },
+            changes: LOG_ENTRY_SCHEMA.changes,
+            stats: DIFF_STATS_FIELD,
+            conflicts: CONFLICTED_FILES_FIELD,
         });
 
         const output = await this.run('log', ['-r', revision, '--no-graph', '-T', combinedTemplate], {
@@ -1483,10 +1511,16 @@ export class JjService {
 
         const { changes, stats, conflicts } = entries[0];
         const statsMap = new Map<string, DiffStatEntry>(stats.map((s) => [s.path, s]));
+        return this._mergeFileConflicts(changes, conflicts).map((change) => {
+            const stat = statsMap.get(change.path);
+            return { ...change, additions: stat?.additions ?? 0, deletions: stat?.deletions ?? 0 };
+        });
+    }
+
+    private _mergeFileConflicts(changes: JjFileChange[], conflicts: ConflictedFileEntry[]): JjFileChange[] {
         const conflictMap = new Map<string, ConflictedFileEntry>(conflicts.map((c) => [c.path, c]));
 
-        const results: JjFileChangeWithStats[] = changes.map((c) => {
-            const stat = statsMap.get(c.path);
+        const results: JjFileChange[] = changes.map((c) => {
             const conflict = conflictMap.get(c.path);
             if (conflict) {
                 conflictMap.delete(c.path);
@@ -1495,8 +1529,6 @@ export class JjService {
                 ...c,
                 conflicted: c.conflicted || conflict !== undefined,
                 conflictSides: c.conflictSides ?? conflict?.conflictSides,
-                additions: stat?.additions ?? 0,
-                deletions: stat?.deletions ?? 0,
             };
         });
 
@@ -1506,8 +1538,6 @@ export class JjService {
                 status: 'modified',
                 conflicted: true,
                 conflictSides: conflict.conflictSides,
-                additions: 0,
-                deletions: 0,
             });
         }
 
