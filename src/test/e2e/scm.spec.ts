@@ -782,6 +782,36 @@ test.describe('SCM Pane E2E', () => {
         ]);
     });
 
+    test('Keeps the Working Copy diff tab open after committing', async ({ vscode }) => {
+        const repo = new TestRepo();
+        repo.init();
+        const file = 'file.txt';
+        await buildGraph(repo, [
+            { label: 'base', files: { [file]: 'base content\n' } },
+            {
+                label: 'wc',
+                parents: ['base'],
+                description: 'Commit working copy',
+                files: { [file]: 'committed content\n' },
+                isCurrentWorkingCopy: true,
+            },
+        ]);
+
+        const workspacePath =
+            process.platform === 'win32' ? repo.path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : repo.path;
+        const { page } = await vscode.openWorkspace({ path: workspacePath }, { 'jj-view.openDiffOnClick': true });
+        await openScmDiff(page, file, /Working Copy/);
+        const tab = await waitForTab(page, file);
+        const original = page.locator('.monaco-diff-editor .editor.original');
+        await expect(original).toContainText('base content');
+
+        await page.getByRole('button', { name: 'Commit (Ctrl+Enter)' }).first().click();
+
+        await expectFileInScmGroup(page, /Commit working copy/, file);
+        await expect(tab).toBeVisible();
+        await expect(original).toContainText('committed content');
+    });
+
     test('Keyboard Shortcuts: Ctrl+S and Ctrl+Enter', async ({ vscode }) => {
         const repo = new TestRepo();
         repo.init();

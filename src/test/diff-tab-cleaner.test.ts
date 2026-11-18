@@ -254,6 +254,23 @@ describe('Diff Tab Cleaner', () => {
     });
 
     describe('closeInvalidDiffEditors', () => {
+        it('keeps a working-copy diff open after its file is committed', async () => {
+            const entry = { path: 'file.txt', status: 'added' } as const;
+            repo.writeFile(entry.path, 'content');
+            const [before] = await jj.getLog({ revision: '@', limit: 1 });
+            expect(before.changes).toContainEqual(expect.objectContaining(entry));
+            const { leftUri, rightUri } = createDiffUris(entry, '@', repo.path);
+            const tab = createMockDiffTab(toAbsoluteEditorUri(leftUri), toAbsoluteEditorUri(rightUri));
+            host.documents.openDiffTabs = [tab];
+
+            await jj.commit('Add file');
+            const [after] = await jj.getLog({ revision: '@', limit: 1 });
+            expect(after.changes).toEqual([]);
+            await cleaner.closeInvalidDiffEditors(after.changes);
+
+            expect(tab.close).not.toHaveBeenCalled();
+        });
+
         it.each([
             'deleted',
             'renamed',
@@ -261,7 +278,10 @@ describe('Diff Tab Cleaner', () => {
             const old = createDiffUris({ path: 'file.txt', status: 'modified' }, '@', repo.path);
             const clean = createMockDiffTab(toAbsoluteEditorUri(old.leftUri), toAbsoluteEditorUri(old.rightUri));
             const dirty = { ...createMockDiffTab(clean.originalUri, clean.modifiedUri), isDirty: true };
-            const entry = { path: 'file.txt', oldPath: 'old.txt', status };
+            const entry =
+                status === 'renamed'
+                    ? { path: 'renamed.txt', oldPath: 'file.txt', status }
+                    : { path: 'file.txt', status };
             const current = createDiffUris(entry, '@', repo.path);
             const valid = createMockDiffTab(
                 toAbsoluteEditorUri(current.leftUri),
@@ -271,12 +291,15 @@ describe('Diff Tab Cleaner', () => {
                 createRevisionUri(repo.path, clean.modifiedUri.fsPath, '@'),
                 clean.modifiedUri,
             );
-            host.documents.openDiffTabs = [clean, dirty, valid, comparison];
+            const unchanged = createDiffUris({ path: 'unchanged.txt', status: 'modified' }, '@', repo.path);
+            const unaffected = createMockDiffTab(unchanged.leftUri, unchanged.rightUri);
+            host.documents.openDiffTabs = [clean, dirty, valid, comparison, unaffected];
             await cleaner.closeInvalidDiffEditors([entry]);
             expect(clean.close).toHaveBeenCalledOnce();
             expect(dirty.close).not.toHaveBeenCalled();
             expect(valid.close).not.toHaveBeenCalled();
             expect(comparison.close).not.toHaveBeenCalled();
+            expect(unaffected.close).not.toHaveBeenCalled();
         });
 
         it('orchestrates collecting, checking, and closing invalid tabs using real repository state', async () => {

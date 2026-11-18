@@ -12,6 +12,7 @@ import type { JjStatusEntry } from './jj-types';
 import {
     createDiffUris,
     fnv1aHash,
+    getRepoRelativePath,
     getRevisionFromUri,
     getUriParams,
     isJjScheme,
@@ -39,18 +40,27 @@ export class DiffTabCleaner {
      * Coordinates collecting, checking, and closing invalid diff editor tabs.
      * A diff editor tab is considered invalid if it is displaying a revision or
      * change ID that is no longer valid (e.g., because the revision has been
-     * squashed, abandoned, or no longer exists in the Jujutsu repository history).
+     * squashed, abandoned, or no longer exists in the Jujutsu repository history),
+     * or if a current working-copy change requires different diff URIs.
      */
     public async closeInvalidDiffEditors(workingCopyChanges?: readonly JjStatusEntry[]): Promise<void> {
         try {
             const diffTabs = this.host.documents.getOpenDiffTabs?.() ?? [];
-            if (workingCopyChanges) {
-                const expected = new Set(
-                    workingCopyChanges.map((entry) => {
-                        const { leftUri, rightUri } = createDiffUris(entry, '@', this.jj.workspaceRoot);
-                        return `${toAbsoluteEditorUri(leftUri).toString()}|${toAbsoluteEditorUri(rightUri).toString()}`;
-                    }),
-                );
+            if (workingCopyChanges?.length) {
+                const root = this.jj.workspaceRoot;
+                const affectedPaths = new Set<string>();
+                const expected = new Set<string>();
+                for (const entry of workingCopyChanges) {
+                    const { leftUri, rightUri } = createDiffUris(entry, '@', root);
+                    affectedPaths.add(getRepoRelativePath(rightUri, root));
+                    if (entry.status === 'renamed') {
+                        affectedPaths.add(getRepoRelativePath(leftUri, root));
+                    }
+                    expected.add(
+                        `${toAbsoluteEditorUri(leftUri).toString()}|${toAbsoluteEditorUri(rightUri).toString()}`,
+                    );
+                }
+                // A file can leave the SCM list while its live diff is still valid, such as after committing.
                 for (const tab of diffTabs) {
                     if (
                         !tab.isDirty &&
@@ -58,6 +68,7 @@ export class DiffTabCleaner {
                         this.belongsToRepo(tab.originalUri) &&
                         getUriParams(tab.originalUri).get('side') === 'left' &&
                         getRevisionFromUri(tab.originalUri) === '@' &&
+                        affectedPaths.has(getRepoRelativePath(tab.modifiedUri, root)) &&
                         !expected.has(
                             `${toAbsoluteEditorUri(tab.originalUri).toString()}|${toAbsoluteEditorUri(tab.modifiedUri).toString()}`,
                         )
