@@ -368,6 +368,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(refresh)',
         },
         {
+            command: 'jj-view.workspaceUpdateStale',
+            title: 'Update Stale Workspace',
+            category: 'JJ View',
+            icon: '$(warning)',
+        },
+        {
             command: 'jj-view.workspaceForget',
             title: 'Forget Workspace',
             category: 'JJ View',
@@ -890,6 +896,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.workspaceRefresh',
                 when: "webviewSection == 'workspace'",
                 group: '0_refresh@1',
+            },
+            {
+                command: 'jj-view.workspaceUpdateStale',
+                when: "webviewSection == 'workspace' && workspaceStale",
+                group: '0_refresh@0',
             },
             {
                 command: 'jj-view.workspaceForget',

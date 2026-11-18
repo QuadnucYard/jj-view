@@ -23,6 +23,7 @@ export const JjWorkspaceSchema = z.object({
     name: z.string(),
     /** The filesystem path to the workspace root. */
     path: z.string(),
+    stale: z.boolean().optional(),
 });
 export type JjWorkspace = z.infer<typeof JjWorkspaceSchema>;
 

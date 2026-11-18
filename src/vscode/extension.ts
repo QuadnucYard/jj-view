@@ -516,14 +516,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
             );
             scmWorkspacePickers.set(repo.rootUri.fsPath, picker);
             context.subscriptions.push(
-                repo.onDidStatusChange((event) => {
+                repo.onDidStatusChange(() => {
                     if (repositoryManager.focusedRepository?.rootUri.fsPath === repo.rootUri.fsPath) {
-                        // Refresh webview and commit details panel in parallel
-                        Promise.all([
-                            logWebviewProvider.controller.refresh(event.reason),
-                            commitDetailsProvider.refresh(),
-                        ]).catch((err) => {
-                            outputChannel.error('[Extension] Failed to refresh views on status change', toError(err));
+                        commitDetailsProvider.refresh().catch((err) => {
+                            outputChannel.error(
+                                '[Extension] Failed to refresh commit details on status change',
+                                toError(err),
+                            );
                         });
                     }
                 }),

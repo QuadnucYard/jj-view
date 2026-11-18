@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
 import type { ActionPayload, CommitAction } from '../../../host/ipc/log-view-schemas';
-import type { JjLogEntry } from '../../../jj-types';
+import type { JjLogEntry, JjWorkspace } from '../../../jj-types';
 import { BookmarkPill, IconButton, TagPill, WorkspacePill } from '../../common/components';
 import { getRefBadges } from '../../common/utils/ref-badges';
 import type { DragManager } from '../drag-manager.svelte';
@@ -15,7 +15,7 @@ import DraggableTag from './DraggableTag.svelte';
 
 interface Props {
     commit: JjLogEntry;
-    workspacePaths?: ReadonlyMap<string, string>;
+    workspacesByName?: ReadonlyMap<string, JjWorkspace>;
     onClick: (modifiers: { multiSelect: boolean; preview?: boolean }) => void;
     onAction: (action: string, payload: ActionPayload) => void;
     isSelected?: boolean;
@@ -31,7 +31,7 @@ interface Props {
 
 let {
     commit,
-    workspacePaths,
+    workspacesByName,
     onClick,
     onAction,
     isSelected = false,
@@ -395,7 +395,8 @@ const hasActiveBookmarkAlready = $derived(
                     {/if}
                 {/if}
                 {#each commit.working_copies || [] as workspace (workspace)}
-                    <WorkspacePill {workspace} path={workspacePaths?.get(workspace)} />
+                    {@const info = workspacesByName?.get(workspace)}
+                    <WorkspacePill {workspace} path={info?.path} stale={info?.stale} />
                 {/each}
                 {#each tagBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
                     <DraggableTag tag={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />

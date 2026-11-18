@@ -12,7 +12,7 @@ import { CodeForgeService } from './code-forge-service';
 import { AsyncEventEmitter, type Disposable } from './host/events';
 import type { HostEnvironment } from './host/host-environment';
 import type { JjProcessTracker } from './jj-process-tracker';
-import { JjService } from './jj-service';
+import { JjService, StaleWorkspaceError } from './jj-service';
 import type { Uri } from './uri-utils';
 
 interface RefreshPayload {
@@ -43,6 +43,7 @@ export class JjRepository implements Disposable {
             getConfig: (key, defaultValue) => host.config.get(key, defaultValue),
             processTracker,
             system: host.system,
+            onWorkspaceUpdated: () => this.refresh({ reason: 'workspace updated' }),
         });
         this._codeForge = new CodeForgeService(rootUri.fsPath, this._jj, registry, host, outputChannel);
 
@@ -70,6 +71,9 @@ export class JjRepository implements Disposable {
                     }
                 } catch (err) {
                     if (!this._disposed) {
+                        if (err instanceof StaleWorkspaceError) {
+                            await this._onDidStatusChange.fire({ reason });
+                        }
                         throw err;
                     }
                 }

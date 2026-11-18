@@ -6,6 +6,26 @@ import type { CommandContext } from '../host/command-context';
 import { showJjError } from '../host/ui-helpers';
 import type { JjWorkspace } from '../jj-types';
 
+export interface WorkspaceNamePayload {
+    workspaceName?: string;
+}
+
+export function createWorkspaceNamePayload(args: unknown[]): WorkspaceNamePayload {
+    const arg = args[0];
+    if (typeof arg === 'string') {
+        return { workspaceName: arg };
+    }
+    if (arg && typeof arg === 'object') {
+        if ('workspaceName' in arg && typeof arg.workspaceName === 'string') {
+            return { workspaceName: arg.workspaceName };
+        }
+        if ('name' in arg && typeof arg.name === 'string') {
+            return { workspaceName: arg.name };
+        }
+    }
+    return {};
+}
+
 /**
  * Resolves a workspace name from a provided name or by prompting the user with a QuickPick.
  *

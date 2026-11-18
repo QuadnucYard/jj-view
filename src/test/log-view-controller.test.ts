@@ -3,16 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { CodeForgeProvider } from '../core/code-forge-provider';
 import { CodeForgeRegistry } from '../core/code-forge-registry';
+import { refreshCommand } from '../core/commands/refresh';
+import { workspaceUpdateStaleCommand } from '../core/commands/workspace-update-stale';
 import { LogViewController } from '../core/controllers/log-view-controller';
 import { EventEmitter } from '../core/host/events';
 import { JjContextKey } from '../core/jj-context-keys';
 import { JjRepositoryManager } from '../core/jj-repository-manager';
 import type { JjLogEntry } from '../core/jj-types';
 import { Uri } from '../core/uri-utils';
-import { FakeHostEnvironment } from './fake-host-environment';
+import { FakeCommandContext, FakeHostEnvironment } from './fake-host-environment';
 import { TestRepo } from './test-repo';
 import { createMock, createMockLogOutputChannel } from './test-utils';
 
@@ -245,6 +249,58 @@ describe('LogViewController Domain Unit Tests', () => {
 
         controller.repository = undefined;
         expect(controller.getState().workspaces).toEqual([]);
+    });
+
+    test('marks only the stale checkout and clears its graph state after updating it', async () => {
+        const repo = controller.repository;
+        if (!repo) {
+            throw new Error('Expected a graph repository');
+        }
+        const secondary = testRepo.workspaceAdd('secondary');
+        const other = testRepo.workspaceAdd('other');
+        const otherId = testRepo.getLog('other@', 'commit_id');
+        fs.writeFileSync(path.join(other.path, 'pending.txt'), 'unsnapshotted edit');
+        testRepo.writeFile('shared.txt', 'updated checkout');
+        testRepo.rebase({ revision: 'secondary@', destination: '@' });
+        const checkoutFile = path.join(secondary.path, 'shared.txt');
+
+        await controller.refresh();
+
+        const staleWorkspaces = controller.getState().workspaces?.filter((workspace) => workspace.stale);
+        expect(staleWorkspaces?.map((workspace) => workspace.name)).toEqual(['secondary']);
+        expect(fs.existsSync(checkoutFile)).toBe(false);
+        expect(testRepo.getLog('other@', 'commit_id')).toBe(otherId);
+
+        await workspaceUpdateStaleCommand(new FakeCommandContext(repo, fakeHost), { workspaceName: 'secondary' });
+
+        expect(fs.readFileSync(checkoutFile, 'utf8')).toBe('updated checkout');
+        expect(controller.getState().workspaces?.some((workspace) => workspace.stale)).toBe(false);
+        expect(testRepo.getLog('other@', 'commit_id')).toBe(otherId);
+    });
+
+    test('offers to update the current workspace when refresh reports it as stale', async () => {
+        const repo = controller.repository;
+        if (!repo) {
+            throw new Error('Expected a graph repository');
+        }
+        testRepo.config('snapshot.auto-update-stale', 'false');
+        const secondary = testRepo.workspaceAdd('secondary');
+        secondary.writeFile('shared.txt', 'updated checkout');
+        secondary.rebase({ revision: 'default@', destination: '@' });
+        const checkoutFile = path.join(testRepo.path, 'shared.txt');
+        expect(fs.existsSync(checkoutFile)).toBe(false);
+        fakeHost.ui.setNextErrorResponse('Update Stale Workspace');
+        const showError = vi.spyOn(fakeHost.ui, 'showErrorMessage');
+
+        await refreshCommand(new FakeCommandContext(repo, fakeHost));
+
+        expect(showError).toHaveBeenCalledWith(
+            expect.stringContaining('The working copy is stale'),
+            'Update Stale Workspace',
+            'Show Log',
+        );
+        expect(fs.readFileSync(checkoutFile, 'utf8')).toBe('updated checkout');
+        expect(controller.getState().workspaces?.some((workspace) => workspace.stale)).toBe(false);
     });
 
     test('replays initial snapshot on setMessenger and updates context keys on setCommits', async () => {

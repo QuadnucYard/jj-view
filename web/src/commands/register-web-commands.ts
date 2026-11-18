@@ -82,6 +82,8 @@ import {
     workspaceOpenInNewWindowCommand,
 } from '../../../src/core/commands/workspace-open';
 import { workspaceRefreshCommand } from '../../../src/core/commands/workspace-refresh';
+import { workspaceUpdateStaleCommand } from '../../../src/core/commands/workspace-update-stale';
+import { createWorkspaceNamePayload } from '../../../src/core/commands/workspace-utils';
 import type { LogViewController } from '../../../src/core/controllers/log-view-controller';
 import { BaseCommandContext, type CommandContext } from '../../../src/core/host/command-context';
 import {
@@ -149,7 +151,6 @@ import {
     createWorkspaceForgetPayload,
     createWorkspaceOpenInCurrentWindowPayload,
     createWorkspaceOpenInNewWindowPayload,
-    createWorkspaceRefreshPayload,
 } from './payloads/workspace.payload';
 
 export interface RegisterWebCommandsOptions {
@@ -388,12 +389,8 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
 
     // 9. Workspaces
     registerDirect('jj-view.workspaceAdd', workspaceAddCommand);
-    registerWithPayload('jj-view.workspaceRefresh', createWorkspaceRefreshPayload, async (ctx, payload) => {
-        await workspaceRefreshCommand(ctx, payload);
-        if (logViewController?.repository === ctx.repo) {
-            await logViewController.refresh('workspace refresh command');
-        }
-    });
+    registerWithPayload('jj-view.workspaceRefresh', createWorkspaceNamePayload, workspaceRefreshCommand);
+    registerWithPayload('jj-view.workspaceUpdateStale', createWorkspaceNamePayload, workspaceUpdateStaleCommand);
     registerWithPayload('jj-view.workspaceForget', createWorkspaceForgetPayload, workspaceForgetCommand);
     registerWithPayload('jj-view.workspaceDelete', createWorkspaceDeletePayload, workspaceDeleteCommand);
     registerWithPayload(

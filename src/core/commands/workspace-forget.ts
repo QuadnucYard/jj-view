@@ -4,7 +4,6 @@
  */
 import type { CommandContext } from '../host/command-context';
 import { showJjError } from '../host/ui-helpers';
-import { getErrorMessage } from './command-utils';
 import { resolveWorkspaceName } from './workspace-utils';
 
 export interface WorkspaceForgetPayload {
@@ -35,13 +34,6 @@ export async function workspaceForgetCommand(ctx: CommandContext, payload?: Work
 
         await ctx.repo.refresh();
     } catch (e: unknown) {
-        const message = getErrorMessage(e);
-        await showJjError(
-            ctx.host.ui,
-            new Error(`Failed to forget workspace: ${message}`),
-            'Workspace Forget Error',
-            ctx.repo.jj,
-            ctx.log,
-        );
+        await showJjError(ctx.host.ui, e, 'Workspace Forget Error: Failed to forget workspace', jj, ctx.log);
     }
 }

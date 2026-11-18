@@ -9,7 +9,7 @@ import type { LoggerChannel } from '../../utils/output-channel';
 import { extractUriFromArgs } from '../commands/command-utils';
 import type { JjRepository } from '../jj-repository';
 import type { JjRepositoryManager } from '../jj-repository-manager';
-import { JjService } from '../jj-service';
+import { JjService, StaleWorkspaceError } from '../jj-service';
 import { parseCommitDetailsUri, Uri } from '../uri-utils';
 import type { HostEnvironment, HostNavigation, HostUi } from './host-environment';
 
@@ -197,8 +197,7 @@ export async function promptSelectOrCreate(
 }
 
 /**
- * Displays a formatted JJ error message to the user, checks for Git index lock errors,
- * provides recovery actions ('Delete Lock File', 'Show Log'), and logs error diagnostics.
+ * Displays a formatted JJ error with any available recovery actions and logs diagnostics.
  */
 export async function showJjError(
     ui: HostUi,
@@ -235,9 +234,20 @@ export async function showJjError(
     log?.error(fullMessage, error !== undefined ? toError(error) : undefined);
 
     const SHOW_LOG = 'Show Log';
-    const selection = await ui.showErrorMessage(fullMessage, SHOW_LOG, ...actions);
+    const UPDATE_STALE = 'Update Stale Workspace';
+    actions = [SHOW_LOG, ...actions];
+    if (error instanceof StaleWorkspaceError) {
+        actions.unshift(UPDATE_STALE);
+    }
+    const selection = await ui.showErrorMessage(fullMessage, ...actions);
 
-    if (selection === SHOW_LOG) {
+    if (selection === UPDATE_STALE && error instanceof StaleWorkspaceError) {
+        try {
+            await ui.withProgress('Updating stale workspace...', error.updateWorkspace);
+        } catch (updateError: unknown) {
+            await showJjError(ui, updateError, 'Failed to update stale workspace', jj, log);
+        }
+    } else if (selection === SHOW_LOG) {
         log?.show?.();
     } else if (selection === DELETE_LOCK && lockPath && jj?.system?.fs) {
         try {

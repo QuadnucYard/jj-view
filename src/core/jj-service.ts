@@ -68,6 +68,17 @@ export interface JjServiceOptions {
     getConfig?: JjServiceConfigProvider;
     processTracker?: JjProcessTracker;
     system?: HostSystem;
+    onWorkspaceUpdated?: () => Promise<void>;
+}
+
+export class StaleWorkspaceError extends Error {
+    constructor(
+        message: string,
+        readonly updateWorkspace: () => Promise<void>,
+    ) {
+        super(message);
+        this.name = 'StaleWorkspaceError';
+    }
 }
 
 export interface JjRunOptions {
@@ -105,6 +116,7 @@ export class JjService {
     public processTracker?: JjProcessTracker;
     public readonly system: HostSystem;
     private readonly _getConfig?: JjServiceConfigProvider;
+    private readonly _onWorkspaceUpdated?: () => Promise<void>;
     private _writeOperationCount = 0;
     private _lastWriteTime = 0;
     private _operationTimeouts = new Map<number, NodeJS.Timeout>();
@@ -127,6 +139,7 @@ export class JjService {
     ) {
         this.binaryPath = options?.binaryPath ?? 'jj';
         this._getConfig = options?.getConfig;
+        this._onWorkspaceUpdated = options?.onWorkspaceUpdated;
         this.processTracker = options?.processTracker;
         this.system = options?.system ?? new NodeHostSystem();
         this._diffCache = new AsyncCache<string, { tempDir: string; expires: number }>({
@@ -160,6 +173,10 @@ export class JjService {
      */
     async getRepoStorePath(): Promise<string> {
         const workspaceRoot = await this.getRepoRoot();
+        return this.resolveRepoStorePath(workspaceRoot);
+    }
+
+    private async resolveRepoStorePath(workspaceRoot: string): Promise<string> {
         const repoPath = path.join(workspaceRoot, '.jj', 'repo');
         try {
             const stats = await this.system.fs.lstat(repoPath);
@@ -440,7 +457,11 @@ export class JjService {
                 if (errStr) {
                     combined.push(errStr);
                 }
-                formattedErr = new Error(combined.length > 0 ? combined.join('\n\n') : err.message);
+                const message = combined.length > 0 ? combined.join('\n\n') : err.message;
+                const cwd = options.cwd ?? this.workspaceRoot;
+                formattedErr = /^Hint: Run `jj workspace update-stale` to (update|recover)/m.test(errStr)
+                    ? new StaleWorkspaceError(message, () => this.updateStaleWorkspaceAt(cwd))
+                    : new Error(message);
                 trackedProcess?.finish('failed', formattedErr, err.stdout, err.stderr, err.exitCode);
             } else {
                 formattedErr = err instanceof Error ? err : new Error(String(err));
@@ -1195,13 +1216,66 @@ export class JjService {
         await this.run('status', [], { cwd, isMutation: true, useCachedSnapshot: false, label: 'workspaceRefresh' });
     }
 
-    async getWorkspaces(): Promise<JjWorkspace[]> {
+    async workspaceUpdateStale(workspaceName: string): Promise<void> {
+        await this.updateStaleWorkspaceAt(await this.getWorkspaceRoot(workspaceName));
+    }
+
+    private async updateStaleWorkspaceAt(cwd: string): Promise<void> {
+        if (!(await this.system.fs.exists(path.join(cwd, '.jj', 'working_copy', 'type')))) {
+            throw new Error(`Workspace checkout is unavailable at ${cwd}`);
+        }
+        const [repoStore, checkoutStore] = await Promise.all([this.getRepoStorePath(), this.resolveRepoStorePath(cwd)]);
+        if (path.relative(repoStore, checkoutStore)) {
+            throw new Error(`Workspace checkout at ${cwd} belongs to another repository`);
+        }
+        await this.run('workspace', ['update-stale'], { cwd, isMutation: true, label: 'workspaceUpdateStale' });
+        await this._onWorkspaceUpdated?.();
+    }
+
+    async getWorkspaces(options: { includeStale?: boolean } = {}): Promise<JjWorkspace[]> {
+        const schema = JjWorkspaceSchema.extend({ target: JjLogEntrySchema.shape.commit_id });
         const template = buildLogTemplate(WORKSPACE_SCHEMA);
         const output = await this.run('workspace', ['list', '-T', template], {
             useCachedSnapshot: true,
             label: 'getWorkspaces',
         });
-        return this._parseJsonLines(output, JjWorkspaceSchema, 'getWorkspaces');
+        return Promise.all(
+            this._parseJsonLines(output, schema, 'getWorkspaces').map(async ({ name, path, target }) => {
+                if (options.includeStale && path && (await this.isWorkspaceStale(path, target))) {
+                    return { name, path, stale: true };
+                }
+                return { name, path };
+            }),
+        );
+    }
+
+    private async isWorkspaceStale(cwd: string, target: string): Promise<boolean> {
+        const readOptions = { cwd, useCachedSnapshot: true, label: 'isWorkspaceStale' };
+        try {
+            if (!(await this.system.fs.exists(path.join(cwd, '.jj', 'working_copy', 'type')))) {
+                return false;
+            }
+            const checkout = await this.run('debug', ['working-copy'], readOptions);
+            const operation = /^Current operation: OperationId\("([0-9a-f]+)"\)/m.exec(checkout)?.[1];
+            if (!operation) {
+                return false;
+            }
+            // Compare committed trees. An older checkout operation or a metadata-only rewrite
+            // can leave the checkout fresh, and local unsnapshotted edits are unrelated.
+            const checkedOut = await this.run(
+                'log',
+                [`--at-operation=${operation}`, '--no-graph', '-r', '@', '-T', 'commit_id'],
+                readOptions,
+            );
+            if (!checkedOut || checkedOut === target) {
+                return false;
+            }
+            const diff = await this.run('diff', ['--summary', '--from', checkedOut, '--to', target], readOptions);
+            return diff.length > 0;
+        } catch (error) {
+            // A missing checkout operation also requires workspace recovery.
+            return /^Error: No operation ID matching /m.test(getErrorMessage(error));
+        }
     }
 
     async getWorkspaceRoot(workspaceName?: string): Promise<string> {

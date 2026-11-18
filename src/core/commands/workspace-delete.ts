@@ -4,7 +4,6 @@
  */
 import type { CommandContext } from '../host/command-context';
 import { showJjError } from '../host/ui-helpers';
-import { getErrorMessage } from './command-utils';
 import { resolveWorkspaceName } from './workspace-utils';
 
 export interface WorkspaceDeletePayload {
@@ -70,14 +69,7 @@ export async function workspaceDeleteCommand(ctx: CommandContext, payload?: Work
 
         await ctx.repo.refresh();
     } catch (e: unknown) {
-        const message = getErrorMessage(e);
-        await showJjError(
-            ctx.host.ui,
-            new Error(`Failed to delete workspace: ${message}`),
-            'Workspace Delete Error',
-            ctx.repo.jj,
-            ctx.log,
-        );
+        await showJjError(ctx.host.ui, e, 'Workspace Delete Error: Failed to delete workspace', jj, ctx.log);
     }
 }
 

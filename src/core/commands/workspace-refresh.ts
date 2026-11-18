@@ -4,13 +4,9 @@
  */
 import type { CommandContext } from '../host/command-context';
 import { showJjError } from '../host/ui-helpers';
-import { resolveWorkspaceName } from './workspace-utils';
+import { resolveWorkspaceName, type WorkspaceNamePayload } from './workspace-utils';
 
-export interface WorkspaceRefreshPayload {
-    workspaceName?: string;
-}
-
-export async function workspaceRefreshCommand(ctx: CommandContext, payload?: WorkspaceRefreshPayload): Promise<void> {
+export async function workspaceRefreshCommand(ctx: CommandContext, payload?: WorkspaceNamePayload): Promise<void> {
     let workspaceName: string | undefined;
     try {
         workspaceName = await resolveWorkspaceName(ctx, payload?.workspaceName);

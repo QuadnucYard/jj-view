@@ -187,4 +187,5 @@ export const TAG_SCHEMA: Record<string, JjTemplateField> = {
 export const WORKSPACE_SCHEMA: Record<string, JjTemplateField> = {
     name: { type: 'json', expr: 'name' },
     path: { type: 'json', expr: 'root' },
+    target: { type: 'json', expr: 'target.commit_id()' },
 };

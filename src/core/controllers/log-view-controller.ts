@@ -44,6 +44,7 @@ export class LogViewController implements Disposable {
     private static readonly HIDDEN_ACTIONS_STORAGE_KEY = 'jj-view.hiddenCommitActions';
     private _disposed = false;
     private readonly _disposables: Disposable[] = [];
+    private _repoStatusDisposable: Disposable | undefined;
     private _codeForgeDisposable: Disposable | undefined;
     private _codeForgeRefreshPromise: Promise<void> | undefined;
     private readonly _logger?: LoggerChannel;
@@ -229,6 +230,8 @@ export class LogViewController implements Disposable {
     }
 
     private bindRepo(repo: JjRepository | undefined): void {
+        this._repoStatusDisposable?.dispose();
+        this._repoStatusDisposable = repo?.onDidStatusChange((event) => this.refresh(event.reason));
         this._codeForgeDisposable?.dispose();
         this._codeForgeDisposable = undefined;
 
@@ -300,7 +303,7 @@ export class LogViewController implements Disposable {
                     omitChanges: true,
                     includeNearestVisibleAncestors: true,
                 }),
-                jj.getWorkspaces().catch((error: unknown) => {
+                jj.getWorkspaces({ includeStale: true }).catch((error: unknown) => {
                     this._logger?.error('[LogViewController] Failed to fetch workspaces', toError(error));
                     return [];
                 }),
@@ -827,6 +830,7 @@ export class LogViewController implements Disposable {
         this._disposed = true;
         this._codeForgeRefreshPromise = undefined;
         this._codeForgeDisposable?.dispose();
+        this._repoStatusDisposable?.dispose();
         for (const d of this._disposables) {
             d.dispose();
         }

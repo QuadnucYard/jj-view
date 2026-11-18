@@ -61,7 +61,7 @@ $effect(() => {
 
 const GAP = $derived(computeGap(fontSize));
 const layout = $derived(computeGraphLayout(commits, theme));
-const workspacePaths = $derived(new Map(workspaces.map((workspace) => [workspace.name, workspace.path])));
+const workspacesByName = $derived(new Map(workspaces.map((workspace) => [workspace.name, workspace])));
 const displayRows = $derived(layout.rows || commits);
 
 const compactPaddingMap = $derived.by(() => {
@@ -152,7 +152,7 @@ const graphAreaWidth = $derived(computeGraphAreaWidth(layout.width, LANE_WIDTH, 
                 >
                     <CommitNode
                         commit={row}
-                        {workspacePaths}
+                        {workspacesByName}
                         onClick={(modifiers) =>
                             onAction('select', {
                                 changeId: row.change_id,

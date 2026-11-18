@@ -74,6 +74,8 @@ import { workspaceDeleteCommand } from '../core/commands/workspace-delete';
 import { workspaceForgetCommand } from '../core/commands/workspace-forget';
 import { workspaceOpenInCurrentWindowCommand, workspaceOpenInNewWindowCommand } from '../core/commands/workspace-open';
 import { workspaceRefreshCommand } from '../core/commands/workspace-refresh';
+import { workspaceUpdateStaleCommand } from '../core/commands/workspace-update-stale';
+import { createWorkspaceNamePayload } from '../core/commands/workspace-utils';
 import type { CommentsManager } from '../core/comments-manager';
 import type { CommandContext } from '../core/host/command-context';
 import {
@@ -140,7 +142,6 @@ import {
     createWorkspaceOpenInCurrentWindowPayload,
     createWorkspaceOpenInNewWindowPayload,
 } from './payloads/workspace-open.payload';
-import { createWorkspaceRefreshPayload } from './payloads/workspace-refresh.payload';
 import type { VsCodeLogWebviewProvider } from './providers/vscode-log-webview-provider';
 import type { VsCodeScmProvider } from './providers/vscode-scm-provider';
 import { resolveScmCommand } from './scm-command-scope';
@@ -354,7 +355,12 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             viewFileAtRevisionCommand,
         ),
         registerCommand('jj-view.workspaceAdd', workspaceAddCommand),
-        registerCommandWithPayload('jj-view.workspaceRefresh', createWorkspaceRefreshPayload, workspaceRefreshCommand),
+        registerCommandWithPayload('jj-view.workspaceRefresh', createWorkspaceNamePayload, workspaceRefreshCommand),
+        registerCommandWithPayload(
+            'jj-view.workspaceUpdateStale',
+            createWorkspaceNamePayload,
+            workspaceUpdateStaleCommand,
+        ),
         registerCommandWithPayload('jj-view.workspaceForget', createWorkspaceForgetPayload, workspaceForgetCommand),
         registerCommandWithPayload('jj-view.workspaceDelete', createWorkspaceDeletePayload, workspaceDeleteCommand),
         registerCommandWithPayload(
