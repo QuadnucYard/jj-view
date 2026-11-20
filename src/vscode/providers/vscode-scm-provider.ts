@@ -301,13 +301,13 @@ export class VsCodeScmProvider implements vscode.Disposable {
         };
     }
 
-    provideOriginalResource(uri: Uri): vscode.ProviderResult<Uri> {
+    async provideOriginalResource(uri: Uri): Promise<Uri | undefined> {
         // The SCM registration is unscoped so its virtual tree does not exclude
         // disk editors from quick diff. Scope requests here, including nested repos.
         if (uri.scheme !== 'file' || this.repositoryManager.getRepositoryForUri(uri) !== this.repo) {
             return undefined;
         }
-        const originalUri = this.scmModel.getOriginalResourceUri(uri);
+        const originalUri = await this.scmModel.getOriginalResourceUri(uri);
         return originalUri ? toAbsoluteEditorUri(originalUri) : undefined;
     }
 

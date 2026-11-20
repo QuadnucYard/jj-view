@@ -872,22 +872,21 @@ export class JjService {
             const content = await this._readFileContent(filePath, revision, 'default');
             return { left: content, right: content };
         } catch (err: unknown) {
-            if (await this._fileExistsAtRevision(filePath, revision)) {
+            if (await this.fileExistsAtRevision(filePath, revision)) {
                 throw err;
             }
             return { left: '', right: '' };
         }
     }
 
-    private async _fileExistsAtRevision(filePath: string, revision: string): Promise<boolean> {
-        const relativePath = await this.toRepoRelative(filePath);
-        // Compare exact paths instead of interpreting the filename as a fileset.
-        const output = await this.run('file', ['list', '-r', revision, '-T', 'path.display() ++ "\\n"'], {
-            trim: false,
+    async fileExistsAtRevision(filePath: string, revision: string): Promise<boolean> {
+        const relativePath = (await this.toRepoRelative(filePath)).replace(/\\/g, '/');
+        const fileset = `file:${JSON.stringify(relativePath)}`;
+        const output = await this.run('file', ['list', '-r', revision, '-T', '"exists"', '--', fileset], {
             useCachedSnapshot: true,
             label: 'fileExistsAtRevision',
         });
-        return output.split('\n').some((entry) => entry.replace(/\r$/, '') === relativePath);
+        return output === 'exists';
     }
 
     /**

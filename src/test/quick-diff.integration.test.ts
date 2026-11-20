@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { JjService, NO_OP_LOGGER } from '../core/jj-service';
 import { Uri } from '../core/uri-utils';
+import type { Api } from '../vscode/extension';
 import type { VsCodeScmProvider } from '../vscode/providers/vscode-scm-provider';
 import type { VsCodeViewFsProvider } from '../vscode/providers/vscode-view-fs-provider';
 import { createTestRepositoryContext } from './integration-test-utils';
@@ -54,7 +55,7 @@ suite('Quick Diff Integration Test', () => {
         originalReadFile = viewFileSystemProvider.readFile;
 
         // Override provideOriginalResource to return the test scheme
-        scmProvider.provideOriginalResource = (uri: Uri) => {
+        scmProvider.provideOriginalResource = async (uri: Uri) => {
             return uri.with({ scheme: 'jj-view-test', fragment: 'base=@&side=left' });
         };
 
@@ -119,11 +120,17 @@ suite('Quick Diff Integration Test', () => {
         repo.writeFile('nested/file.txt', 'base content\n');
         repo.new();
         repo.writeFile('nested/file.txt', 'working copy content\n');
-        await scmProvider.refresh();
+        await contextHelper.repository.refresh();
 
-        assert.ok(originalProvideOriginalResource);
+        // Restoring the SCM workspace can replace the provider created during setup.
+        const api = vscode.extensions.getExtension<Api>('jj-view.jj-view')?.exports;
+        const activeScm = api?.scmProviders.get(contextHelper.repository.rootUri.fsPath);
+        assert.ok(activeScm);
+        const provideOriginalResource =
+            activeScm === scmProvider ? originalProvideOriginalResource : activeScm.provideOriginalResource;
+        assert.ok(provideOriginalResource);
         const fileUri = Uri.file(path.join(canonicalPath, 'nested/file.txt'));
-        const originalUri = await originalProvideOriginalResource.call(scmProvider, fileUri);
+        const originalUri = await provideOriginalResource.call(activeScm, fileUri);
         assert.ok(originalUri);
         assert.strictEqual(originalUri.scheme, 'jj-view');
         assert.strictEqual(originalUri.path, fileUri.path);
@@ -138,7 +145,8 @@ suite('Quick Diff Integration Test', () => {
         repo.writeFile(fileName, 'modified\n');
 
         const fileUri = Uri.file(`${canonicalPath}/${fileName}`);
-        const originalUri = scmProvider.provideOriginalResource(fileUri) as Uri;
+        const originalUri = await scmProvider.provideOriginalResource(fileUri);
+        assert.ok(originalUri);
 
         // Track calls to readFile
         let readCount = 0;
@@ -173,7 +181,8 @@ suite('Quick Diff Integration Test', () => {
         repo.writeFile(fileName, 'modified in WC\n');
 
         const fileUri = Uri.file(path.join(canonicalPath, fileName));
-        const originalUri = scmProvider.provideOriginalResource(fileUri) as Uri;
+        const originalUri = await scmProvider.provideOriginalResource(fileUri);
+        assert.ok(originalUri);
 
         // Register URI by reading once
         await viewFileSystemProvider.readFile(originalUri);
@@ -207,7 +216,7 @@ suite('Quick Diff Integration Test', () => {
         await scmProvider.refresh(); // Ensure provider status is updated after repo change
 
         const fileUri = Uri.file(path.join(canonicalPath, fileName));
-        const originalUri = (await scmProvider.provideOriginalResource(fileUri)) as Uri;
+        const originalUri = await scmProvider.provideOriginalResource(fileUri);
         assert.ok(originalUri, `provideOriginalResource should return a URI for ${fileUri.fsPath}`);
 
         // Register URI by reading once

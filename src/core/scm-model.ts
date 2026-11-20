@@ -118,15 +118,21 @@ export class ScmModel implements Disposable {
         await this.repo.refresh();
     }
 
-    public getOriginalResourceUri(uri: Uri): Uri | undefined {
+    public async getOriginalResourceUri(uri: Uri): Promise<Uri | undefined> {
         const relativePath = getRepoRelativePath(uri, this.jj.workspaceRoot);
         const statusEntry = this._workingCopyStatuses.get(relativePath);
-        if (!statusEntry || statusEntry.status === 'added') {
+        if (statusEntry?.status === 'added') {
+            return undefined;
+        }
+
+        // Keep the comparison available when a tracked file becomes clean in an open editor.
+        const commitId = this._currentEntry?.commit_id;
+        if (!statusEntry && (!commitId || !(await this.jj.fileExistsAtRevision(uri.fsPath, commitId)))) {
             return undefined;
         }
 
         const revision = getRevisionFromUri(uri) || '@';
-        const leftPath = statusEntry.oldPath || statusEntry.path;
+        const leftPath = statusEntry?.oldPath || statusEntry?.path || relativePath;
         const relPath = leftPath.startsWith('/') ? leftPath : `/${leftPath}`;
 
         return Uri.from({

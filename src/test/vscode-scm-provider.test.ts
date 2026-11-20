@@ -79,11 +79,10 @@ describe('VsCodeScmProvider Unit Tests', () => {
         ]);
         await scmProvider.refresh({ forceSnapshot: true });
 
-        const originalUri = scmProvider.provideOriginalResource(Uri.file(`${testRepo.path}/file.txt`));
-        expect(originalUri).toBeDefined();
-        if (originalUri && 'scheme' in originalUri) {
-            expect(originalUri.scheme).toBe('jj-view');
-            expect(scmProvider.provideOriginalResource(originalUri)).toBeUndefined();
+        const originalUri = await scmProvider.provideOriginalResource(Uri.file(`${testRepo.path}/file.txt`));
+        expect(originalUri?.scheme).toBe('jj-view');
+        if (originalUri) {
+            await expect(scmProvider.provideOriginalResource(originalUri)).resolves.toBeUndefined();
         }
         const token = createMock<vscode.CancellationToken>({ isCancellationRequested: false });
         const decoration = await scmProvider.decorationProvider.provideFileDecoration(
@@ -91,7 +90,9 @@ describe('VsCodeScmProvider Unit Tests', () => {
             token,
         );
         expect(decoration?.badge).toBe('M');
-        expect(scmProvider.provideOriginalResource(Uri.file(`${testRepo.path}-outside/file.txt`))).toBeUndefined();
+        await expect(
+            scmProvider.provideOriginalResource(Uri.file(`${testRepo.path}-outside/file.txt`)),
+        ).resolves.toBeUndefined();
     });
 
     test('disposes all VS Code resources cleanly', () => {
