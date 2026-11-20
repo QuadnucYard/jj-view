@@ -282,7 +282,6 @@ function handleWindowKeydown(e: KeyboardEvent): void {
 }
 
 let commitDetailsBridge: InMemoryBridge | null = $state(null);
-let commitDetailsController: CommitDetailsController | null = null;
 
 function openOrActivateTab(view: TabViewData, options?: HostOpenOptions): void {
     const tabId = getTabId(view);
@@ -635,13 +634,7 @@ $effect(() => {
     if (activeTab?.view.type === 'commit-details' && scmModel && webHostEnv) {
         const detailsTabId = activeTab.id;
         const changeId = activeTab.view.changeId;
-        const bridge = createInMemoryBridge(async (msg) => {
-            if (commitDetailsController) {
-                await commitDetailsController.handleMessage(msg);
-            }
-        });
-        commitDetailsBridge = bridge;
-        commitDetailsController = new CommitDetailsController(changeId, scmModel.repo, webHostEnv, {
+        const controller = new CommitDetailsController(changeId, scmModel.repo, webHostEnv, {
             logger: NO_OP_LOGGER,
             openDiff: async ({ file, changeId: cId, isWorkingCopy }) => {
                 const repo = scmModel?.repo;
@@ -670,12 +663,13 @@ $effect(() => {
                 });
             },
         });
-        const messengerSub = bridge.messenger ? commitDetailsController.addMessenger(bridge.messenger) : undefined;
-        void commitDetailsController.open();
+        const bridge = createInMemoryBridge((msg) => controller.handleMessage(msg));
+        const messengerSub = controller.addMessenger(bridge.messenger);
+        commitDetailsBridge = bridge;
+        void controller.open();
         return () => {
-            messengerSub?.dispose();
-            commitDetailsController?.dispose();
-            commitDetailsController = null;
+            messengerSub.dispose();
+            controller.dispose();
             commitDetailsBridge = null;
         };
     }
@@ -1259,14 +1253,16 @@ onMount(() => {
                         />
                     {/key}
                 {:else if activeTab && activeTab.view.type === 'commit-details' && commitDetailsBridge}
-                    <CommitDetailsView
-                        transport={commitDetailsBridge.transport}
-                        onClose={() => {
-                            if (activeTab) {
-                                closeTabById(activeTab.id);
-                            }
-                        }}
-                    />
+                    {#key commitDetailsBridge.transport}
+                        <CommitDetailsView
+                            transport={commitDetailsBridge.transport}
+                            onClose={() => {
+                                if (activeTab) {
+                                    closeTabById(activeTab.id);
+                                }
+                            }}
+                        />
+                    {/key}
                 {:else}
                     <div class="empty-editor-message">
                         <i class="codicon codicon-source-control large-icon" aria-hidden="true"></i>

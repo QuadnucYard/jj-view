@@ -118,6 +118,41 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         }
     });
 
+    test('opens cached details while a refresh error notification is pending', async () => {
+        const repo = controller.repo;
+        if (!repo) {
+            throw new Error('Expected repository to be registered');
+        }
+        await repo.watcher.dispose();
+        const other = testRepo.workspaceAdd('other');
+        other.writeFile('cached.txt', 'already snapshotted\n');
+        other.describe('Change in the unavailable workspace');
+        const changeId = other.getChangeId('@');
+        await other.dispose();
+
+        const notification = Promise.withResolvers<string | undefined>();
+        const showError = vi.spyOn(fakeHost.ui, 'showErrorMessage').mockReturnValue(notification.promise);
+        controller.dispose();
+        controller = new CommitDetailsController(changeId, repo, fakeHost);
+        const open = controller.open();
+        try {
+            await vi.waitFor(
+                () => {
+                    expect(showError).toHaveBeenCalledWith(
+                        expect.stringContaining('Failed to refresh change details'),
+                        'Show Log',
+                    );
+                    expect(controller.changes?.map((file) => file.path) ?? []).toContain('cached.txt');
+                },
+                { timeout: 10000 },
+            );
+        } finally {
+            notification.resolve(undefined);
+            await open;
+            showError.mockRestore();
+        }
+    });
+
     test('preserves draft description when reloading commit data', async () => {
         testRepo.writeFile('file.txt', 'hello\n');
         testRepo.describe('persisted description');

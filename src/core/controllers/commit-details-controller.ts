@@ -21,6 +21,7 @@ import {
     type WebviewRpcReceiver,
 } from '../host/webview-rpc-dispatcher';
 import type { JjRepository } from '../jj-repository';
+import { StaleWorkspaceError } from '../jj-service';
 import type { JjLogEntry, JjStatusEntry } from '../jj-types';
 
 export interface CommitDetailsControllerOptions {
@@ -90,7 +91,23 @@ export class CommitDetailsController implements Disposable {
                 }
                 await this.repo.refresh({ reason: 'commit details refresh' });
             } catch (err) {
-                await showJjError(this._host.ui, err, 'Failed to refresh change details', this.repo.jj, this._logger);
+                // Load cached details while the notification waits for a response.
+                const error =
+                    err instanceof StaleWorkspaceError
+                        ? new StaleWorkspaceError(err.message, async () => {
+                              await err.updateWorkspace();
+                              await this.load();
+                          })
+                        : err;
+                void showJjError(
+                    this._host.ui,
+                    error,
+                    'Failed to refresh change details',
+                    this.repo.jj,
+                    this._logger,
+                ).catch((notificationError) => {
+                    this._logger?.error('Failed to report commit details refresh error', toError(notificationError));
+                });
             }
             await this.load();
         });
@@ -318,7 +335,10 @@ export class CommitDetailsController implements Disposable {
                 `[timing] [CommitDetails] line counts took ${duration.toFixed(0)}ms (${changes.length} files)`,
             );
         } catch (err) {
-            this._logger?.error(`[CommitDetailsController] Failed to load line counts for ${this.changeId}`, toError(err));
+            this._logger?.error(
+                `[CommitDetailsController] Failed to load line counts for ${this.changeId}`,
+                toError(err),
+            );
         }
     }
 
