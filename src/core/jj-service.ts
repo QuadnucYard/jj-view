@@ -50,6 +50,7 @@ export interface JjLogOptions {
     limit?: number;
     omitChanges?: boolean;
     includeNearestVisibleAncestors?: boolean;
+    skipLogEntryCache?: boolean;
 }
 
 const CONFLICTED_FILES_FIELD: JjTemplateField = {
@@ -612,9 +613,15 @@ export class JjService {
     }
 
     async getLog(options: JjLogOptions = {}): Promise<JjLogEntry[]> {
-        const { revision, limit, omitChanges, includeNearestVisibleAncestors } = options;
+        const { revision, limit, omitChanges, includeNearestVisibleAncestors, skipLogEntryCache } = options;
 
-        if (revision && omitChanges && !includeNearestVisibleAncestors && (!limit || limit === 1)) {
+        if (
+            revision &&
+            omitChanges &&
+            !includeNearestVisibleAncestors &&
+            !skipLogEntryCache &&
+            (!limit || limit === 1)
+        ) {
             const cached = this._logEntryCache.get(revision);
             if (cached) {
                 return [this._cloneLogEntry(cached)];
@@ -1236,8 +1243,23 @@ export class JjService {
     }
 
     async workspaceRefresh(workspaceName: string): Promise<void> {
-        const cwd = await this.getWorkspaceRoot(workspaceName);
-        await this.run('status', [], { cwd, isMutation: true, useCachedSnapshot: false, label: 'workspaceRefresh' });
+        await this.snapshotWorkspace(workspaceName);
+    }
+
+    /** Returns false if the request was cancelled before the snapshot command started. */
+    async snapshotWorkspace(workspaceName?: string, signal?: AbortSignal): Promise<boolean> {
+        const cwd = workspaceName === undefined ? undefined : await this.getWorkspaceRoot(workspaceName);
+        return this.runMutation(async () => {
+            if (signal?.aborted) {
+                return false;
+            }
+            await this.runInternal('status', [], {
+                cwd,
+                isMutation: true,
+                label: workspaceName === undefined ? 'status' : 'workspaceRefresh',
+            });
+            return true;
+        });
     }
 
     async workspaceUpdateStale(workspaceName: string): Promise<void> {

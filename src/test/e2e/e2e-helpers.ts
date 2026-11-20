@@ -1210,7 +1210,7 @@ const detailsWebviewCache = new WeakMap<Page, Frame>();
  * Re-fetches frames on poll to handle detached frames.
  */
 export async function getDetailsWebview(page: Page): Promise<Frame> {
-    const isTextareaVisible = async (f: Frame) => await f.locator('textarea').isVisible({ timeout: 50 });
+    const isTextareaVisible = async (f: Frame) => await f.locator('.commit-textarea').isVisible({ timeout: 50 });
     const cached = await getCachedWebviewFrame(page, detailsWebviewCache, isTextareaVisible);
     if (cached) {
         return cached;
@@ -1237,7 +1237,7 @@ export async function getDetailsWebview(page: Page): Promise<Frame> {
     }
 
     // Ensure the iframe is fully "ready" before returning
-    await expect(guestFrame.locator('textarea')).toBeVisible({ timeout: 10000 });
+    await expect(guestFrame.locator('.commit-textarea')).toBeVisible({ timeout: 10000 });
     detailsWebviewCache.set(page, guestFrame);
     logPerf('getDetailsWebview', start);
     return guestFrame;

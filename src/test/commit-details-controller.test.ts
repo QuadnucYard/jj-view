@@ -84,6 +84,81 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         expect(controller.changes?.map((file) => file.path)).toContain('on-open.txt');
     });
 
+    test('closing details during the revision lookup skips the workspace snapshot', async () => {
+        await controller.repo?.watcher.dispose();
+        const originalCommit = testRepo.getCommitId('@');
+        writeFileSync(path.join(testRepo.path, 'preview-only.txt'), 'still unsnapshotted\n');
+
+        const process = fakeHost.system.process;
+        const execFile = process.execFile.bind(process);
+        const closeOnLookup = vi.spyOn(process, 'execFile').mockImplementation(async (...args) => {
+            const result = await execFile(...args);
+            if (args[1].includes('log') && args[1].includes('@')) {
+                controller.dispose();
+            }
+            return result;
+        });
+        try {
+            await controller.open();
+            expect(controller.isDisposed).toBe(true);
+            expect(testRepo.getCommitId('@')).toBe(originalCommit);
+        } finally {
+            closeOnLookup.mockRestore();
+        }
+    });
+
+    test('closing details during workspace resolution skips the named workspace snapshot', async () => {
+        const repo = controller.repo;
+        if (!repo) {
+            throw new Error('Expected repository to be registered');
+        }
+        await repo.watcher.dispose();
+        const other = testRepo.workspaceAdd('other');
+        const originalCommit = other.getCommitId('@');
+        writeFileSync(path.join(other.path, 'preview-only.txt'), 'still unsnapshotted\n');
+        controller.dispose();
+        controller = new CommitDetailsController(other.getChangeId('@'), repo, fakeHost);
+
+        const process = fakeHost.system.process;
+        const execFile = process.execFile.bind(process);
+        const closeOnWorkspaceRoot = vi.spyOn(process, 'execFile').mockImplementation(async (...args) => {
+            const result = await execFile(...args);
+            if (args[1].includes('--name') && args[1].includes('other')) {
+                controller.dispose();
+            }
+            return result;
+        });
+        try {
+            await controller.open();
+            expect(controller.isDisposed).toBe(true);
+            expect(other.getCommitId('@')).toBe(originalCommit);
+        } finally {
+            closeOnWorkspaceRoot.mockRestore();
+            await other.dispose();
+        }
+    });
+
+    test('opens historical details without broadcasting a repository refresh', async () => {
+        const repo = controller.repo;
+        if (!repo) {
+            throw new Error('Expected repository to be registered');
+        }
+        await repo.watcher.dispose();
+        testRepo.writeFile('historical.txt', 'existing file\n');
+        testRepo.new();
+        controller.dispose();
+        controller = new CommitDetailsController(testRepo.getChangeId('@-'), repo, fakeHost);
+        const statuses = vi.fn();
+        const subscription = repo.onDidStatusChange(statuses);
+        try {
+            await controller.open();
+            expect(controller.changes?.map((file) => file.path)).toContain('historical.txt');
+            expect(statuses).not.toHaveBeenCalled();
+        } finally {
+            subscription.dispose();
+        }
+    });
+
     test('disabling refresh on open leaves manual refresh available and preserves drafts', async () => {
         await controller.repo?.watcher.dispose();
         fakeHost.config.set('commit.refreshOnOpen', false);

@@ -13,6 +13,7 @@ import type { CodeForgeService } from '../code-forge-service';
 import { type Disposable, type Event, EventEmitter } from '../host/events';
 import type { HostEnvironment } from '../host/host-environment';
 import {
+    type ActionPayload,
     type LogViewHostToWebviewMessage,
     type LogViewPayload,
     type LogViewToHostMessage,
@@ -50,6 +51,8 @@ export class LogViewController implements Disposable {
     private readonly _logger?: LoggerChannel;
     private readonly _receiver: WebviewRpcReceiver<LogViewToHostMessage, LogViewHostToWebviewMessage>;
     private readonly _refreshQueue: CoalescingQueue;
+    private readonly _previewQueue: CoalescingQueue;
+    private _pendingPreview?: ActionPayload;
 
     private _commits: readonly JjLogEntry[] = [];
     private _workspaces: JjWorkspace[] = [];
@@ -82,6 +85,13 @@ export class LogViewController implements Disposable {
 
         this._refreshQueue = new CoalescingQueue(async () => {
             await this._doRefresh();
+        });
+        this._previewQueue = new CoalescingQueue(async () => {
+            const preview = this._pendingPreview;
+            this._pendingPreview = undefined;
+            if (preview && this._repo) {
+                await this._openDetails(this._repo, preview);
+            }
         });
 
         this._receiver = this._createRpcReceiver();
@@ -182,6 +192,7 @@ export class LogViewController implements Disposable {
         if (this._repo) {
             this._repositorySelections.set(this._repo.rootUri.fsPath, this._selectedCommitIds);
         }
+        this._pendingPreview = undefined;
         this._repo = repo;
         this._selectedCommitIds = repo ? (this._repositorySelections.get(repo.rootUri.fsPath) ?? []) : [];
         this._commits = [];
@@ -217,6 +228,9 @@ export class LogViewController implements Disposable {
     }
 
     public setMessenger(messenger: WebviewPostMessageLike | undefined): void {
+        if (!messenger) {
+            this._pendingPreview = undefined;
+        }
         this._receiver.setMessenger(messenger);
     }
 
@@ -386,6 +400,9 @@ export class LogViewController implements Disposable {
     }
 
     private _updateSelectedCommits(commitIds: readonly string[], hasImmutableSelection?: boolean): boolean {
+        if (this._pendingPreview && !commitIds.includes(this._pendingPreview.changeId)) {
+            this._pendingPreview = undefined;
+        }
         if (
             this._selectedCommitIds.length === commitIds.length &&
             this._selectedCommitIds.every((id, idx) => id === commitIds[idx])
@@ -608,7 +625,21 @@ export class LogViewController implements Disposable {
     }
 
     public handlePanelClosed(changeId: string): void {
+        if (this._pendingPreview?.changeId === changeId) {
+            return;
+        }
         this._receiver.sender.panelClosed({ changeId });
+    }
+
+    private async _openDetails(repo: JjRepository, request: ActionPayload): Promise<void> {
+        await this._host.nav.openCommitDetails(
+            repo.rootUri,
+            request.changeId,
+            request.changeIdShortest,
+            request.isDivergent,
+            request.changeIdOffset,
+            { preview: request.preview ?? true },
+        );
     }
 
     private _updateActionContextKeys(): void {
@@ -723,16 +754,16 @@ export class LogViewController implements Disposable {
                     await this.executeGraphCommand('jj-view.abandon', msg);
                 },
                 getDetails: async (msg) => {
-                    if (this._repo) {
-                        await this._host.nav.openCommitDetails(
-                            this._repo.rootUri,
-                            msg.changeId,
-                            msg.changeIdShortest,
-                            msg.isDivergent,
-                            msg.changeIdOffset,
-                            { preview: msg.preview ?? true },
-                        );
+                    if (!this._repo || this._disposed) {
+                        return;
                     }
+                    if (msg.preview === false) {
+                        this._pendingPreview = undefined;
+                        await this._openDetails(this._repo, msg);
+                        return;
+                    }
+                    this._pendingPreview = msg;
+                    await this._previewQueue.run();
                 },
                 new: async () => {
                     await this.executeGraphCommand('jj-view.new');
@@ -828,6 +859,7 @@ export class LogViewController implements Disposable {
 
     public dispose(): void {
         this._disposed = true;
+        this._pendingPreview = undefined;
         this._codeForgeRefreshPromise = undefined;
         this._codeForgeDisposable?.dispose();
         this._repoStatusDisposable?.dispose();

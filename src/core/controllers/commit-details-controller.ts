@@ -40,6 +40,7 @@ export class CommitDetailsController implements Disposable {
     private readonly _disposables: Disposable[] = [];
     private readonly _loadQueue: CoalescingQueue;
     private readonly _refreshQueue: CoalescingQueue;
+    private readonly _lifetime = new AbortController();
     private readonly _logger?: LoggerChannel;
     private readonly _receiver: WebviewRpcReceiver<CommitDetailsToHostMessage, CommitDetailsHostToWebviewMessage>;
 
@@ -76,40 +77,7 @@ export class CommitDetailsController implements Disposable {
             await this._doLoad();
         });
         this._refreshQueue = new CoalescingQueue(async () => {
-            if (!this.repo || this._disposed) {
-                return;
-            }
-            try {
-                await this.repo.jj.clearCache();
-                const logs = await this.repo.jj.getLog({ revision: this.changeId, omitChanges: true });
-                // JJ can omit workspace labels when there is only one workspace.
-                if (logs.some((log) => log.is_current_working_copy && !log.working_copies?.length)) {
-                    await this.repo.jj.status();
-                }
-                for (const workspace of new Set(logs.flatMap((log) => log.working_copies ?? []))) {
-                    await this.repo.jj.workspaceRefresh(workspace);
-                }
-                await this.repo.refresh({ reason: 'commit details refresh' });
-            } catch (err) {
-                // Load cached details while the notification waits for a response.
-                const error =
-                    err instanceof StaleWorkspaceError
-                        ? new StaleWorkspaceError(err.message, async () => {
-                              await err.updateWorkspace();
-                              await this.load();
-                          })
-                        : err;
-                void showJjError(
-                    this._host.ui,
-                    error,
-                    'Failed to refresh change details',
-                    this.repo.jj,
-                    this._logger,
-                ).catch((notificationError) => {
-                    this._logger?.error('Failed to report commit details refresh error', toError(notificationError));
-                });
-            }
-            await this.load();
+            await this._refreshDetails();
         });
     }
 
@@ -248,6 +216,64 @@ export class CommitDetailsController implements Disposable {
 
     public async refresh(): Promise<void> {
         await this._refreshQueue.run();
+    }
+
+    private async _refreshDetails(): Promise<void> {
+        const repo = this.repo;
+        if (!repo || this._disposed) {
+            return;
+        }
+
+        let snapshotted = false;
+        const { signal } = this._lifetime;
+        try {
+            const logs = await repo.jj.getLog({ revision: this.changeId, omitChanges: true, skipLogEntryCache: true });
+            if (this._disposed) {
+                return;
+            }
+            // JJ can omit workspace labels when there is only one workspace.
+            if (logs.some((log) => log.is_current_working_copy && !log.working_copies?.length)) {
+                snapshotted = await repo.jj.snapshotWorkspace(undefined, signal);
+            }
+            for (const workspace of new Set(logs.flatMap((log) => log.working_copies ?? []))) {
+                if (this._disposed) {
+                    break;
+                }
+                const completed = await repo.jj.snapshotWorkspace(workspace, signal);
+                snapshotted ||= completed;
+            }
+        } catch (err) {
+            this._reportRefreshError(err);
+        }
+
+        // A completed snapshot can change the repository even if the editor closed meanwhile.
+        if (snapshotted) {
+            try {
+                await repo.refresh({ reason: 'commit details refresh' });
+            } catch (err) {
+                this._reportRefreshError(err);
+            }
+        }
+        await this.load();
+    }
+
+    private _reportRefreshError(err: unknown): void {
+        if (!this.repo || this._disposed) {
+            return;
+        }
+        // Load cached details while the notification waits for a response.
+        const error =
+            err instanceof StaleWorkspaceError
+                ? new StaleWorkspaceError(err.message, async () => {
+                      await err.updateWorkspace();
+                      await this.load();
+                  })
+                : err;
+        void showJjError(this._host.ui, error, 'Failed to refresh change details', this.repo.jj, this._logger).catch(
+            (notificationError) => {
+                this._logger?.error('Failed to report commit details refresh error', toError(notificationError));
+            },
+        );
     }
 
     private async _runLoad(): Promise<JjLogEntry | undefined> {
@@ -578,6 +604,7 @@ export class CommitDetailsController implements Disposable {
 
     public dispose(): void {
         this._disposed = true;
+        this._lifetime.abort();
         if (this._debounceTimer) {
             clearTimeout(this._debounceTimer);
             this._debounceTimer = undefined;

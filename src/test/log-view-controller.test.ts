@@ -209,6 +209,35 @@ describe('LogViewController Domain Unit Tests', () => {
         ]);
     });
 
+    test('keeps only the latest queued graph preview', async () => {
+        const firstOpen = Promise.withResolvers<void>();
+        const releaseFirstOpen = Promise.withResolvers<void>();
+        const openDetails = fakeHost.nav.openCommitDetails.bind(fakeHost.nav);
+        const open = vi.spyOn(fakeHost.nav, 'openCommitDetails').mockImplementation(async (...args) => {
+            await openDetails(...args);
+            if (args[1] === 'first') {
+                firstOpen.resolve();
+                await releaseFirstOpen.promise;
+            }
+        });
+
+        const preview = (changeId: string) => controller.handleMessage({ type: 'getDetails', payload: { changeId } });
+        const first = preview('first');
+        await firstOpen.promise;
+        const requests = [first, preview('second'), preview('third'), preview('latest')];
+        try {
+            // The explicit pin must open even while a preview is resolving.
+            await controller.handleMessage({ type: 'getDetails', payload: { changeId: 'pinned', preview: false } });
+            expect(fakeHost.nav.commitDetailsOpened.map(({ changeId }) => changeId)).toEqual(['first', 'pinned']);
+            requests.push(preview('after-pin'), preview('final'));
+        } finally {
+            releaseFirstOpen.resolve();
+            await Promise.all(requests);
+            open.mockRestore();
+        }
+        expect(fakeHost.nav.commitDetailsOpened.map(({ changeId }) => changeId)).toEqual(['first', 'pinned', 'final']);
+    });
+
     test('handles RPC messages via handleMessage', async () => {
         testRepo.writeFile('file.txt', 'hello\n');
         testRepo.describe('initial commit');

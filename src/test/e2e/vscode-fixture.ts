@@ -1110,7 +1110,7 @@ export class VSCodeFixtureImpl implements VSCodeFixture {
                 if (typeof targetPath === 'string') {
                     const isMatch =
                         focused &&
-                        (focused.rootUri.fsPath === targetPath ||
+                        (focused.rootUri.fsPath === vscode.Uri.file(targetPath).fsPath ||
                             (targetPath.endsWith('.code-workspace') &&
                                 (vscode.workspace.workspaceFolders || []).some(
                                     (f) => f.uri.fsPath === focused.rootUri.fsPath,

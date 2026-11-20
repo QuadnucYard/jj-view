@@ -314,7 +314,7 @@ test.describe('Commit Details E2E', () => {
             const details = await getDetailsWebview(page);
             await expect(details.locator('textarea')).toHaveValue(/initial setup/);
 
-            // Now click 'feature' — panel should update in-place (same webview, new content)
+            // Switch to the feature commit in the graph.
             // Need to focus the JJ Log webview again first
             await focusJJLog(page);
             // Re-get the webview after focus since frames can be invalidated
@@ -324,11 +324,36 @@ test.describe('Commit Details E2E', () => {
             const shortId2 = nodes.feature.changeId.substring(0, 3);
             await waitForTab(page, new RegExp(`^Commit: ${shortId2}`));
 
-            // The panel is reused — wait for the textarea content to update within the SAME frame
+            // Wait for the replacement preview to show the feature description.
             await expect(async () => {
                 const detailsFrame = await getDetailsWebview(page);
                 await expect(detailsFrame.locator('textarea')).toHaveValue(/add feature/, { timeout: 2000 });
             }).toPass({ timeout: 15000 });
+        });
+
+        test('Opens the last preview after a burst of graph clicks', async () => {
+            const changeIds = [nodes['conflicted-commit'].changeId, nodes.initial.changeId, nodes.feature.changeId];
+            for (const changeId of changeIds) {
+                await waitForLogCommitRow(page, { changeId });
+            }
+            const graph = await getLogWebview(page);
+            await graph.evaluate((ids) => {
+                for (const id of ids) {
+                    const row = document.querySelector(`.commit-row[data-change-id="${id}"]`);
+                    if (!row) {
+                        throw new Error(`Graph row ${id} disappeared before the click`);
+                    }
+                    row.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+                }
+            }, changeIds);
+
+            await waitForTab(page, new RegExp(`^Commit: ${nodes.feature.changeId.substring(0, 3)}`));
+            const details = await getDetailsWebview(page);
+            await expect(details.locator('textarea')).toHaveValue(/add feature/);
+            await expect(graph.locator(`.commit-row[data-change-id="${nodes.feature.changeId}"]`)).toHaveAttribute(
+                'aria-selected',
+                'true',
+            );
         });
 
         test('Panel auto-updates when commit description is changed externally', async () => {

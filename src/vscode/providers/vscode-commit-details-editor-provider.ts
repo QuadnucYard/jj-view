@@ -227,13 +227,18 @@ export class VsCodeCommitDetailsEditorProvider
         });
 
         const panelDisposables: vscode.Disposable[] = [messageDisposable, messengerDisposable, closeDisposable];
+        let panelDisposed = false;
         panel.onDidDispose(() => {
+            panelDisposed = true;
             for (const d of panelDisposables) {
                 d.dispose();
             }
         });
 
         const initialData = await controller.getInitialPayload();
+        if (panelDisposed || controller.isDisposed) {
+            return;
+        }
 
         let initialHtml: string | undefined;
         if (initialData) {
