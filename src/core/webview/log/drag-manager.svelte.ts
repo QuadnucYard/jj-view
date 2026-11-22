@@ -69,6 +69,7 @@ export class DragManager {
     activeModifier = $derived<DragActionModifier>(resolveActiveModifier(this.pressedKeys));
 
     private onDropCallback?: (item: DragItem, target: DropTarget, modifier: DragActionModifier) => void;
+    private stopPointerTracking?: () => void;
 
     constructor(onDrop?: (item: DragItem, target: DropTarget, modifier: DragActionModifier) => void) {
         this.onDropCallback = onDrop;
@@ -100,18 +101,20 @@ export class DragManager {
         this.resetKeys();
     };
 
+    cancelDrag(): boolean {
+        if (!this.stopPointerTracking) {
+            return false;
+        }
+        this.stopPointerTracking();
+        return true;
+    }
+
     draggable = (node: HTMLElement, getItem: () => DragItem | null) => {
         let startX = 0;
         let startY = 0;
-        let isTracking = false;
-        let hasMovedPastThreshold = false;
 
         const handlePointerMove = (e: PointerEvent) => {
-            if (!isTracking) {
-                return;
-            }
-
-            if (!hasMovedPastThreshold) {
+            if (!this.activeDragItem) {
                 const dist = Math.hypot(e.clientX - startX, e.clientY - startY);
                 if (dist < 5) {
                     return;
@@ -122,7 +125,6 @@ export class DragManager {
                     cleanup();
                     return;
                 }
-                hasMovedPastThreshold = true;
                 this.activeDragItem = item;
             }
 
@@ -143,29 +145,27 @@ export class DragManager {
         };
 
         const handlePointerUp = () => {
-            if (hasMovedPastThreshold && this.activeDragItem && this.activeDropTarget) {
+            if (this.activeDragItem && this.activeDropTarget) {
                 this.onDropCallback?.(this.activeDragItem, this.activeDropTarget, this.activeModifier);
             }
             cleanup();
         };
 
-        const handlePointerCancel = () => {
-            cleanup();
-        };
-
         const cleanup = () => {
-            isTracking = false;
-            hasMovedPastThreshold = false;
+            if (this.stopPointerTracking !== cleanup) {
+                return;
+            }
+            this.stopPointerTracking = undefined;
             this.activeDragItem = null;
             this.activeDropTarget = null;
             this.resetKeys();
             window.removeEventListener('pointermove', handlePointerMove);
             window.removeEventListener('pointerup', handlePointerUp);
-            window.removeEventListener('pointercancel', handlePointerCancel);
+            window.removeEventListener('pointercancel', cleanup);
         };
 
         const handlePointerDown = (e: PointerEvent) => {
-            if (e.button !== 0) {
+            if (e.button !== 0 || this.stopPointerTracking) {
                 return;
             }
             const target = e.target as HTMLElement | null;
@@ -184,12 +184,11 @@ export class DragManager {
 
             startX = e.clientX;
             startY = e.clientY;
-            isTracking = true;
-            hasMovedPastThreshold = false;
+            this.stopPointerTracking = cleanup;
 
             window.addEventListener('pointermove', handlePointerMove);
             window.addEventListener('pointerup', handlePointerUp);
-            window.addEventListener('pointercancel', handlePointerCancel);
+            window.addEventListener('pointercancel', cleanup);
         };
 
         node.setAttribute('data-draggable', 'true');

@@ -306,6 +306,9 @@ function handleGraphAction(action: string, payload: ActionPayload) {
     onkeydown={(e) => {
         dragManager.handleKeyDown(e);
         if (e.key === 'Escape') {
+            if (dragManager.cancelDrag() || e.repeat) {
+                return;
+            }
             selectedCommitIds = new Set();
             void sender.selectionChange({
                 commitIds: [],

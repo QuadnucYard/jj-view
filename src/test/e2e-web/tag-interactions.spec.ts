@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { ScopedTestRepo } from '../test-repo';
 import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
 
-test('moves graph tags by dragging and deletes them through the context menu', async ({ page, server, testRepo }) => {
+test('cancels a graph tag drag with Escape, then moves and deletes the tag', async ({ page, server, testRepo }) => {
     testRepo.writeFile('release.txt', 'release content');
     testRepo.describe('tag source');
     const sourceId = testRepo.getChangeId('@');
@@ -18,26 +18,48 @@ test('moves graph tags by dragging and deletes them through the context menu', a
     await waitForScmReady(page);
     const source = page.locator(`.commit-row[data-change-id="${sourceId}"]`);
     const target = page.locator(`.commit-row[data-change-id="${targetId}"]`);
-    await expect(source.locator('.draggable-tag')).toBeVisible();
+    const sourceTag = source.locator('.draggable-tag');
+    const preview = page.locator('.drag-preview-overlay');
+    await source.getByText('tag source', { exact: true }).click();
+    await expect(source).toHaveAttribute('aria-selected', 'true');
     await recordGifFlow(
         page,
         async (capture) => {
             await capture();
-            const tag = await source.locator('.draggable-tag').boundingBox();
-            const destination = await target.boundingBox();
-            if (!tag || !destination) {
-                throw new Error('Missing tag or destination bounds');
-            }
-            await page.mouse.move(tag.x + tag.width / 2, tag.y + tag.height / 2);
-            await page.mouse.down();
-            await page.mouse.move(destination.x + destination.width / 2, destination.y + destination.height / 2, {
-                steps: 10,
-            });
-            await expect(page.locator('.drag-preview-overlay .tag-wrapper')).toHaveText('release');
+            const dragToTarget = async () => {
+                const tag = await sourceTag.boundingBox();
+                const destination = await target.boundingBox();
+                if (!tag || !destination) {
+                    throw new Error('Missing tag or destination bounds');
+                }
+                await page.mouse.move(tag.x + tag.width / 2, tag.y + tag.height / 2);
+                await page.mouse.down();
+                await page.mouse.move(destination.x + destination.width / 2, destination.y + destination.height / 2, {
+                    steps: 10,
+                });
+            };
+            await dragToTarget();
+            await expect(preview.locator('.tag-wrapper')).toHaveText('release');
+            await expect(target.locator('.tag-wrapper')).toHaveText('release');
             await capture();
+            await page.keyboard.press('Escape');
+            await expect(preview).toHaveCount(0);
+            await expect(target.locator('.tag-wrapper')).toHaveCount(0);
+            await expect(source).toHaveAttribute('aria-selected', 'true');
+            await capture();
+
+            await target.hover({ position: { x: 20, y: 10 } });
+            await expect(preview).toHaveCount(0);
+            await page.mouse.up();
+            await expect(sourceTag).toHaveText('release');
+            await expect(target.locator('.draggable-tag')).toHaveCount(0);
+            await page.keyboard.press('Escape');
+            await expect(source).toHaveAttribute('aria-selected', 'false');
+
+            await dragToTarget();
             await page.mouse.up();
             await expect(target.locator('.draggable-tag')).toHaveText('release');
-            await expect(source.locator('.draggable-tag')).toHaveCount(0);
+            await expect(sourceTag).toHaveCount(0);
             await target.locator('.draggable-tag').click({ button: 'right' });
             const deleteAction = page.getByTestId('menu-item-jj-view.deleteTag');
             await expect(deleteAction).toBeVisible();
