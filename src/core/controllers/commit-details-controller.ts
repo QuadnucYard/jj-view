@@ -45,9 +45,8 @@ export class CommitDetailsController implements Disposable {
     private readonly _receiver: WebviewRpcReceiver<CommitDetailsToHostMessage, CommitDetailsHostToWebviewMessage>;
 
     private _logEntry?: JjLogEntry;
-    // A fresh open can reuse the revision read for server rendering.
-    private _initialLogEntry?: JjLogEntry;
     private _changes?: readonly JjStatusEntry[];
+    private readonly _pendingLineCounts = new Map<string, Promise<void>>();
     private _loadId = 0;
     private _draftDescription?: string;
     private _persistedDescription?: string;
@@ -109,9 +108,8 @@ export class CommitDetailsController implements Disposable {
             return this.getState();
         }
         try {
-            const start = performance.now();
             const originalLoadId = this._loadId;
-            const log = await this.repo.jj.getCommitDetails(this.changeId);
+            const log = await this.repo.jj.getLogEntry(this.changeId);
             if (this._disposed) {
                 return undefined;
             }
@@ -121,9 +119,7 @@ export class CommitDetailsController implements Disposable {
             if (!log) {
                 return undefined;
             }
-            this._initialLogEntry = log;
             this._setLogEntry(log);
-            this._logFileLoad(start);
             return this.getState();
         } catch (err) {
             this._logger?.debug?.(
@@ -173,7 +169,7 @@ export class CommitDetailsController implements Disposable {
             titleWidthRuler: this._host.config.get<number | undefined>('commit.titleWidthRuler'),
             bodyWidthRuler: this._host.config.get<number | undefined>('commit.bodyWidthRuler'),
             formatDescriptionOnSave: this._host.config.get<boolean>('commit.formatDescriptionOnSave', false),
-            isLoadingFiles: false,
+            isLoadingFiles: this._changes === undefined,
         };
     }
 
@@ -201,9 +197,14 @@ export class CommitDetailsController implements Disposable {
         return this._receiver.dispatch(rawMessage);
     }
 
-    public load(): Promise<JjLogEntry | undefined> {
-        this._initialLogEntry = undefined;
-        return this._runLoad();
+    public async load(): Promise<JjLogEntry | undefined> {
+        if (!this.repo || this._disposed) {
+            return undefined;
+        }
+
+        await this._loadQueue.run();
+        await this._waitForLineCounts();
+        return this._logEntry;
     }
 
     public async open(): Promise<JjLogEntry | undefined> {
@@ -211,7 +212,7 @@ export class CommitDetailsController implements Disposable {
             await this.refresh();
             return this._logEntry;
         }
-        return this._runLoad();
+        return this.load();
     }
 
     public async refresh(): Promise<void> {
@@ -246,15 +247,20 @@ export class CommitDetailsController implements Disposable {
             this._reportRefreshError(err);
         }
 
-        // A completed snapshot can change the repository even if the editor closed meanwhile.
-        if (snapshotted) {
-            try {
-                await repo.refresh({ reason: 'commit details refresh' });
-            } catch (err) {
-                this._reportRefreshError(err);
+        try {
+            await this._loadQueue.run();
+        } finally {
+            // Publish the snapshot to other views after sending the file rows.
+            // A completed snapshot still needs publishing if the editor closed.
+            if (snapshotted) {
+                try {
+                    await repo.refresh({ reason: 'commit details refresh' });
+                } catch (err) {
+                    this._reportRefreshError(err);
+                }
             }
         }
-        await this.load();
+        await this._waitForLineCounts();
     }
 
     private _reportRefreshError(err: unknown): void {
@@ -276,30 +282,26 @@ export class CommitDetailsController implements Disposable {
         );
     }
 
-    private async _runLoad(): Promise<JjLogEntry | undefined> {
-        if (!this.repo || this._disposed) {
-            return undefined;
+    private async _waitForLineCounts(): Promise<void> {
+        if (this._logEntry) {
+            await this._pendingLineCounts.get(this._logEntry.commit_id);
         }
-
-        await this._loadQueue.run();
-        return this._logEntry;
     }
 
     private async _doLoad(): Promise<void> {
-        if (!this.repo || this._disposed) {
+        const repo = this.repo;
+        if (!repo || this._disposed) {
             return;
         }
 
         const start = performance.now();
-        const currentLoadId = ++this._loadId;
-        const initialLogEntry = this._initialLogEntry;
-        this._initialLogEntry = undefined;
+        this._loadId++;
 
         let log: JjLogEntry | undefined;
         try {
-            log = initialLogEntry ?? (await this.repo.jj.getCommitDetails(this.changeId));
+            log = await repo.jj.getCommitDetails(this.changeId);
         } catch (err) {
-            if (this._disposed || currentLoadId !== this._loadId) {
+            if (this._disposed) {
                 return;
             }
             this._logEntry = undefined;
@@ -311,7 +313,7 @@ export class CommitDetailsController implements Disposable {
             return;
         }
 
-        if (this._disposed || currentLoadId !== this._loadId) {
+        if (this._disposed) {
             return;
         }
 
@@ -332,17 +334,31 @@ export class CommitDetailsController implements Disposable {
         }
 
         const changes = this._changes ?? [];
-        if (!initialLogEntry) {
-            this._logFileLoad(start);
-        }
-        if (changes.every((file) => file.additions !== undefined && file.deletions !== undefined)) {
+        const duration = performance.now() - start;
+        this._logger?.info?.(`[timing] [CommitDetails] files took ${duration.toFixed(0)}ms (${changes.length} files)`);
+        const commitId = log.commit_id;
+        if (
+            this._disposed ||
+            this._pendingLineCounts.has(commitId) ||
+            changes.every((file) => file.additions !== undefined && file.deletions !== undefined)
+        ) {
             return;
         }
+        const counts = this._loadLineCounts(repo, commitId, changes).finally(() => {
+            this._pendingLineCounts.delete(commitId);
+        });
+        this._pendingLineCounts.set(commitId, counts);
+    }
 
+    private async _loadLineCounts(
+        repo: JjRepository,
+        commitId: string,
+        changes: readonly JjStatusEntry[],
+    ): Promise<void> {
         const statsStart = performance.now();
         try {
-            const stats = await this.repo.jj.getChangeStats(log.commit_id);
-            if (this._disposed || currentLoadId !== this._loadId) {
+            const stats = await repo.jj.getChangeStats(commitId);
+            if (this._disposed || this._logEntry?.commit_id !== commitId) {
                 return;
             }
 
@@ -369,7 +385,7 @@ export class CommitDetailsController implements Disposable {
     }
 
     private _setLogEntry(log: JjLogEntry): void {
-        if (this._logEntry?.commit_id !== log.commit_id) {
+        if (this._logEntry?.commit_id !== log.commit_id || this._changes === undefined) {
             this._changes = log.changes;
         }
         this._logEntry = log;
@@ -379,13 +395,6 @@ export class CommitDetailsController implements Disposable {
             this._draftDescription = this._persistedDescription;
             this._lastPushedText = this._persistedDescription;
         }
-    }
-
-    private _logFileLoad(start: number): void {
-        const duration = performance.now() - start;
-        this._logger?.info?.(
-            `[timing] [CommitDetails] files took ${duration.toFixed(0)}ms (${this._changes?.length ?? 0} files)`,
-        );
     }
 
     public updateDraft(newText: string, selection: { start: number; end: number } = { start: 0, end: 0 }): void {

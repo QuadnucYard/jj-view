@@ -316,7 +316,7 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         client2.dispose();
     });
 
-    test('resolveCustomEditor renders metadata and changed files in the initial HTML', async () => {
+    test('resolveCustomEditor renders metadata before loading changed files', async () => {
         const changeId = testRepo.getChangeId('@');
         testRepo.writeFile('preview.txt', 'preview content');
         testRepo.describe('preview commit');
@@ -358,7 +358,19 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         expect(rootBlock).toContain('commit-details-container');
         expect(rootBlock).toContain('preview commit');
         expect(rootBlock).toContain(changeId);
-        expect(rootBlock).toContain('preview.txt');
+        expect(rootBlock).toContain('Loading changed files');
+
+        await vi.waitFor(
+            () => {
+                expect(client.receivedUpdates).toContainEqual(
+                    expect.objectContaining({
+                        isLoadingFiles: false,
+                        files: expect.arrayContaining([expect.objectContaining({ path: 'preview.txt' })]),
+                    }),
+                );
+            },
+            { timeout: 10000 },
+        );
 
         client.dispose();
     });

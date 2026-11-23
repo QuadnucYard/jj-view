@@ -76,12 +76,39 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         expect(controller.changes?.length).toBeGreaterThan(0);
     });
 
-    test('snapshots unsaved files when opening details by default', async () => {
-        await controller.repo?.watcher.dispose();
+    test('publishes freshly snapshotted files before the repository refresh', async () => {
+        const repo = controller.repo;
+        if (!repo) {
+            throw new Error('Expected repository to be registered');
+        }
+        await repo.watcher.dispose();
         await controller.load();
         writeFileSync(path.join(testRepo.path, 'on-open.txt'), 'not snapshotted yet\n');
-        await controller.open();
-        expect(controller.changes?.map((file) => file.path)).toContain('on-open.txt');
+
+        const refreshStarted = Promise.withResolvers<void>();
+        const finishRefresh = Promise.withResolvers<void>();
+        const subscription = repo.onDidStatusChange(() => {
+            refreshStarted.resolve();
+            return finishRefresh.promise;
+        });
+        const open = controller.open();
+        try {
+            const refreshReached = await Promise.race([
+                refreshStarted.promise.then(() => true),
+                open.then(() => false),
+            ]);
+            expect(refreshReached).toBe(true);
+            expect(client.receivedMessages).toContainEqual({
+                type: 'update',
+                payload: expect.objectContaining({
+                    files: expect.arrayContaining([expect.objectContaining({ path: 'on-open.txt' })]),
+                }),
+            });
+        } finally {
+            finishRefresh.resolve();
+            subscription.dispose();
+            await open;
+        }
     });
 
     test('closing details during the revision lookup skips the workspace snapshot', async () => {
@@ -492,7 +519,7 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         detailsController.dispose();
     });
 
-    test('initial payload includes files and preserves active dirty drafts', async () => {
+    test('initial payload shows metadata while files load and preserves dirty drafts', async () => {
         testRepo.writeFile('initial.txt', 'initial');
         testRepo.describe('persisted description');
         const commitId = testRepo.getChangeId('@');
@@ -509,10 +536,59 @@ describe('CommitDetailsController Domain Unit Tests', () => {
         expect(payload).toBeDefined();
         expect(payload?.changeId).toBe(commitId);
         expect(detailsController.draftDescription).toBe('unsaved dirty description');
-        expect(payload?.isLoadingFiles).toBe(false);
-        expect(payload?.files).toEqual([{ path: 'initial.txt', status: 'added', conflicted: false }]);
+        expect(payload?.isLoadingFiles).toBe(true);
+        expect(payload?.files).toEqual([]);
+
+        await detailsController.load();
+        expect(detailsController.getState()?.files?.map((file) => file.path)).toEqual(['initial.txt']);
+        expect(detailsController.getState()?.isLoadingFiles).toBe(false);
+        expect(detailsController.draftDescription).toBe('unsaved dirty description');
 
         detailsController.dispose();
+    });
+
+    test('a slow line count cannot block or overwrite details for a rewritten commit', async () => {
+        await controller.repo?.watcher.dispose();
+        testRepo.writeFile('changed.txt', 'first line\n');
+        testRepo.describe('original');
+        const originalCommit = testRepo.getCommitId('@');
+
+        const countsStarted = Promise.withResolvers<void>();
+        const finishCounts = Promise.withResolvers<void>();
+        const process = fakeHost.system.process;
+        const execFile = process.execFile.bind(process);
+        const delayCounts = vi.spyOn(process, 'execFile').mockImplementation(async (...args) => {
+            const result = await execFile(...args);
+            if (args[1].includes(originalCommit) && args[1].some((arg) => arg.includes('self.diff().stat()'))) {
+                countsStarted.resolve();
+                await finishCounts.promise;
+            }
+            return result;
+        });
+
+        const firstLoad = controller.load();
+        let secondLoad: ReturnType<typeof controller.load> | undefined;
+        try {
+            const countsPending = await Promise.race([
+                countsStarted.promise.then(() => true),
+                firstLoad.then(() => false),
+            ]);
+            expect(countsPending).toBe(true);
+            testRepo.writeFile('changed.txt', 'first line\nsecond line\n');
+            testRepo.describe('rewritten');
+            secondLoad = controller.load();
+            await vi.waitFor(
+                () => {
+                    expect(controller.changes?.[0]?.additions).toBe(2);
+                },
+                { timeout: 10000 },
+            );
+        } finally {
+            finishCounts.resolve();
+            await Promise.all([firstLoad, secondLoad]);
+            delayCounts.mockRestore();
+        }
+        expect(controller.changes?.[0]?.additions).toBe(2);
     });
 
     test('revert dispatches both update and updateDescription messages to reset webview state', async () => {
