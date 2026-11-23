@@ -207,4 +207,36 @@ describe('CommitDetailsApp SSR Rendering', () => {
         );
         expect(html).not.toContain('src/core/webview/</span> ');
     });
+
+    it.each([
+        {
+            path: 'src/utils/new name.ts',
+            oldPath: 'src/utils/old name.ts',
+            label: 'src/utils/{old name.ts → new name.ts}',
+        },
+        {
+            path: 'src/new/config.ts',
+            oldPath: 'src/old/config.ts',
+            label: 'src/{old/config.ts → new/config.ts}',
+        },
+        {
+            path: 'docs/guide.md',
+            oldPath: 'doc/guide.md',
+            label: 'doc/guide.md → docs/guide.md',
+        },
+        { path: 'new.txt', oldPath: 'old.txt', label: 'old.txt → new.txt' },
+        { path: 'src/unknown.ts', oldPath: undefined, label: 'src/unknown.ts' },
+    ])('renders a rename to $path in the changed files list', ({ path, oldPath, label }) => {
+        const initialCommit: CommitDetailsPayload = {
+            changeId: 'krsyowswxmxnqznrtlpuyutskyzrpunp',
+            commitId: 'abcdef1234567890abcdef1234567890abcdef12',
+            files: [{ path, oldPath, status: 'renamed' }],
+        };
+
+        const { body } = render(CommitDetailsApp, { props: { initialCommit } });
+        const pathLabel = body.match(/<span class="file-path-container[^>]*title="([^"]*)">(.*?)<\/span>\s*<\/span>/s);
+
+        expect(pathLabel?.[1]).toBe(oldPath ? `${oldPath} → ${path}` : path);
+        expect(pathLabel?.[2].replace(/<[^>]*>/g, '')).toBe(label);
+    });
 });

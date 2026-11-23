@@ -166,14 +166,31 @@ function copyToClipboard(text: string, id: 'change' | 'commit') {
     }
 }
 
-function splitFilePath(filePath: string): { dir: string; name: string } {
-    const lastSlash = filePath.lastIndexOf('/');
-    if (lastSlash === -1) {
-        return { dir: '', name: filePath };
+function getFileLabel({ path, oldPath, status }: JjStatusEntry): { dir: string; name: string; title: string } {
+    if (status !== 'renamed' || !oldPath || oldPath === path) {
+        const nameStart = path.lastIndexOf('/') + 1;
+        return { dir: path.slice(0, nameStart), name: path.slice(nameStart), title: path };
     }
+
+    const oldParts = oldPath.split('/');
+    const newParts = path.split('/');
+    const maxSharedDirs = Math.min(oldParts.length, newParts.length) - 1;
+    let sharedDirs = 0;
+    while (sharedDirs < maxSharedDirs && oldParts[sharedDirs] === newParts[sharedDirs]) {
+        sharedDirs++;
+    }
+
+    const title = `${oldPath} → ${path}`;
+    if (sharedDirs === 0) {
+        return { dir: '', name: title, title };
+    }
+
+    const oldSuffix = oldParts.slice(sharedDirs).join('/');
+    const newSuffix = newParts.slice(sharedDirs).join('/');
     return {
-        dir: filePath.slice(0, lastSlash + 1),
-        name: filePath.slice(lastSlash + 1),
+        dir: `${newParts.slice(0, sharedDirs).join('/')}/`,
+        name: `{${oldSuffix} → ${newSuffix}}`,
+        title,
     };
 }
 
@@ -609,7 +626,7 @@ function getFileColor(status: string, conflicted?: boolean): string {
                     </div>
                 {:else}
                     {#each files as file (file.path)}
-                        {@const { dir, name } = splitFilePath(file.path)}
+                        {@const { dir, name, title } = getFileLabel(file)}
                         {@const conflictLabel = file.conflictSides ? `${file.conflictSides}-way conflict` : 'Conflicted file'}
                         <button
                             type="button"
@@ -628,7 +645,7 @@ function getFileColor(status: string, conflicted?: boolean): string {
                                 title={file.conflicted ? conflictLabel : undefined}
                                 aria-label={file.conflicted ? conflictLabel : undefined}
                             ></span>
-                            <span class="file-path-container" title={file.path}>
+                            <span class="file-path-container" {title}>
                                 {#if dir}<span class="file-dir">{dir}</span>{/if}<span class="file-name" style:color={file.conflicted ? 'var(--vscode-gitDecoration-conflictingResourceForeground, #e51400)' : undefined}>{name}</span>
                             </span>
                             <span class="file-meta-group">
@@ -1183,8 +1200,6 @@ function getFileColor(status: string, conflicted?: boolean): string {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        display: flex;
-        align-items: baseline;
     }
 
     .file-dir {
