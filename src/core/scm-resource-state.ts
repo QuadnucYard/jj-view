@@ -2,8 +2,10 @@
  * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
+import type { HostPlatform } from './host/host-system';
 import { ScmContextValue } from './jj-context-keys';
 import type { JjStatusEntry } from './jj-types';
+import { normalizeRepoSeparators } from './path-utils';
 import { createDiffUris, isWorkingCopyRevision, type Uri } from './uri-utils';
 
 export interface ResourceCommand {
@@ -44,16 +46,19 @@ export function createJjResourceState(
         inConflictGroup?: boolean;
         /** Host-specific SCM identity, independent of the URIs opened in editors. */
         resourceUri?: Uri;
+        mutableCommit?: boolean;
+        platform?: HostPlatform | string;
     } = {},
 ): JjResourceState {
     const isCurrentWorkingCopy = isWorkingCopyRevision(revision, options.workingCopyChangeId);
     const { leftUri, rightUri, resourceUri: diffResourceUri } = createDiffUris(entry, revision, root, options);
     const resourceUri = options.resourceUri ?? diffResourceUri;
+    const canonicalPath = normalizeRepoSeparators(entry.path, options.platform);
 
     const openDiffOnClick = options.openDiffOnClick ?? true;
     const isDeleted = entry.status === 'deleted';
 
-    const diffTitle = `${entry.path} (${isCurrentWorkingCopy ? 'Working Copy' : revision})`;
+    const diffTitle = `${canonicalPath} (${isCurrentWorkingCopy ? 'Working Copy' : revision})`;
 
     const diffCommand: ResourceCommand = {
         command: 'vscode.diff',
@@ -80,6 +85,8 @@ export function createJjResourceState(
 
     flags.push(ScmContextValue.ResourceAllowRestore);
 
+    const isMutableCommit = options.mutableCommit ?? (isCurrentWorkingCopy || Boolean(options.editable));
+
     if (entry.conflicted && options.inConflictGroup) {
         flags.push(ScmContextValue.ResourceAllowOpenMergeEditor);
     } else {
@@ -95,11 +102,15 @@ export function createJjResourceState(
         }
     }
 
+    if (isMutableCommit) {
+        flags.push(ScmContextValue.ResourceAllowSplit);
+    }
+
     const contextValue = flags.join(' ');
 
     return {
         resourceUri,
-        relativePath: entry.path,
+        relativePath: canonicalPath,
         command,
         leftUri,
         rightUri,

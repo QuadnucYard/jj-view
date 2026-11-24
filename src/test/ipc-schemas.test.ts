@@ -21,7 +21,15 @@ import {
 describe('IPC Schemas Unit Tests', () => {
     describe('LogView Schemas', () => {
         it('validates CommitAction enum', () => {
-            const validActions = ['newChild', 'edit', 'squash', 'abandon', 'openCodeForge', 'upload'];
+            const validActions = [
+                'newChild',
+                'edit',
+                'squash',
+                'abandon',
+                'openCodeForge',
+                'upload',
+                'compareWithUploaded',
+            ];
             for (const action of validActions) {
                 expect(CommitActionSchema.safeParse(action).success).toBe(true);
             }
@@ -102,6 +110,36 @@ describe('IPC Schemas Unit Tests', () => {
             expect(
                 LogViewToHostMessageSchema.safeParse({
                     type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'revision', placement: 'onto' },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'revision', placement: 'after' },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'revision', placement: 'before' },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'source', placement: 'after' },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'source', placement: 'before' },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
                     payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'source' },
                 }).success,
             ).toBe(true);
@@ -132,6 +170,12 @@ describe('IPC Schemas Unit Tests', () => {
             expect(
                 LogViewToHostMessageSchema.safeParse({
                     type: 'upload',
+                    payload: { changeId: 'kkmpptxz' },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'compareWithUploaded',
                     payload: { changeId: 'kkmpptxz' },
                 }).success,
             ).toBe(true);
@@ -177,6 +221,36 @@ describe('IPC Schemas Unit Tests', () => {
             ).toBe(false);
             expect(
                 LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'revision', placement: 'invalid' },
+                }).success,
+            ).toBe(false);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: '', targetChangeId: 'b', mode: 'revision' },
+                }).success,
+            ).toBe(false);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: '   ', targetChangeId: 'b', mode: 'revision' },
+                }).success,
+            ).toBe(false);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: '', mode: 'revision' },
+                }).success,
+            ).toBe(false);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
+                    type: 'rebaseCommit',
+                    payload: { sourceChangeId: 'a', targetChangeId: '   ', mode: 'revision' },
+                }).success,
+            ).toBe(false);
+            expect(
+                LogViewToHostMessageSchema.safeParse({
                     type: 'squashCommit',
                     payload: { sourceChangeId: 'a', targetChangeId: 'b', mode: 'invalid' },
                 }).success,
@@ -211,9 +285,47 @@ describe('IPC Schemas Unit Tests', () => {
                         theme: 'default',
                         graphLabelAlignment: 'aligned',
                         hiddenActions: ['edit', 'abandon'],
+                        hasRepository: true,
                     },
                 }).success,
             ).toBe(true);
+            expect(
+                LogViewHostToWebviewMessageSchema.safeParse({
+                    type: 'update',
+                    payload: {
+                        commits: [],
+                        hasRepository: false,
+                    },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewHostToWebviewMessageSchema.safeParse({
+                    type: 'update',
+                    payload: {
+                        commits: [],
+                        hasRepository: true,
+                        errorMessage: 'Failed to invoke jj log',
+                    },
+                }).success,
+            ).toBe(true);
+            expect(
+                LogViewHostToWebviewMessageSchema.safeParse({
+                    type: 'update',
+                    payload: {
+                        commits: [],
+                        hasRepository: 'yes',
+                    },
+                }).success,
+            ).toBe(false);
+            expect(
+                LogViewHostToWebviewMessageSchema.safeParse({
+                    type: 'update',
+                    payload: {
+                        commits: [],
+                        errorMessage: 123,
+                    },
+                }).success,
+            ).toBe(false);
             expect(
                 LogViewHostToWebviewMessageSchema.safeParse({
                     type: 'updateHiddenActions',
@@ -278,6 +390,36 @@ describe('IPC Schemas Unit Tests', () => {
                     payload: { changeId: 'kkmpptxz' },
                 }).success,
             ).toBe(true);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'openCompareWithUploaded',
+                    payload: { changeId: 'kkmpptxz' },
+                }).success,
+            ).toBe(true);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'splitFiles',
+                    payload: { changeId: 'kkmpptxz', paths: ['a.txt', 'b.txt'], placement: 'before' },
+                }).success,
+            ).toBe(true);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'splitFiles',
+                    payload: { changeId: 'kkmpptxz', paths: ['a.txt'], placement: 'after' },
+                }).success,
+            ).toBe(true);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'openFileOnRemote',
+                    payload: { changeId: 'kkmpptxz', path: 'src/app.ts', status: 'modified' },
+                }).success,
+            ).toBe(true);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'copyRemoteFileUrl',
+                    payload: { changeId: 'kkmpptxz', path: 'src/app.ts' },
+                }).success,
+            ).toBe(true);
         });
 
         it('rejects invalid CommitDetailsToHostMessage payloads', () => {
@@ -292,6 +434,24 @@ describe('IPC Schemas Unit Tests', () => {
                 CommitDetailsToHostMessageSchema.safeParse({
                     type: 'openDiff',
                     payload: { changeId: 'kkmpptxz' }, // missing file
+                }).success,
+            ).toBe(false);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'splitFiles',
+                    payload: { changeId: 'kkmpptxz', paths: [], placement: 'before' }, // empty paths
+                }).success,
+            ).toBe(false);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'splitFiles',
+                    payload: { changeId: 'kkmpptxz', paths: ['a.txt'], placement: 'onto' }, // invalid placement
+                }).success,
+            ).toBe(false);
+            expect(
+                CommitDetailsToHostMessageSchema.safeParse({
+                    type: 'openFileOnRemote',
+                    payload: { changeId: 'kkmpptxz' }, // missing path
                 }).success,
             ).toBe(false);
         });

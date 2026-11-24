@@ -1,5 +1,136 @@
 # Changelog
 
+## 3.1.0
+
+### Features
+
+#### Common
+
+- **Commit Details Editor**:
+    - Prompt for an arbitrary revision when running `JJ View: Show Commit Details` without a selection, supporting visible revision picking and revset expressions (#434).
+    - Split selected files into a new commit before (`Split Files Before...`) or after (`Split Files After...`) the target revision via multi-select and a context menu in Commit Details as well as the SCM pane (#612).
+- **Commands & Navigation**:
+    - Add `JJ View: Simplify Parents` (`jj-view.simplifyParents`) to prune redundant parent edges on mutable merge commits and multi-selections (#110).
+    - Add `JJ View: Squash Revision into Parent (Use Destination Message)` and `JJ View: Squash Revision into Ancestor (Use Destination Message)...` (`jj squash -u`) to squash commits while keeping the destination description without opening the squash editor (#669).
+    - Add `JJ View: Restore File from Revision...` (`jj-view.restoreFileFrom`) to the Command Palette, editor, tab, and explorer context menus to restore workspace files from any visible revision (#615).
+    - Add `JJ View: Open File on Remote` (`jj-view.openFileOnRemote`) and `JJ View: Copy Remote File Link` (`jj-view.copyRemoteFileUrl`) to open or copy remote repository URLs for files and line selections (#670).
+    - Add `jj-view.pickChange` to prompt for a change ID (with an optional `revset` argument) for use in `tasks.json` and `launch.json` `${command:jj-view.pickChange}` variables.
+- **Diff & File Viewers**:
+    - Add the `jj-view.editableMutableDiffs` setting (defaulting to `true`) to control whether mutable non-working-copy diffs open as editable or read-only by default, along with `Edit Revision File` (`jj-view.enableDiffEditing`) and `Switch Revision File to Read-Only` (`jj-view.disableDiffEditing`) commands to toggle open revision diffs and file tabs (#671).
+- **Code Forge & Review**:
+    - Compare local changes and commit descriptions directly against uploaded remote revisions across Gerrit, GitHub, GitLab, and custom CLI forges, isolating rebase noise and surfacing inline diff actions in JJ Log and sync banners in Commit Details.
+    - Add `jj-view.codeForge.pollIntervalSeconds` and `jj-view.codeForge.minRefreshIntervalSeconds` settings to control code forge polling frequency and throttle background API usage.
+
+#### Web
+
+- **Standalone App & CLI**:
+    - Add `jj-view update` CLI self-update and in-app web release notifications with SHA-256 verified binary downloads and automatic hot-reload.
+
+### Fixes
+
+#### Common
+
+- **Log View**:
+    - Show theme-adaptive empty and error states in the Log View when no Jujutsu repository is open or when loading commit history fails (#250).
+    - Eliminate duplicate outer scrollbars in the Log View so long commit histories scroll strictly within the commit list container (#397).
+- **Diff & File Viewers**:
+    - Construct full repository filesystem paths for `jj-view://` and `jj-edit://` URIs so modified files in working-copy and revision multi-diff views display as Modified instead of Renamed while preserving genuine rename indicators (#655).
+- **SCM & Repository**:
+    - Preserve literal backslashes (`\`) in POSIX file names across SCM, Commit Details, diff/edit URIs, file decorations, and standalone web/daemon path handling instead of rewriting them as directory separators (#435).
+    - Resolve workspace paths accurately when `workspaceRoot` or ancestor directories contain symlinks without dereferencing tracked leaf symlinks (#323).
+    - Skip recursive sub-repository scans inside virtualized `.citc` workspaces (while continuing to scan non-`.citc` folders) and scope `.citc` fuzzy indexing to modified paths.
+    - Skip no-op status change notifications during unchanged background refreshes and preserve unsaved SCM description edits across working-copy file snapshots.
+
+#### VS Code
+
+- **Explorer Decorations**:
+    - Resolve symlinked directory targets when checking tracked file status so tracked and modified files inside symlinked folders show accurate decorations instead of appearing Ignored (#202).
+
+#### Web
+
+- **Standalone Server**:
+    - Synchronize server shutdown and extend port-rebind retries to eliminate fast `SIGHUP` reload races on macOS.
+
+### Performance
+
+#### Common
+
+- **SCM & Repository**:
+    - Retain static repository and workspace root caches in `JjService` across mutations, deduplicate outside-root `realpath` walks into a single ancestor climb, and bound `RemoteHostFs` realpath caching with an LRU cache.
+
+### Chores & Internal
+
+- **Web & Server Architecture**:
+    - Modularize `internal/server` (`auth`, `assets`, `sse`, `sidecar`, `rpc_dispatch`) and extract tab management, editor workspace, and SCM resource lookup helpers from `App.svelte`.
+- **Testing & CI**:
+    - Stabilize E2E and unit test suites against live OS watchers, shared temp-directory races, transient `ENOENT` windows during file restores, and hunk-expansion checks, and extend `build-outputs` CI artifact retention.
+
+## 3.0.0
+
+### Features
+
+#### Common
+
+- **Log View**:
+    - Support drag-and-drop revision insertion before (`B` / `Shift+B`) or after (`A` / `Shift+A`) a target commit in the log graph, with top/bottom boundary drop indicators and a dynamic `+n children` badge when rebasing descendants (#609).
+    - Add a Sync button (`jj-view.sync`) to the JJ Log title bar and a `jj-view.syncCommand` setting (defaulting to `git fetch`) to synchronize with remotes and refresh repository and Code Forge state.
+- **Commands & Navigation**:
+    - Add `JJ View: Previous Change` (`jj-view.prev`) and `JJ View: Next Change` (`jj-view.next`) commands to step the working copy backward and forward through commit history (#665).
+    - Truncate multi-diff tab titles to 100 characters to prevent overly long commit descriptions from crowding the tab bar (#648).
+- **Code Forge & Review Comments**:
+    - Add a `jj-view.codeForge.enableComments` setting to optionally disable fetching and displaying review comments from code forges (#611).
+    - Add a custom CLI code forge adapter (`jj-view.codeForge.adapterCommand`) to integrate external code review tools via subcommands (`detect`, `statuses`, `upload`, `list-comments`, `reply-comment`, `resolve-comment`).
+    - Adjust inline review comment line numbers automatically across local working-copy edits and patchset drift so comments stay anchored to the right lines.
+
+#### Web
+
+- **Standalone App & Daemon**:
+    - Introduce a standalone `jj-view` binary and web application for Linux, macOS, and Windows (AMD64 and ARM64) that brings the full JJ View experience—SCM pane, Log graph, Commit Details, Command Palette, Quick Pick, Output and Process Monitor views, and multi-repository workspaces—to any browser.
+    - Add a `jj-view config` CLI backed by a 4-layer configuration hierarchy across `.jj-view` and `.vscode` user/workspace settings, plus 42 UI and syntax themes.
+- **Diff, File & Merge Editors**:
+    - Add web diff and file viewers with in-place editing, line-range squashing (`Squash Selection into Parent`), progressive AST `+Block` and drag-peeling hidden line expansion, inline review comment threads, and Quick Open (`Ctrl/Cmd+P`) fuzzy file search.
+    - Add an interactive 3-way merge editor and interactive image diff viewer (2-Up, Swipe, Onion skin, Difference).
+- **Antigravity Sidecar**:
+    - Support running as an Antigravity UI sidecar (`jj-view install-antigravity-plugin`) with a responsive Auxiliary Pane layout, AI agent commit description drafting, and `Ctrl/Cmd+L` selection forwarding to chat.
+
+### Fixes
+
+#### Common
+
+- **Log View**:
+    - Prevent webview-originated `selectionChange` events from echoing `setSelection` back to the webview, fixing a multi-select race condition where Ctrl+clicking multiple commits could reset the selection and hide `New Merge Change`.
+- **Commit Details Editor**:
+    - Forward commit description edits typed into the server-rendered textarea before webview hydration completes so early keystrokes mark the editor dirty and are preserved on save.
+- **Diff & File Viewers**:
+    - Remove leading slashes from repository-relative directory paths in the multi-diff editor (#654).
+- **Code Forge**:
+    - Fix Gerrit upload dirty-state detection across non-colocated repositories, secondary workspaces, immutable parent commits, deleted/renamed files, and `Link:` trailers.
+- **SCM & Repository**:
+    - Support custom Jujutsu backends without `.jj/repo/op_heads/heads` by falling back to watching `.jj/working_copy`.
+
+#### VS Code
+
+- **Authentication**:
+    - Skip silent OAuth session probes when the backing provider extension (such as GitLab Workflow) is not installed, avoiding multi-second delays when opening the authentication quick pick.
+
+### Performance
+
+#### Common
+
+- **Code Forge**:
+    - Halve GitHub GraphQL query cost for non-forked repositories by checking `isFork` before querying the `parent` repository block.
+- **SCM & Repository**:
+    - Memoize `realpath`, revset config, diff content, and concurrent `jj root` lookups in `JjService`, and only clear caches on repository refresh when operation heads actually changed.
+
+### Chores & Internal
+
+- **Release & CI**:
+    - Build and publish standalone multi-platform `jj-view` binaries alongside VSIX packages on tagged releases and prereleases.
+    - Update Playwright to `^1.64.1` for native Ubuntu 26.04 (`ubuntu-latest`) CI runner support.
+- **Testing & Tooling**:
+    - Add Playwright E2E test suites for the standalone web UI and 24fps interaction flow recording utilities, and stabilize E2E tests across 100x repeat runs.
+    - Make `ScopedTestRepo` synchronous disposal wait for directory removal (`rmSync`) so rapid back-to-back test runs never collide with background cleanup.
+
 ## 2.10.0
 
 ### Features

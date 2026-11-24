@@ -10,6 +10,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { match, P } from 'ts-pattern';
 import which from 'which';
+import { formatRootFileFileset } from '../core/jj-service';
+import { isNodeErrorWithCode } from '../utils/error-utils';
 import { recordCommandTrace } from './perf-trace';
 
 function memoize<T>(fn: () => T): () => T {
@@ -25,19 +27,12 @@ function memoize<T>(fn: () => T): () => T {
 }
 
 const tempDirs = new Set<string>();
-const defaultTestConfigFile = path.join(os.tmpdir(), `jj-view-default-config-${process.pid}.toml`);
-try {
-    fs.writeFileSync(
-        defaultTestConfigFile,
-        `user.name = "Test User"
+const TEMP_DIR_RM_OPTIONS: fs.RmOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 50 };
+const DEFAULT_TEST_CONFIG = `user.name = "Test User"
 user.email = "test@example.com"
 signing.backend = "none"
 ui.merge-editor = "builtin"
-`,
-        'utf-8',
-    );
-    tempDirs.add(defaultTestConfigFile);
-} catch {}
+`;
 
 function getUserJjDir(): string {
     if (process.platform === 'win32') {
@@ -105,7 +100,18 @@ export class TestRepo {
     static readonly getGitBinary = memoize((): string => which.sync('git'));
 
     public readonly path: string;
+    private readonly execTmpDir: string;
     private configId?: string;
+
+    private getSubprocessEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
+        return {
+            ...process.env,
+            TMPDIR: this.execTmpDir,
+            TEMP: this.execTmpDir,
+            TMP: this.execTmpDir,
+            ...extra,
+        };
+    }
 
     private ensureRepoConfig(): { configId: string; repoConfigDir: string; configPath: string } {
         const start = process.hrtime.bigint();
@@ -143,9 +149,56 @@ export class TestRepo {
         }
         this.path = fs.realpathSync.native ? fs.realpathSync.native(rawPath) : fs.realpathSync(rawPath);
         tempDirs.add(this.path);
+        this.execTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-view-test-tmp-'));
+        tempDirs.add(this.execTmpDir);
+        fs.writeFileSync(path.join(this.execTmpDir, 'default-config.toml'), DEFAULT_TEST_CONFIG, 'utf-8');
     }
 
     async dispose(): Promise<void> {
+        const repoConfigDir = this.resolveRepoConfigDir();
+
+        for (const dir of [this.path, this.execTmpDir]) {
+            try {
+                await fs.promises.rm(dir, TEMP_DIR_RM_OPTIONS);
+                tempDirs.delete(dir);
+            } catch {}
+        }
+
+        if (repoConfigDir) {
+            const gcStart = process.hrtime.bigint();
+            try {
+                await fs.promises.rm(repoConfigDir, TEMP_DIR_RM_OPTIONS);
+                this.recordRepoConfigGc(repoConfigDir, gcStart);
+            } catch {}
+        }
+    }
+
+    /**
+     * Synchronous variant of {@link dispose}. Used by `using` declarations, which cannot
+     * await their disposer: a fire-and-forget async `rm` would keep deleting files after the
+     * scope (and even the test) has ended, racing with any repository later created at the
+     * same path.
+     */
+    disposeSync(): void {
+        const repoConfigDir = this.resolveRepoConfigDir();
+
+        for (const dir of [this.path, this.execTmpDir]) {
+            try {
+                fs.rmSync(dir, TEMP_DIR_RM_OPTIONS);
+                tempDirs.delete(dir);
+            } catch {}
+        }
+
+        if (repoConfigDir) {
+            const gcStart = process.hrtime.bigint();
+            try {
+                fs.rmSync(repoConfigDir, TEMP_DIR_RM_OPTIONS);
+                this.recordRepoConfigGc(repoConfigDir, gcStart);
+            } catch {}
+        }
+    }
+
+    private resolveRepoConfigDir(): string | undefined {
         if (!this.configId) {
             const configIdFile = path.join(this.path, '.jj', 'repo', 'config-id');
             if (fs.existsSync(configIdFile)) {
@@ -154,36 +207,20 @@ export class TestRepo {
                 } catch {}
             }
         }
+        return this.configId ? path.join(getUserJjDir(), 'repos', this.configId) : undefined;
+    }
 
-        const repoPath = this.path;
-        try {
-            await fs.promises.rm(repoPath, {
-                recursive: true,
-                force: true,
-                maxRetries: 5,
-                retryDelay: 50,
-            });
-        } catch {}
-        tempDirs.delete(repoPath);
-
-        if (this.configId) {
-            const userJjDir = getUserJjDir();
-            const repoConfigDir = path.join(userJjDir, 'repos', this.configId);
-            const gcStart = process.hrtime.bigint();
-            try {
-                await fs.promises.rm(repoConfigDir, { recursive: true, force: true });
-                const duration = Math.max(0, Number(process.hrtime.bigint() - gcStart) / 1_000_000);
-                recordCommandTrace('TestRepo', ['repo-config-gc'], duration);
-            } catch {}
-            tempDirs.delete(repoConfigDir);
-        }
+    private recordRepoConfigGc(repoConfigDir: string, gcStart: bigint): void {
+        tempDirs.delete(repoConfigDir);
+        const duration = Math.max(0, Number(process.hrtime.bigint() - gcStart) / 1_000_000);
+        recordCommandTrace('TestRepo', ['repo-config-gc'], duration);
     }
 
     // POLICY: This method is intentionally private. Do not expose it publicly.
     // Instead, create specific methods for each operation to ensure strictly typed usage
     // and prevent arbitrary command execution in tests.
     private exec(args: string[], options: { trim?: boolean } = {}): { stdout: string; stderr: string } {
-        const env = { ...process.env, JJ_CONFIG: '' };
+        const env = this.getSubprocessEnv({ JJ_CONFIG: '' });
         const jjBinary = TestRepo.getJjBinary();
         const start = process.hrtime.bigint();
         const res = cp.spawnSync(jjBinary, args, {
@@ -240,6 +277,15 @@ export class TestRepo {
         fs.appendFileSync(configPath, `${name} = ${formatTomlValue(value)}\n`, 'utf-8');
     }
 
+    removeConfig(name: string) {
+        const { configPath } = this.ensureRepoConfig();
+        if (!fs.existsSync(configPath)) {
+            return;
+        }
+        const lines = fs.readFileSync(configPath, 'utf-8').split('\n');
+        fs.writeFileSync(configPath, lines.filter((line) => !line.startsWith(`${name} =`)).join('\n'), 'utf-8');
+    }
+
     configBatch(configs: Record<string, string>) {
         const { configPath } = this.ensureRepoConfig();
         let content = '';
@@ -260,14 +306,19 @@ export class TestRepo {
         this.exec(args);
     }
 
-    init() {
-        this.exec(['--config-file', defaultTestConfigFile, 'git', 'init']);
+    init(options?: { colocate?: boolean }) {
+        const defaultConfigFile = path.join(this.execTmpDir, 'default-config.toml');
+        const initArgs = ['--config-file', defaultConfigFile, 'git', 'init'];
+        if (options?.colocate === false) {
+            initArgs.push('--no-colocate');
+        }
+        this.exec(initArgs);
         const { configPath } = this.ensureRepoConfig();
         if (!fs.existsSync(configPath)) {
-            fs.copyFileSync(defaultTestConfigFile, configPath);
+            fs.copyFileSync(defaultConfigFile, configPath);
         } else {
             const existing = fs.readFileSync(configPath, 'utf-8');
-            const defaultContent = fs.readFileSync(defaultTestConfigFile, 'utf-8');
+            const defaultContent = fs.readFileSync(defaultConfigFile, 'utf-8');
             fs.writeFileSync(configPath, `${defaultContent}\n${existing}`, 'utf-8');
         }
     }
@@ -385,6 +436,13 @@ export class TestRepo {
         this.snapshot();
     }
 
+    writeBinaryFile(relativePath: string, content: Uint8Array) {
+        const fullPath = path.join(this.path, relativePath);
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        fs.writeFileSync(fullPath, content);
+        this.snapshot();
+    }
+
     async writeFiles(files: Record<string, string>): Promise<void> {
         await Promise.all(
             Object.entries(files).map(async ([file, content]) => {
@@ -413,9 +471,29 @@ export class TestRepo {
         return fs.readFileSync(path.join(this.path, relativePath), 'utf-8');
     }
 
+    /**
+     * Reads a file relative to the repository root, returning `undefined` when it
+     * does not exist (`ENOENT`, e.g. during a transient unlink+rename window) and
+     * rethrowing any other filesystem error.
+     */
+    readFileIfExists(relativePath: string): string | undefined {
+        try {
+            return this.readFile(relativePath);
+        } catch (err) {
+            if (isNodeErrorWithCode(err, 'ENOENT')) {
+                return undefined;
+            }
+            throw err;
+        }
+    }
+
     getFileContent(revision: string, relativePath: string): string {
-        return this.exec(['file', 'show', '--ignore-working-copy', '-r', revision, relativePath], { trim: false })
-            .stdout;
+        return this.exec(
+            ['file', 'show', '--ignore-working-copy', '-r', revision, '--', formatRootFileFileset(relativePath)],
+            {
+                trim: false,
+            },
+        ).stdout;
     }
 
     getChangeId(revision: string): string {
@@ -633,6 +711,7 @@ export class TestRepo {
         try {
             cp.execFileSync(gitBinary, ['show-ref', '--verify', ref], {
                 cwd: this.path,
+                env: this.getSubprocessEnv(),
                 stdio: 'ignore',
                 windowsHide: true,
             });
@@ -647,6 +726,7 @@ export class TestRepo {
         const output = cp.execFileSync(gitBinary, ['rev-parse', ref], {
             cwd: this.path,
             encoding: 'utf-8',
+            env: this.getSubprocessEnv(),
             windowsHide: true,
         });
         return output.trim();
@@ -658,6 +738,7 @@ export class TestRepo {
             const output = cp.execFileSync(gitBinary, ['show-ref'], {
                 cwd: this.path,
                 encoding: 'utf-8',
+                env: this.getSubprocessEnv(),
                 windowsHide: true,
             });
             const refs = output
@@ -942,7 +1023,7 @@ export async function buildGraph(repo: TestRepo, commits: CommitDefinition[]): P
 
 export class ScopedTestRepo extends TestRepo implements Disposable, AsyncDisposable {
     [Symbol.dispose]() {
-        this.dispose().catch(() => {});
+        this.disposeSync();
     }
 
     async [Symbol.asyncDispose]() {

@@ -3,11 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import * as http from 'node:http';
+import type { CommentRange, CommentSide } from '../../core/code-forge-provider';
 import type { GerritChange } from '../../core/gerrit-provider';
 
 export interface FakeGerritComment {
     id: string;
     line?: number;
+    side?: CommentSide;
+    range?: CommentRange;
     message: string;
     updated: string;
     unresolved?: boolean;
@@ -23,14 +26,19 @@ export class FakeGerritServer {
     public changes = new Map<string, GerritChange>();
     private comments = new Map<number, Record<string, FakeGerritComment[]>>(); // changeNumber -> (filePath -> comments)
     private drafts = new Map<number, Record<string, FakeGerritComment[]>>(); // changeNumber -> (filePath -> drafts)
+    private fileContents = new Map<string, Uint8Array>(); // `${changeNumber}:${revisionId}:${filePath}`
     private server: http.Server | undefined;
     public url = '';
     public requests: string[] = [];
+    public draftRequestBodies: Record<string, unknown>[] = [];
+    /** Every request with its headers, in arrival order. */
+    public requestLog: { url: string; headers: http.IncomingHttpHeaders }[] = [];
     public lastHeaders: http.IncomingHttpHeaders | undefined;
     public failWithStatus: number | undefined;
     public failResponseBody: string | undefined;
     public failDraftsWithStatus: number | undefined;
     public failDraftsResponseBody: string | undefined;
+    public failFileContentWithStatus: number | undefined;
     public emptyDraftResponseBody = false;
 
     private nextChangeNumber = 1000;
@@ -63,6 +71,14 @@ export class FakeGerritServer {
 
     public registerDrafts(changeNumber: number, drafts: Record<string, FakeGerritComment[]>) {
         this.drafts.set(changeNumber, drafts);
+    }
+
+    public registerFileContent(changeNumber: number, revisionId: string, filePath: string, content: Uint8Array) {
+        this.fileContents.set(`${changeNumber}:${revisionId}:${filePath}`, content);
+    }
+
+    public registerTextFileContent(changeNumber: number, revisionId: string, filePath: string, content: string) {
+        this.fileContents.set(`${changeNumber}:${revisionId}:${filePath}`, new TextEncoder().encode(content));
     }
 
     /**
@@ -146,6 +162,8 @@ export class FakeGerritServer {
 
     public clearRequests() {
         this.requests = [];
+        this.draftRequestBodies = [];
+        this.requestLog = [];
         this.lastHeaders = undefined;
     }
 
@@ -153,12 +171,16 @@ export class FakeGerritServer {
         this.changes.clear();
         this.comments.clear();
         this.drafts.clear();
+        this.fileContents.clear();
         this.requests = [];
+        this.draftRequestBodies = [];
+        this.requestLog = [];
         this.lastHeaders = undefined;
         this.failWithStatus = undefined;
         this.failResponseBody = undefined;
         this.failDraftsWithStatus = undefined;
         this.failDraftsResponseBody = undefined;
+        this.failFileContentWithStatus = undefined;
         this.emptyDraftResponseBody = false;
         this.nextChangeNumber = 1000;
     }
@@ -168,6 +190,7 @@ export class FakeGerritServer {
             res.setHeader('Connection', 'close');
             const urlStr = req.url || '';
             this.requests.push(urlStr);
+            this.requestLog.push({ url: urlStr, headers: req.headers });
             this.lastHeaders = req.headers;
 
             if (this.failWithStatus) {
@@ -211,10 +234,13 @@ export class FakeGerritServer {
                         const incoming = JSON.parse(body) as {
                             path: string;
                             line?: number;
+                            side?: CommentSide;
+                            range?: CommentRange;
                             message?: string;
                             in_reply_to?: string;
                             unresolved?: boolean;
                         };
+                        this.draftRequestBodies.push(incoming);
 
                         const currentDrafts = this.drafts.get(changeNumber) || {};
                         const filePath = incoming.path;
@@ -224,6 +250,8 @@ export class FakeGerritServer {
                         const newDraft: FakeGerritComment = {
                             id: `draft-${Date.now()}-${Math.random()}`,
                             line: incoming.line,
+                            side: incoming.side,
+                            range: incoming.range,
                             message: incoming.message || '',
                             updated: new Date().toISOString(),
                             unresolved: incoming.unresolved,
@@ -303,6 +331,28 @@ export class FakeGerritServer {
                     });
                     return;
                 }
+            }
+
+            const fileContentMatch = urlStr.match(/\/changes\/(\d+)\/revisions\/([^/]+)\/files\/(.+)\/content$/);
+            if (fileContentMatch && req.method === 'GET') {
+                if (this.failFileContentWithStatus) {
+                    res.writeHead(this.failFileContentWithStatus);
+                    res.end('Error');
+                    return;
+                }
+                const changeNumber = parseInt(fileContentMatch[1], 10);
+                const revisionId = decodeURIComponent(fileContentMatch[2]);
+                const encodedPath = fileContentMatch[3];
+                const filePath = encodedPath === '%2FCOMMIT_MSG' ? '/COMMIT_MSG' : decodeURIComponent(encodedPath);
+                const bytes = this.fileContents.get(`${changeNumber}:${revisionId}:${filePath}`);
+                if (!bytes) {
+                    res.writeHead(404);
+                    res.end('Not Found');
+                    return;
+                }
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end(`${Buffer.from(bytes).toString('base64')}\n`);
+                return;
             }
 
             if (urlStr.includes('/changes/')) {

@@ -79,25 +79,14 @@ describe('JjEditFsService Unit Tests', () => {
             }
         };
         const fs = repository.jj.system.fs;
-        if (target === '@') {
-            const read = fs.readBinaryFile.bind(fs);
-            vi.spyOn(fs, 'readBinaryFile').mockImplementation(async (file) => {
-                const content = await read(file);
-                if (file.endsWith('file.txt')) {
-                    await pause();
-                }
-                return content;
-            });
-        } else {
-            const read = fs.readTextFile.bind(fs);
-            vi.spyOn(fs, 'readTextFile').mockImplementation(async (file) => {
-                const content = await read(file);
-                if (file.endsWith('file.txt')) {
-                    await pause();
-                }
-                return content;
-            });
-        }
+        const read = fs.readBinaryFile.bind(fs);
+        vi.spyOn(fs, 'readBinaryFile').mockImplementation(async (file) => {
+            const content = await read(file);
+            if (file.endsWith('file.txt')) {
+                await pause();
+            }
+            return content;
+        });
         const reading = service.readFile(uri);
         await started;
         const saving = service.writeFile(uri, new TextEncoder().encode('new editor source\n'));

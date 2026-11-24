@@ -28,7 +28,10 @@ type SandboxManager struct {
 	allowedRoots  []string
 	repoRoot      string
 	daemonTempDir string
+	indexMu       sync.Mutex
+	fileIndex     map[string]*fileIndexCacheEntry
 }
+
 func appendIfMissing(slice []string, val string) []string {
 	clean := filepath.Clean(val)
 	for _, s := range slice {
@@ -50,6 +53,41 @@ func appendRoot(roots []string, r string) []string {
 	roots = appendIfMissing(roots, abs)
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil && resolved != abs {
 		roots = appendIfMissing(roots, resolved)
+	}
+
+	// If abs is a JJ workspace whose .jj/repo is a pointer file to a shared
+	// repository (e.g. `jj workspace add`), allow the target .jj/repo and its
+	// backing git store (store/git_target) so git/jj config and ref reads work.
+	jjRepoPath := filepath.Join(abs, ".jj", "repo")
+	repoDir := jjRepoPath
+	if info, err := os.Stat(jjRepoPath); err == nil && !info.IsDir() {
+		if data, err := os.ReadFile(jjRepoPath); err == nil {
+			target := strings.TrimSpace(string(data))
+			if target != "" {
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(jjRepoPath), target)
+				}
+				repoDir = filepath.Clean(target)
+				roots = appendIfMissing(roots, repoDir)
+				if resolved, err := filepath.EvalSymlinks(repoDir); err == nil && resolved != repoDir {
+					roots = appendIfMissing(roots, resolved)
+				}
+			}
+		}
+	}
+	gitTargetFile := filepath.Join(repoDir, "store", "git_target")
+	if data, err := os.ReadFile(gitTargetFile); err == nil {
+		target := strings.TrimSpace(string(data))
+		if target != "" {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(gitTargetFile), target)
+			}
+			gitDir := filepath.Clean(target)
+			roots = appendIfMissing(roots, gitDir)
+			if resolved, err := filepath.EvalSymlinks(gitDir); err == nil && resolved != gitDir {
+				roots = appendIfMissing(roots, resolved)
+			}
+		}
 	}
 	return roots
 }
@@ -138,12 +176,32 @@ func (sm *SandboxManager) AddAllowedRoot(root string) {
 	sm.allowedRoots = appendRoot(sm.allowedRoots, root)
 }
 
+// AllowedRoots returns a copy of all currently allowed sandbox root directories.
+func (sm *SandboxManager) AllowedRoots() []string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	out := make([]string, len(sm.allowedRoots))
+	copy(out, sm.allowedRoots)
+	return out
+}
+
 func (sm *SandboxManager) isAllowed(p string, roots []string) bool {
 	cleanP := filepath.Clean(p)
 	for _, root := range roots {
 		cleanRoot := filepath.Clean(root)
 		rel, err := filepath.Rel(cleanRoot, cleanP)
 		if err == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// isRoot reports whether p is exactly one of the allowed roots (after Clean).
+func (sm *SandboxManager) isRoot(p string, roots []string) bool {
+	cleanP := filepath.Clean(p)
+	for _, root := range roots {
+		if filepath.Clean(root) == cleanP {
 			return true
 		}
 	}
@@ -219,8 +277,11 @@ func (sm *SandboxManager) validatePathInternal(path string, resolveSymlinks bool
 				parent = filepath.Dir(parent)
 			}
 		}
-	} else {
-		// When not resolving the symlink itself (Lstat/Rm), verify ancestor directory symlinks
+	} else if !sm.isRoot(absPath, roots) {
+		// When not resolving the symlink itself (Lstat/Rm), verify ancestor
+		// directory symlinks. An allowed root's own parent is outside the
+		// sandbox by construction, so the check only applies to paths strictly
+		// below a root; without this guard Exists(<root>) always reports false.
 		parent := filepath.Dir(absPath)
 		if parent != absPath {
 			resolvedParent, err := filepath.EvalSymlinks(parent)
@@ -252,7 +313,11 @@ func (sm *SandboxManager) WriteFile(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(validated, data, 0644)
+	if err := os.WriteFile(validated, data, 0644); err != nil {
+		return err
+	}
+	sm.InvalidateFileIndex()
+	return nil
 }
 
 // Mkdir creates a directory at path.
@@ -261,10 +326,16 @@ func (sm *SandboxManager) Mkdir(path string, recursive bool) error {
 	if err != nil {
 		return err
 	}
+	var mkdirErr error
 	if recursive {
-		return os.MkdirAll(validated, 0755)
+		mkdirErr = os.MkdirAll(validated, 0755)
+	} else {
+		mkdirErr = os.Mkdir(validated, 0755)
 	}
-	return os.Mkdir(validated, 0755)
+	if mkdirErr == nil {
+		sm.InvalidateFileIndex()
+	}
+	return mkdirErr
 }
 
 // Stat retrieves metadata about path following symlinks.
@@ -412,7 +483,10 @@ func (sm *SandboxManager) Rm(path string, recursive bool, force bool) error {
 	}
 
 	if force && rmErr != nil && os.IsNotExist(rmErr) {
-		return nil
+		rmErr = nil
+	}
+	if rmErr == nil {
+		sm.InvalidateFileIndex()
 	}
 	return rmErr
 }

@@ -18,6 +18,14 @@ import type { Uri } from './uri-utils';
 interface RefreshPayload {
     forceSnapshot: boolean;
     reasons: Set<string>;
+    skipIfOpUnchanged: boolean;
+}
+
+function sameSortedList(a: readonly string[], b: readonly string[] | undefined): boolean {
+    if (!b || a.length !== b.length) {
+        return false;
+    }
+    return a.every((value, index) => value === b[index]);
 }
 
 export class JjRepository implements Disposable {
@@ -26,6 +34,8 @@ export class JjRepository implements Disposable {
     private readonly _codeForge: CodeForgeService;
     private readonly _onDidStatusChange = new AsyncEventEmitter<{ reason: string }>();
     private readonly _refreshQueue: DebouncingQueue<RefreshPayload>;
+    /** Operation heads observed at the end of the last refresh; undefined until the first refresh. */
+    private _lastOpHeads: string[] | undefined;
 
     readonly onDidStatusChange = this._onDidStatusChange.event;
 
@@ -55,18 +65,31 @@ export class JjRepository implements Disposable {
 
                 this._isValid = undefined;
                 try {
-                    await this._jj.clearCache();
                     if (options?.forceSnapshot) {
-                        await this._jj.status();
+                        await this._jj.snapshotWorkingCopy();
                     }
-                    await this._jj.getRepoRoot(); // Warm the cache
+
+                    // Only invalidate caches when the operation log actually advanced
+                    // (snapshot recorded edits, or an external jj command ran). This keeps
+                    // warmed diff caches alive across no-op refreshes such as startup,
+                    // window focus, and spurious watcher events.
+                    const hadPreviousOpHeads = this._lastOpHeads !== undefined;
+                    const heads = await this._jj.getOperationHeads().catch(() => undefined);
+                    const changed = heads === undefined || !sameSortedList(heads, this._lastOpHeads);
+                    this._lastOpHeads = heads;
+                    if (changed) {
+                        await this._jj.clearCache();
+                        await this._jj.getRepoRoot(); // Warm the cache
+                    }
+
+                    const shouldSkipStatusEvent = Boolean(options?.skipIfOpUnchanged && hadPreviousOpHeads && !changed);
 
                     const duration = performance.now() - start;
                     outputChannel.info?.(
-                        `[timing] [Snapshot] refresh took ${duration.toFixed(0)}ms (reason: ${reason})`,
+                        `[timing] [Snapshot] refresh took ${duration.toFixed(0)}ms (reason: ${reason}, ops ${changed ? 'changed' : 'unchanged'}${shouldSkipStatusEvent ? ', skipped status event' : ''})`,
                     );
 
-                    if (!this._disposed) {
+                    if (!this._disposed && !shouldSkipStatusEvent) {
                         await this._onDidStatusChange.fire({ reason });
                     }
                 } catch (err) {
@@ -84,6 +107,7 @@ export class JjRepository implements Disposable {
                 mergePayloads: (prev, next) => ({
                     forceSnapshot: prev.forceSnapshot || next.forceSnapshot,
                     reasons: new Set([...prev.reasons, ...next.reasons]),
+                    skipIfOpUnchanged: Boolean(prev.skipIfOpUnchanged && next.skipIfOpUnchanged),
                 }),
                 logger: outputChannel,
             },
@@ -97,6 +121,7 @@ export class JjRepository implements Disposable {
                 const payload: RefreshPayload = {
                     forceSnapshot: !!options?.forceSnapshot,
                     reasons: options?.reason ? new Set([options.reason]) : new Set(),
+                    skipIfOpUnchanged: !!options?.skipIfOpUnchanged,
                 };
                 try {
                     await this._refreshQueue.push(payload);
@@ -126,8 +151,8 @@ export class JjRepository implements Disposable {
 
     private _disposed = false;
     private _isValid: boolean | undefined;
-    async isValid(): Promise<boolean> {
-        if (this._isValid !== undefined) {
+    async isValid(options?: { force?: boolean }): Promise<boolean> {
+        if (!options?.force && this._isValid !== undefined) {
             return this._isValid;
         }
         const hostFs = this.host.system?.fs;
@@ -139,13 +164,16 @@ export class JjRepository implements Disposable {
         return this._isValid;
     }
 
-    async refresh(options: { forceSnapshot?: boolean; reason?: string } = {}): Promise<void> {
+    async refresh(
+        options: { forceSnapshot?: boolean; reason?: string; skipIfOpUnchanged?: boolean } = {},
+    ): Promise<void> {
         if (this._disposed) {
             return;
         }
         const payload: RefreshPayload = {
             forceSnapshot: !!options.forceSnapshot,
             reasons: options.reason ? new Set([options.reason]) : new Set(),
+            skipIfOpUnchanged: !!options.skipIfOpUnchanged,
         };
         this._refreshQueue.push(payload);
         return this._refreshQueue.flush();

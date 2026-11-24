@@ -3,7 +3,6 @@
   SPDX-License-Identifier: Apache-2.0
 -->
 <script lang="ts">
-import { onDestroy } from 'svelte';
 import type { JjResourceState } from '../../../src/core/scm-resource-state';
 import type { IContextKeyService } from '../menu/context-key-service';
 import type { MenuRegistry } from '../menu/menu-registry';
@@ -47,11 +46,11 @@ const displayPath = $derived.by(() => {
     }
     const fullPath = resourceState.resourceUri.path || '';
     if (workspaceRoot && fullPath.startsWith(workspaceRoot)) {
-        return fullPath.slice(workspaceRoot.length).replace(/^[/\\]+/, '');
+        return fullPath.slice(workspaceRoot.length).replace(/^\/+/, '');
     }
     return fullPath;
 });
-const segments = $derived(displayPath.split(/[/\\]/));
+const segments = $derived(displayPath.split('/'));
 const fileName = $derived(segments[segments.length - 1] || displayPath);
 const dirName = $derived(segments.slice(0, -1).filter(Boolean).join('/'));
 
@@ -83,33 +82,19 @@ const vscodeContext = $derived(
         resourceState,
     }),
 );
-let clickTimer: ReturnType<typeof setTimeout> | null = null;
-
 function handleClick(): void {
-    if (clickTimer) {
-        clearTimeout(clickTimer);
-        clickTimer = null;
+    if (typeof console !== 'undefined' && console.log) {
+        console.log(`[Perf:SCM] Clicked resource "${fileName}" (preview: true)`);
     }
-    clickTimer = setTimeout(() => {
-        onOpen(resourceState, { preview: true });
-        clickTimer = null;
-    }, 200);
+    onOpen(resourceState, { preview: true });
 }
 
+// VS Code list semantics: the single click has already opened the preview
+// by the time dblclick fires; this second open just pins that same tab.
+// The click is deliberately not delayed to disambiguate.
 function handleDblClick(): void {
-    if (clickTimer) {
-        clearTimeout(clickTimer);
-        clickTimer = null;
-    }
     onOpen(resourceState, { preview: false });
 }
-
-onDestroy(() => {
-    if (clickTimer) {
-        clearTimeout(clickTimer);
-        clickTimer = null;
-    }
-});
 </script>
 
 <div
@@ -124,10 +109,6 @@ onDestroy(() => {
     ondblclick={handleDblClick}
     onkeydown={(e) => {
         if (e.key === 'Enter') {
-            if (clickTimer) {
-                clearTimeout(clickTimer);
-                clickTimer = null;
-            }
             onOpen(resourceState, { preview: false });
         }
     }}

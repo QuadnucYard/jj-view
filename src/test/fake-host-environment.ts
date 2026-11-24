@@ -18,6 +18,7 @@ import type {
     HostDocuments,
     HostEnvironment,
     HostExtensions,
+    HostHttp,
     HostNavigation,
     HostOpenOptions,
     HostSecrets,
@@ -29,11 +30,13 @@ import type {
     HostWorkspace,
     HostWorkspaceFolder,
     HostWorkspaceFoldersChangeEvent,
+    MultiDiffResource,
 } from '../core/host/host-environment';
 import type { HostSystem } from '../core/host/host-system';
 import { NodeHostSystem } from '../core/host/node-host-system';
 import type { JjRepository } from '../core/jj-repository';
 import type { Uri } from '../core/uri-utils';
+import { NodeHostHttp } from '../utils/node-host-http';
 import type { LoggerChannel } from '../utils/output-channel';
 
 export class FakeHostUi implements HostUi {
@@ -205,7 +208,7 @@ export class FakeHostNavigation implements HostNavigation {
     public diffsOpened: { leftUri: Uri; rightUri: Uri; title: string; options?: HostOpenOptions }[] = [];
     public multiDiffsOpened: {
         title: string;
-        resources: { leftUri: Uri; rightUri: Uri; label: string }[];
+        resources: MultiDiffResource[];
         options?: HostOpenOptions;
     }[] = [];
     public mergeEditorsOpened: Uri[] = [];
@@ -230,11 +233,7 @@ export class FakeHostNavigation implements HostNavigation {
         this.diffsOpened.push({ leftUri, rightUri, title, options });
     }
 
-    async openMultiDiff(
-        title: string,
-        resources: { leftUri: Uri; rightUri: Uri; label: string }[],
-        options?: HostOpenOptions,
-    ): Promise<void> {
+    async openMultiDiff(title: string, resources: MultiDiffResource[], options?: HostOpenOptions): Promise<void> {
         this.multiDiffsOpened.push({ title, resources, options });
     }
 
@@ -512,6 +511,10 @@ export class FakeHostSecrets implements HostSecrets {
         return this.secrets.get(key);
     }
 
+    async has(key: string): Promise<boolean> {
+        return this.secrets.has(key);
+    }
+
     async store(key: string, value: string): Promise<void> {
         this.secrets.set(key, value);
         this._onDidChange.fire({ key });
@@ -614,9 +617,10 @@ export class FakeHostEnvironment implements HostEnvironment {
     readonly nav: FakeHostNavigation;
     readonly config: FakeHostConfig;
     readonly documents: FakeHostDocuments;
-    readonly storage: FakeHostStorage;
+    public storage: FakeHostStorage;
     readonly secrets: FakeHostSecrets;
     readonly auth: FakeHostAuth;
+    public http: HostHttp;
     readonly commands: FakeHostCommands;
     readonly views: FakeHostViews;
     readonly workspace: FakeHostWorkspace;
@@ -631,6 +635,7 @@ export class FakeHostEnvironment implements HostEnvironment {
         this.storage = new FakeHostStorage();
         this.secrets = new FakeHostSecrets();
         this.auth = new FakeHostAuth();
+        this.http = new NodeHostHttp(this.secrets);
         this.commands = new FakeHostCommands();
         this.views = new FakeHostViews();
         this.workspace = new FakeHostWorkspace();

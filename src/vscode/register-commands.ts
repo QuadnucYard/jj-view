@@ -4,6 +4,7 @@
  */
 
 import * as vscode from 'vscode';
+import { MANUAL_REFRESH_REASON } from '../core/code-forge-service';
 import { abandonCommand } from '../core/commands/abandon';
 import { abandonDescendantsCommand } from '../core/commands/abandon-descendants';
 import { absorbCommand } from '../core/commands/absorb';
@@ -25,6 +26,7 @@ import { commitCommand } from '../core/commands/commit';
 import { commitPromptCommand } from '../core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../core/commands/compare-file-with-revision';
+import { compareWithUploadedCommand } from '../core/commands/compare-with-uploaded';
 import { copyNameCommand, copyWorkspacePathCommand, createCopyBadgePayload } from '../core/commands/copy-badge';
 import { copyRelativePathCommand, createCopyRelativePathPayload } from '../core/commands/copy-relative-path';
 import { setDescriptionCommand } from '../core/commands/describe';
@@ -40,12 +42,19 @@ import { showMultiFileDiffCommand } from '../core/commands/multi-diff';
 import { newCommand } from '../core/commands/new';
 import { newAfterCommand } from '../core/commands/new-after';
 import { newBeforeCommand } from '../core/commands/new-before';
+import { nextCommand } from '../core/commands/next';
 import { openChangesCommand, openFileCommand } from '../core/commands/open';
+import { pickChangeCommand } from '../core/commands/pick-change';
+import { prevCommand } from '../core/commands/prev';
 import { createPushRefPayload, pushRefCommand, pushRefToRemoteCommand } from '../core/commands/push-ref';
 import { rebaseOntoSelectedCommand } from '../core/commands/rebase';
 import { redoCommand } from '../core/commands/redo';
 import { refreshCommand } from '../core/commands/refresh';
+import { copyRemoteFileUrlCommand, openFileOnRemoteCommand } from '../core/commands/remote-file-url';
 import { restoreCommand } from '../core/commands/restore';
+import { restoreFileFromRevisionCommand } from '../core/commands/restore-file-from-revision';
+import { simplifyParentsCommand } from '../core/commands/simplify-parents';
+import { splitFilesAfterCommand, splitFilesBeforeCommand } from '../core/commands/split-files';
 import { squashDescendantsCommand } from '../core/commands/squash-descendants';
 import {
     squashFilesIntoAncestorCommand,
@@ -55,16 +64,20 @@ import {
 import {
     completeSquashRevisionCommand,
     squashRevisionIntoAncestorCommand,
+    squashRevisionIntoAncestorKeepMessageCommand,
     squashRevisionIntoParentCommand,
+    squashRevisionIntoParentKeepMessageCommand,
 } from '../core/commands/squash-revision';
 import {
     squashHunkIntoParentCommand,
     squashSelectionIntoAncestorCommand,
     squashSelectionIntoParentCommand,
 } from '../core/commands/squash-selection';
+import { syncCommand } from '../core/commands/sync';
 import { createTagCommand } from '../core/commands/tag-create';
 import { deleteTagCommand } from '../core/commands/tag-delete';
 import { createCreateTagPayload, createDeleteTagPayload } from '../core/commands/tag-payload';
+import { disableDiffEditingCommand, enableDiffEditingCommand } from '../core/commands/toggle-diff-editable';
 import { undoCommand } from '../core/commands/undo';
 import { uploadCommand } from '../core/commands/upload';
 import { uploadStackCommand } from '../core/commands/upload-stack';
@@ -105,6 +118,7 @@ import {
 import { createCommitPayload, createCommitPromptPayload } from './payloads/commit.payload';
 import { createCompareAllFilesWithRevisionPayload } from './payloads/compare-all-files-with-revision.payload';
 import { createCompareFileWithRevisionPayload } from './payloads/compare-file-with-revision.payload';
+import { createCompareWithUploadedPayload } from './payloads/compare-with-uploaded.payload';
 import { createCompleteSquashRevisionPayload } from './payloads/complete-squash-revision.payload';
 import { createDescribePromptPayload, createSetDescriptionPayload } from './payloads/describe.payload';
 import { createShowDetailsPayload } from './payloads/details.payload';
@@ -119,8 +133,13 @@ import { createNewAfterPayload } from './payloads/new-after.payload';
 import { createNewBeforePayload } from './payloads/new-before.payload';
 import { createOpenChangesPayload } from './payloads/open-changes.payload';
 import { createOpenFilePayload } from './payloads/open-file.payload';
+import { createPickChangePayload } from './payloads/pick-change.payload';
 import { createRebaseOntoSelectedPayload } from './payloads/rebase.payload';
+import { createRemoteFileUrlPayload } from './payloads/remote-file-url.payload';
 import { createRestorePayload } from './payloads/restore.payload';
+import { createRestoreFileFromRevisionPayload } from './payloads/restore-file-from-revision.payload';
+import { createSimplifyParentsPayload } from './payloads/simplify-parents.payload';
+import { createSplitFilesPayload } from './payloads/split-files.payload';
 import {
     createSquashFilesIntoAncestorPayload,
     createSquashFilesIntoChildPayload,
@@ -134,6 +153,7 @@ import {
     createSquashHunkIntoParentPayload,
     createSquashSelectionIntoParentPayload,
 } from './payloads/squash-selection.payload';
+import { createToggleDiffEditablePayload } from './payloads/toggle-diff-editable.payload';
 import { createUploadPayload, createUploadStackPayload } from './payloads/upload.payload';
 import { createViewFileAtRevisionPayload } from './payloads/view-file-at-revision.payload';
 import { createWorkspaceDeletePayload } from './payloads/workspace-delete.payload';
@@ -284,9 +304,19 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             squashRevisionIntoParentCommand,
         ),
         registerCommandWithPayload(
+            'jj-view.squashRevisionIntoParentKeepMessage',
+            createSquashRevisionIntoParentPayload,
+            squashRevisionIntoParentKeepMessageCommand,
+        ),
+        registerCommandWithPayload(
             'jj-view.squashRevisionIntoAncestor',
             createSquashRevisionIntoAncestorPayload,
             squashRevisionIntoAncestorCommand,
+        ),
+        registerCommandWithPayload(
+            'jj-view.squashRevisionIntoAncestorKeepMessage',
+            createSquashRevisionIntoAncestorPayload,
+            squashRevisionIntoAncestorKeepMessageCommand,
         ),
         registerCommandWithPayload(
             'jj-view.completeSquashRevision',
@@ -307,18 +337,32 @@ export function registerCommands(options: RegisterCommandsOptions): void {
         ),
         registerCommand('jj-view.refresh', refreshCommand),
         registerCommandWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand),
+        registerCommandWithPayload(
+            'jj-view.enableDiffEditing',
+            createToggleDiffEditablePayload,
+            enableDiffEditingCommand,
+        ),
+        registerCommandWithPayload(
+            'jj-view.disableDiffEditing',
+            createToggleDiffEditablePayload,
+            disableDiffEditingCommand,
+        ),
         registerCommandWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand),
         registerCommandWithPayload('jj-view.copyRelativePath', createCopyRelativePathPayload, copyRelativePathCommand),
         registerCommandWithPayload('jj-view.copyName', createCopyBadgePayload, copyNameCommand),
         registerCommandWithPayload('jj-view.copyWorkspacePath', createCopyBadgePayload, copyWorkspacePathCommand),
+        registerCommandWithPayload('jj-view.pickChange', createPickChangePayload, pickChangeCommand),
         registerCommand('jj-view.undo', undoCommand),
         registerCommand('jj-view.redo', redoCommand),
+        registerCommand('jj-view.prev', prevCommand),
+        registerCommand('jj-view.next', nextCommand),
         registerCommandWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand),
         registerCommandWithPayload('jj-view.edit', createEditPayload, editCommand),
         registerCommandWithPayload('jj-view.newBefore', createNewBeforePayload, newBeforeCommand),
         registerCommandWithPayload('jj-view.newAfter', createNewAfterPayload, newAfterCommand),
         registerCommandWithPayload('jj-view.upload', createUploadPayload, uploadCommand),
         registerCommandWithPayload('jj-view.uploadStack', createUploadStackPayload, uploadStackCommand),
+        registerCommand('jj-view.sync', syncCommand),
         registerCommandWithPayload('jj-view.setBookmark', createSetBookmarkPayload, setBookmarkCommand),
         registerCommandWithPayload('jj-view.advanceBookmark', createAdvanceBookmarkPayload, advanceBookmarkCommand),
         registerCommandWithPayload(
@@ -340,6 +384,11 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             showMultiFileDiffCommand,
         ),
         registerCommandWithPayload(
+            'jj-view.compareWithUploaded',
+            createCompareWithUploadedPayload,
+            compareWithUploadedCommand,
+        ),
+        registerCommandWithPayload(
             'jj-view.compareWithWorkingCopy',
             createCompareAllFilesWithRevisionPayload,
             compareAllFilesWithRevisionCommand,
@@ -353,6 +402,11 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             'jj-view.viewFileAtRevision',
             createViewFileAtRevisionPayload,
             viewFileAtRevisionCommand,
+        ),
+        registerCommandWithPayload(
+            'jj-view.restoreFileFrom',
+            createRestoreFileFromRevisionPayload,
+            restoreFileFromRevisionCommand,
         ),
         registerCommand('jj-view.workspaceAdd', workspaceAddCommand),
         registerCommandWithPayload('jj-view.workspaceRefresh', createWorkspaceNamePayload, workspaceRefreshCommand),
@@ -384,6 +438,7 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             createRebaseOntoSelectedPayload,
             rebaseOntoSelectedCommand,
         ),
+        registerCommandWithPayload('jj-view.simplifyParents', createSimplifyParentsPayload, simplifyParentsCommand),
         registerCommandWithPayload(
             'jj-view.squashFilesIntoParent',
             createSquashFilesIntoParentPayload,
@@ -399,6 +454,10 @@ export function registerCommands(options: RegisterCommandsOptions): void {
             createSquashFilesIntoChildPayload,
             squashFilesIntoChildCommand,
         ),
+        registerCommandWithPayload('jj-view.splitFilesBefore', createSplitFilesPayload, splitFilesBeforeCommand),
+        registerCommandWithPayload('jj-view.splitFilesAfter', createSplitFilesPayload, splitFilesAfterCommand),
+        registerCommandWithPayload('jj-view.openFileOnRemote', createRemoteFileUrlPayload, openFileOnRemoteCommand),
+        registerCommandWithPayload('jj-view.copyRemoteFileUrl', createRemoteFileUrlPayload, copyRemoteFileUrlCommand),
     );
 
     for (const actionId of TOGGLEABLE_COMMIT_ACTIONS) {
@@ -416,12 +475,12 @@ export function registerCommands(options: RegisterCommandsOptions): void {
     }
 
     const refreshDisposable = vscode.commands.registerCommand('jj-view.refreshGraph', async () => {
-        await logWebviewProvider.controller.refresh();
+        await logWebviewProvider.controller.refresh(MANUAL_REFRESH_REASON);
     });
     context.subscriptions.push(refreshDisposable);
 
     const refreshCmd = vscode.commands.registerCommand('jj-view.refreshLog', () =>
-        logWebviewProvider.controller.refresh(),
+        logWebviewProvider.controller.refresh(MANUAL_REFRESH_REASON),
     );
     context.subscriptions.push(refreshCmd);
 }

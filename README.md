@@ -83,6 +83,7 @@ _Multi-File Diff editor reviewing changes across revisions (Theme: Autumn)._
 **JJ View** integrates with popular code forge providers to bring pull requests, merge requests, and code reviews directly into VS Code:
 
 - **🤖 Gerrit Integration**: Displays current Gerrit status (e.g. Active, Merged) and provides direct links to CLs. Auto-detects from `.gitreview` or git remotes.
+- **🔄 Unuploaded Changes Diff**: When a local revision differs from the remote patchset, click the diff button or context menu to inspect local modifications against the uploaded revision in the multi-file diff editor (including commit description diffs while isolating unrelated upstream rebase changes).
 - **🐱 GitHub Integration**: Displays PR status (Open, Merged, Draft), checks mergeability, and tracks unresolved comment counts. Supports uploading changes via SCM actions.
 - **🦊 GitLab Integration**: Displays Merge Request status, checks mergeability, and tracks unresolved comments for GitLab and self-hosted instances.
 - **💬 Review Discussions & Inline Comments**:
@@ -124,7 +125,7 @@ The extension automatically refreshes the view when:
 
 - `JJ View: Refresh`: Refresh the current status and log.
 - `JJ View: Show Current Change`: Focus the graph on the current working copy change.
-- `JJ View: Show Details`: Open a dedicated panel with full details of the selected commit.
+- `JJ View: Show Details`: Open a dedicated panel with full details of the selected commit, or prompt for an arbitrary revision when invoked from the Command Palette.
 - `JJ View: Show Repository in JJ Log`: Focus the repository in the JJ Log view.
 - `JJ View: Focus SCM Description Input`: Focus the description input field in the Source Control view.
 - `JJ View: Undo`: Undo the last `jj` operation.
@@ -136,35 +137,82 @@ The extension automatically refreshes the view when:
 - `JJ View: New`: Create a new empty change at the current head.
 - `JJ View: New Before`: Create a new change _before_ the current revisions (inserts a new parent).
 - `JJ View: New After`: Create a new change _after_ the current revisions (inserts a new child).
+- `JJ View: Previous Change`: Move the working copy to the previous change (`jj prev`).
+- `JJ View: Next Change`: Move the working copy to the next change (`jj next`).
 - `JJ View: Edit`: Edit a specific revision.
 - `JJ View: Duplicate`: Duplicate a change.
 - `JJ View: Abandon`: Abandon (delete) a change.
 - `JJ View: Discard Change`: Discard all files within a change in the SCM view.
 - `JJ View: Restore`: Restore files in the working copy.
+- `JJ View: Restore File from Revision...`: Restore a specific file in the working copy from a selected revision.
 - `JJ View: Set Description`: Edit the description of the current change.
 - `JJ View: Set Description (Prompt)`: Edit the description of the current change using an interactive prompt.
 - `JJ View: Upload`: Upload the current change (runs configured upload command).
 - `JJ View: Upload Stack`: Upload the current stack of changes (chains PRs/MRs on GitHub/GitLab).
+- `JJ View: Sync`: Sync the repository with remotes (runs configured sync command).
 - `JJ View: Set Bookmark`: Create or move a bookmark to a specific revision.
 - `JJ View: Delete Bookmark`: Delete a bookmark.
 - `JJ View: Commit`: Commit the current changes in the working copy (Ctrl+Enter in SCM input).
 - `JJ View: Commit (Prompt)`: Commit the current changes in the working copy, prompting for a description message first.
 - `JJ View: Open File in Working Copy`: Open the file in the working copy.
+- `JJ View: Edit Revision File`: Switch a read-only revision file or diff view (`jj-view://`) to editable mode (`jj-edit://`) for mutable commits.
+- `JJ View: Switch Revision File to Read-Only`: Save pending changes and switch an editable revision file or diff view (`jj-edit://`) back to read-only mode (`jj-view://`).
 - `JJ View: Open Changes`: Open the diff view for a file.
 - `JJ View: Add Workspace`: Create a new `jj` workspace.
 - `JJ View: Forget Workspace`: Forget a workspace without deleting its directory.
 - `JJ View: Delete Workspace Directory`: Forget a workspace and delete its directory from disk.
 - `JJ View: Show Multi-File Diff`: Open a comprehensive multi-file diff view for the selected revision. These views are editable for mutable commits.
+- `JJ View: Compare with Uploaded Revision`: Review local changes against what is currently uploaded to your code forge, including per-file diffs and commit description changes while isolating unrelated upstream rebase diffs.
 - `JJ View: Compare All Files with Revision...`: Compare all files between a selected revision and the working copy.
 - `JJ View: Compare File with Revision...`: Compare a specific file against a selected revision.
 
 ### History & Merging Commands
 
 - `JJ View: Squash Revision into Parent`: Squash the current change into its parent.
+- `JJ View: Squash Revision into Parent (Use Destination Message)`: Squash the current change into its parent, keeping the parent's description and discarding the source's description.
 - `JJ View: Squash Revision into Ancestor...`: Squash the current change into an ancestor.
+- `JJ View: Squash Revision into Ancestor (Use Destination Message)...`: Squash the current change into an ancestor, keeping the ancestor's description and discarding the source's description.
+- `JJ View: Split into New Change Before`: Extract selected file(s) from a mutable change into a new parent change inserted before it.
+- `JJ View: Split into New Change After`: Extract selected file(s) from a mutable change into a new child change inserted after it.
 - `JJ View: Absorb`: Move changes into the mutable ancestor where they belong.
 - `JJ View: New Merge Change`: Create a merge commit.
 - `JJ View: Rebase onto Selected`: Rebase the current change onto a selected target.
+- `JJ View: Simplify Parents`: Remove redundant parent edges that are also indirect ancestors through other parents.
+
+### 🧩 Task Variables
+
+- `${command:jj-view.pickChange}`: Shows the change picker and returns the selected ID.
+
+  Optional arguments:
+  - `revset`: The set to pick from. Defaults to `visible()`.
+
+  Example:
+
+  ```json
+  {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Show a change",
+        "type": "shell",
+        "command": "jj show ${command:jj-view.pickChange}"
+      },
+      {
+        "label": "Show a mutable change",
+        "type": "shell",
+        "command": "jj show ${input:mutableChange}"
+      }
+    ],
+    "inputs": [
+      {
+        "id": "mutableChange",
+        "type": "command",
+        "command": "jj-view.pickChange",
+        "args": { "revset": "mutable()" }
+      }
+    ]
+  }
+  ```
 
 ## Configuration
 
@@ -180,11 +228,16 @@ Customize **JJ View** behavior in VS Code settings.
 | `jj-view.refreshDebounceMaxMultiplier` | `4`           | Maximum multiplier for the debounce timeout when events continue to occur.                                                                                                                                                                                                                           |
 | `jj-view.fileWatcherMode`              | `"polling"`   | Controls how JJ View detects external file changes. VS Code on Linux, including WSL, always uses polling. |
 | `jj-view.codeForge.provider`           | `null`        | Force the active Code Forge provider to a specific service. Options: `github`, `gitlab`, `gerrit`. If not set, it is auto-detected from git remotes. |
+| `jj-view.codeForge.adapterCommand`     | `""`          | Path to an external CLI executable implementing the jj-view CodeForge adapter protocol (detect, statuses, upload, get-file-content, list-comments, reply-comment, resolve-comment). |
+| `jj-view.codeForge.enableComments`     | `true`        | Controls whether code forge review comments (GitHub, GitLab, Gerrit) are fetched and displayed in the editor and Comments panel. |
+| `jj-view.codeForge.pollIntervalSeconds` | `60`          | How often (in seconds) to re-fetch pull request, merge request and review status from the code forge (GitHub, GitLab or Gerrit) while the window is focused. Set to `0` to disable background polling. Positive values below 10 are treated as 10. |
+| `jj-view.codeForge.minRefreshIntervalSeconds` | `0`     | Minimum time (in seconds) between code forge status fetches that are prompted by local repository changes or the window regaining focus, such as file edits and jj operations. Changes that arrive inside the window are fetched once, when it ends. Raise this to reduce API usage, for example to stay under GitHub's rate limit. Background polling, uploads and manual refreshes are not throttled. `0` disables throttling. |
 | `jj-view.gerrit.host`                  | `null`        | Gerrit host URL (e.g., https://gerrit-review.googlesource.com). If not set, extension attempts to detect it from .gitreview or git remotes.                                                                                                                                                      |
 | `jj-view.gerrit.project`               | `null`        | Gerrit project name. If not set, extension attempts to detect it from git remotes.                                                                                                                                                                                                                   |
 | `jj-view.gitlab.host`                  | `null`        | GitLab host URL (e.g., https://gitlab.com). If not set, extension attempts to detect it from git remotes.                                                                                                                                                                                            |
 | `jj-view.alwaysUploadStack`            | `false`       | Always upload changes as stacked pull requests or merge requests. When enabled, the extra 'Upload Stack' context menu item is hidden and all upload actions upload the full stack.                                                                                                                |
 | `jj-view.uploadCommand`                | `null`        | Custom command to run for upload. Example: 'git push'. The command will be prefixed with 'jj' and suffixed with '-r <revision>' or repeated '-r'/'-c' arguments for stacked uploads.                                                                                                                                                                     |
+| `jj-view.syncCommand`                  | `"git fetch"` | Command to run for sync (prefixed with 'jj'). Defaults to 'git fetch'. Example: 'sync -a'.                                                                                                                                                                                                                                                               |
 | `jj-view.minChangeIdLength`            | `1`           | Minimum number of characters to display for change IDs. This affects the unique prefix calculation and UI truncation.                                                                                                                                                                                |
 | `jj-view.maxMutableAncestors`          | `10`          | Maximum number of mutable ancestors to display in the SCM view.                                                                                                                                                                                                                                      |
 | `jj-view.logTheme`                     | `"default"`   | Color theme for the graph lanes in the JJ Log view. Available options: `default`, `oceanic`, `sunset`, `neon`, `pastel`, `monochrome`, `nord`, `dracula`, `forest`, `solarized`, `autumn`, `matrix`.                                                                                              |
@@ -196,6 +249,7 @@ Customize **JJ View** behavior in VS Code settings.
 | `jj-view.suppressGitColocationWarning` | `false`       | Suppress Git and JJ blame coexistence guidance in colocated repositories.                                                                                                                                                                                                                |
 | `jj-view.workspacesLocation`           | `.workspaces` | Directory where new workspaces are created. Relative paths are resolved against the main repository root.                                                                                                                                                                                            |
 | `jj-view.openDiffOnClick`              | `true`        | Controls whether the diff editor should be opened when clicking a change. Otherwise the regular editor will be opened.                                                                                                                                                                                |
+| `jj-view.editableMutableDiffs`         | `true`        | Open diffs for mutable non-working-copy commits as editable by default. When disabled, diffs open read-only and can be toggled to editable.                                                                                                                                                          |
 | `jj-view.autoRepositoryDetection`      | `true`        | Controls whether to automatically detect jj repositories. true: Scans workspace folders and all subfolders recursively; false: Only checks workspace roots; subFolders: Scans immediate subfolders; openEditors: Only registers on-demand when files are opened.                                    |
 | `jj-view.scanRepositories`             | `[]`          | List of absolute or workspace-relative directory paths to explicitly scan for jj repositories.                                                                                                                                                                                                        |
 | `jj-view.ignoredRepositories`          | `[]`          | List of absolute directory paths of jj repositories that should be explicitly ignored.                                                                                                                                                                                                                |
@@ -297,6 +351,10 @@ To prevent watches from accumulating when you work across multiple repositories 
 - **Delete a specific watch**: `watchman watch-del <path>`
 - **Delete all active watches**: `watchman watch-del-all`
 - **Restart the daemon**: `watchman shutdown-server`
+
+## Standalone Web App
+
+JJ View also runs outside VS Code as a self-contained `jj-view` binary that serves the same UI in a browser and powers the Antigravity integration. See [docs/standalone.md](docs/standalone.md) for usage and options.
 
 ## Requirements
 

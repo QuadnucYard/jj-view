@@ -5,9 +5,11 @@
 
 import { z } from 'zod';
 import { chunkArray } from '../utils/array-utils';
-import { fetchWithTimeout } from '../utils/fetch-utils';
+import { AsyncCache } from '../utils/async-cache';
+import { Duration } from '../utils/duration';
+import { LruCache } from '../utils/lru-cache';
 import type { LoggerChannel } from '../utils/output-channel';
-import type { AuthResult, CodeForgeAuthManager } from './code-forge-auth';
+import type { AuthCredential, AuthResult, CodeForgeAuthManager } from './code-forge-auth';
 import type {
     AuthManageItem,
     ChangeStatusRequest,
@@ -17,8 +19,17 @@ import type {
     GitRemote,
     StackCommitNode,
     StackSyncResult,
+    UploadedFileRequest,
+    UploadedRevisionDetails,
+    UploadedRevisionFile,
 } from './code-forge-provider';
+import {
+    decodeBase64ToUint8Array,
+    getBookmarkCachedChangeInfo,
+    resolveUploadedAndVerifyBookmarkSync,
+} from './code-forge-sync-utils';
 import { type Event, EventEmitter } from './host/events';
+import type { HostEnvironment } from './host/host-environment';
 import type { JjService } from './jj-service';
 import type { CodeForgeChangeInfo } from './jj-types';
 
@@ -29,6 +40,8 @@ export const GitHubPrNodeSchema = z.object({
     mergeable: z.string(),
     reviewDecision: z.string().nullable().optional(),
     url: z.string(),
+    baseRefName: z.string().nullable().optional(),
+    baseRefOid: z.string().nullable().optional(),
     headRepository: z
         .object({
             owner: z.object({
@@ -178,6 +191,18 @@ export const GitHubRepoMetadataSchema = z.object({
 });
 export type GitHubRepoMetadataGql = z.infer<typeof GitHubRepoMetadataSchema>;
 
+class GitHubUnauthorizedError extends Error {}
+
+export const GitHubForkCheckSchema = z.object({
+    data: z
+        .object({
+            repository: z.object({ isFork: z.boolean() }).nullable().optional(),
+        })
+        .nullable()
+        .optional(),
+    errors: z.array(z.unknown()).nullable().optional(),
+});
+
 export const GitHubStackedPrNodeSchema = z.object({
     id: z.string(),
     number: z.number(),
@@ -268,17 +293,51 @@ export const GitHubStackRecordSchema = z.object({
 });
 export type GitHubStackRecord = z.infer<typeof GitHubStackRecordSchema>;
 
+const GitHubPullRequestFileSchema = z.object({
+    filename: z.string(),
+    previous_filename: z.string().optional(),
+    status: z.string(),
+    sha: z.string().nullable().optional(),
+});
+
+const GitHubBlobResponseSchema = z.object({
+    content: z.string().optional(),
+    encoding: z.string().optional(),
+});
+
+const GITHUB_STATUS_MAP: Readonly<Record<string, string>> = {
+    added: 'A',
+    removed: 'D',
+    renamed: 'R',
+    copied: 'C',
+    modified: 'M',
+};
+
 export class GitHubProvider implements CodeForgeProvider {
     public readonly id = 'github';
     public readonly displayName = 'GitHub';
     public readonly changeTerm = 'PR' as const;
+    public readonly uploadModel = 'branch-stack' as const;
     public readonly priority = 10;
     public readonly isAuthManageable = true;
 
     private cache = new Map<string, CodeForgeChangeInfo>();
+    private contentSyncCache = new LruCache<string, boolean>({ maxEntries: 500 });
+    private prOwnerRepoByKey = new LruCache<string, { owner: string; repo: string }>({ maxEntries: 500 });
+    private uploadedDetailsCache = new AsyncCache<string, UploadedRevisionDetails | undefined>({
+        ttl: Duration.minutes(5),
+        maxEntries: 200,
+        keepStaleOnError: true,
+    });
+    private uploadedBlobCache = new AsyncCache<string, Uint8Array | undefined>({
+        ttl: Duration.minutes(10),
+        maxEntries: 200,
+        keepStaleOnError: true,
+    });
     private owner: string | undefined;
     private repo: string | undefined;
     private allowedOwners = new Set<string>();
+    private forkCheck: { key: string; isFork: Promise<boolean> } | undefined;
 
     private _onDidUpdate = new EventEmitter<void>();
     public readonly onDidUpdate: Event<void> = this._onDidUpdate.event;
@@ -286,8 +345,32 @@ export class GitHubProvider implements CodeForgeProvider {
     constructor(
         private readonly authManager: CodeForgeAuthManager,
         private outputChannel: LoggerChannel,
+        private readonly host: HostEnvironment,
     ) {
         this.authManager.registerProvider(this.id);
+    }
+
+    /**
+     * Sends a GitHub API request through the host. The host attaches the
+     * credential, so a stored PAT never passes through this class.
+     */
+    private async githubFetch(
+        url: string,
+        credential: AuthCredential,
+        request: { method?: string; body?: string; headers?: Record<string, string>; signal?: AbortSignal },
+    ): Promise<Response> {
+        return this.host.http.fetch(url, {
+            method: request.method,
+            headers: {
+                ...(request.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+                'User-Agent': 'jj-view-vscode-extension',
+                ...request.headers,
+            },
+            body: request.body,
+            signal: request.signal,
+            timeoutMs: 15000,
+            auth: credential,
+        });
     }
 
     public async detect(_workspaceRoot: string, remotes: GitRemote[]): Promise<boolean> {
@@ -359,30 +442,25 @@ export class GitHubProvider implements CodeForgeProvider {
         bookmarks?: string[],
         commitId?: string,
     ): CodeForgeChangeInfo | undefined {
-        if (bookmarks && bookmarks.length > 0) {
-            for (const bookmark of bookmarks) {
-                const info = this.cache.get(bookmark);
-                if (info) {
-                    const contentSynced = commitId ? commitId === info.currentRevision : undefined;
-                    return { ...info, contentSynced };
-                }
-            }
-        }
-        return undefined;
+        return getBookmarkCachedChangeInfo(this.cache, this.contentSyncCache, bookmarks, commitId);
     }
 
-    public async fetchStatuses(changes: ChangeStatusRequest[], _jj: JjService): Promise<boolean> {
+    public async fetchStatuses(changes: ChangeStatusRequest[], jj: JjService): Promise<boolean> {
         if (!this.owner || !this.repo || changes.length === 0) {
             return false;
         }
 
         const bookmarkNames = new Set<string>();
         const bookmarkToCommitId = new Map<string, string>();
+        const bookmarkToChanges = new Map<string, ChangeStatusRequest[]>();
         for (const change of changes) {
             if (change.bookmarks) {
                 for (const bookmark of change.bookmarks) {
                     bookmarkNames.add(bookmark);
                     bookmarkToCommitId.set(bookmark, change.commitId);
+                    const list = bookmarkToChanges.get(bookmark) ?? [];
+                    list.push(change);
+                    bookmarkToChanges.set(bookmark, list);
                 }
             }
         }
@@ -405,6 +483,28 @@ export class GitHubProvider implements CodeForgeProvider {
                     const oldInfo = this.cache.get(bookmark);
 
                     if (info) {
+                        const target = this.resolvePrOwnerRepo(info);
+                        if (target) {
+                            if (info.id) {
+                                this.prOwnerRepoByKey.set(info.id, target);
+                            }
+                            if (info.number > 0) {
+                                this.prOwnerRepoByKey.set(String(info.number), target);
+                            }
+                        }
+
+                        const syncChanged = await resolveUploadedAndVerifyBookmarkSync({
+                            provider: this,
+                            info,
+                            matchingChanges: bookmarkToChanges.get(bookmark) ?? [],
+                            jj,
+                            contentSyncCache: this.contentSyncCache,
+                            normalizeDescription: (desc) => desc.trim(),
+                        });
+                        if (syncChanged) {
+                            changed = true;
+                        }
+
                         this.cache.set(bookmark, info);
                     } else {
                         this.cache.delete(bookmark);
@@ -413,9 +513,11 @@ export class GitHubProvider implements CodeForgeProvider {
                     if (
                         oldInfo?.status !== info?.status ||
                         oldInfo?.currentRevision !== info?.currentRevision ||
+                        oldInfo?.remoteBaseRevision !== info?.remoteBaseRevision ||
                         oldInfo?.submittable !== info?.submittable ||
                         oldInfo?.unresolvedComments !== info?.unresolvedComments ||
                         oldInfo?.remoteDescription !== info?.remoteDescription ||
+                        JSON.stringify(oldInfo?.files) !== JSON.stringify(info?.files) ||
                         JSON.stringify(oldInfo?.remoteParents) !== JSON.stringify(info?.remoteParents)
                     ) {
                         changed = true;
@@ -439,13 +541,18 @@ export class GitHubProvider implements CodeForgeProvider {
         bookmarkToCommitId: Map<string, string>,
     ): Promise<Map<string, CodeForgeChangeInfo>> {
         const results = new Map<string, CodeForgeChangeInfo>();
-        const token = await this.getSessionToken();
-        if (!token) {
+        const credential = await this.getSessionCredential();
+        if (!credential) {
             return results;
         }
-        if (!this.owner || !this.repo) {
+        // Snapshot: detect() can switch repos while the fork check is awaited.
+        const { owner, repo } = this;
+        if (!owner || !repo) {
             return results;
         }
+
+        const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
+        const includeParent = await this.isForkRepo(apiUrl, credential, owner, repo);
 
         const aliasQueries = bookmarkNames.map((name, index) => {
             const alias = `pr_${index}`;
@@ -458,6 +565,8 @@ export class GitHubProvider implements CodeForgeProvider {
                     url
                     mergeable
                     reviewDecision
+                    baseRefName
+                    baseRefOid
                     headRefName
                     headRepository {
                         owner {
@@ -491,44 +600,30 @@ export class GitHubProvider implements CodeForgeProvider {
             }`;
         });
 
+        // GitHub prices a query from its text, so a `parent` block costs the same when it resolves to null.
+        const parentBlock = includeParent ? `parent {\n${aliasQueries.join('\n')}\n}` : '';
         const query = `
         query($owner: String!, $name: String!) {
             repository(owner: $owner, name: $name) {
-                parent {
-                    ${aliasQueries.join('\n')}
-                }
+                ${parentBlock}
                 ${aliasQueries.join('\n')}
             }
         }
         `;
 
-        const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
-        const response = await fetchWithTimeout(apiUrl, 15000, {
+        const response = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query,
                 variables: {
-                    owner: this.owner,
-                    name: this.repo,
+                    owner,
+                    name: repo,
                 },
             }),
         });
 
-        if (response.status === 401 && token) {
-            this.outputChannel?.error(
-                `[GitHubProvider] Request failed with 401 Unauthorized using token. Stored token may be invalid or expired.`,
-            );
-            await this.authManager.clearInvalidToken({
-                providerId: 'github',
-                secretTokenKey: 'github_token',
-                currentToken: token,
-                envTokenKey: 'JJ_VIEW_GITHUB_TOKEN',
-            });
+        if (response.status === 401) {
+            await this.clearInvalidCredential(credential);
         }
 
         if (!response.ok) {
@@ -621,7 +716,173 @@ export class GitHubProvider implements CodeForgeProvider {
             currentRevision,
             remoteParents,
             remoteDescription,
+            remoteBaseRevision: pr.baseRefOid ?? undefined,
+            remoteBaseRefName: pr.baseRefName ?? undefined,
         };
+    }
+
+    private resolvePrOwnerRepo(info?: { url?: string }): { owner: string; repo: string } | undefined {
+        if (info?.url) {
+            const match = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/pull\/\d+/.exec(info.url);
+            if (match) {
+                return { owner: match[1], repo: match[2] };
+            }
+        }
+        if (this.owner && this.repo) {
+            return { owner: this.owner, repo: this.repo };
+        }
+        return undefined;
+    }
+
+    public async fetchUploadedRevisionDetails(info: CodeForgeChangeInfo): Promise<UploadedRevisionDetails | undefined> {
+        if (info.files !== undefined) {
+            return { files: info.files, remoteDescription: info.remoteDescription };
+        }
+        if (!info.currentRevision || info.number <= 0) {
+            return undefined;
+        }
+        const target = this.resolvePrOwnerRepo(info);
+        if (!target) {
+            return undefined;
+        }
+        if (info.id) {
+            this.prOwnerRepoByKey.set(info.id, target);
+        }
+        this.prOwnerRepoByKey.set(String(info.number), target);
+
+        const credential = await this.getSessionCredential();
+        if (!credential) {
+            return undefined;
+        }
+
+        const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
+        const restBaseUrl = this.getRestApiBaseUrl(apiUrl);
+        const cacheKey = `${target.owner}/${target.repo}#${info.number}@${info.currentRevision}:${info.remoteBaseRevision ?? ''}`;
+
+        return this.uploadedDetailsCache.getOrFetch(cacheKey, async () => {
+            const files: Record<string, UploadedRevisionFile> = {};
+            for (let page = 1; page <= 10; page++) {
+                const endpoint = `${restBaseUrl}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/pulls/${info.number}/files?per_page=100&page=${page}`;
+                const response = await this.githubFetch(endpoint, credential, {
+                    method: 'GET',
+                    headers: {
+                        Accept: 'application/vnd.github+json',
+                        'X-GitHub-Api-Version': '2022-11-28',
+                    },
+                });
+                if (response.status === 401) {
+                    await this.clearInvalidCredential(credential);
+                    throw new Error('GitHub PR files request failed: 401 Unauthorized');
+                }
+                if (response.status === 404) {
+                    return page === 1 ? undefined : { files, remoteDescription: info.remoteDescription };
+                }
+                if (!response.ok) {
+                    throw new Error(`GitHub PR files request failed with status ${response.status}`);
+                }
+
+                const rawJson: unknown = await response.json();
+                const parsed = z.array(GitHubPullRequestFileSchema).safeParse(rawJson);
+                if (!parsed.success) {
+                    throw new Error(`Failed to parse GitHub PR files response: ${parsed.error.message}`);
+                }
+
+                for (const item of parsed.data) {
+                    const mappedStatus = GITHUB_STATUS_MAP[item.status] ?? 'M';
+                    files[item.filename] = {
+                        status: mappedStatus,
+                        newSha: item.status === 'removed' ? undefined : (item.sha ?? undefined),
+                        ...(item.previous_filename ? { oldPath: item.previous_filename } : {}),
+                    };
+                }
+
+                if (parsed.data.length < 100) {
+                    break;
+                }
+            }
+
+            return {
+                files,
+                remoteDescription: info.remoteDescription,
+            };
+        });
+    }
+
+    public async getUploadedFileContent(request: UploadedFileRequest): Promise<Uint8Array | undefined> {
+        const cachedInfo = Array.from(this.cache.values()).find(
+            (entry) =>
+                entry.id === request.changeId ||
+                (request.changeNumber !== undefined && entry.number === request.changeNumber),
+        );
+        const mappedTarget =
+            this.prOwnerRepoByKey.get(request.changeId) ??
+            (request.changeNumber !== undefined && request.changeNumber > 0
+                ? this.prOwnerRepoByKey.get(String(request.changeNumber))
+                : undefined);
+        const target = cachedInfo ? this.resolvePrOwnerRepo(cachedInfo) : (mappedTarget ?? this.resolvePrOwnerRepo());
+        if (!target) {
+            return undefined;
+        }
+        const credential = await this.getSessionCredential();
+        if (!credential) {
+            return undefined;
+        }
+
+        const cleanPath = request.filePath.replace(/^\/+/, '');
+        const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
+        const restBaseUrl = this.getRestApiBaseUrl(apiUrl);
+        const cacheKey = `${target.owner}/${target.repo}:${request.revisionId}:${cleanPath}:${request.blobSha ?? ''}`;
+
+        return this.uploadedBlobCache.getOrFetch(cacheKey, async () => {
+            if (request.blobSha && /^[0-9a-fA-F]{4,64}$/.test(request.blobSha)) {
+                const blobUrl = `${restBaseUrl}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/git/blobs/${request.blobSha}`;
+                const blobResp = await this.githubFetch(blobUrl, credential, {
+                    method: 'GET',
+                    headers: {
+                        Accept: 'application/vnd.github+json',
+                        'X-GitHub-Api-Version': '2022-11-28',
+                    },
+                });
+                if (blobResp.status === 401) {
+                    await this.clearInvalidCredential(credential);
+                    throw new Error('GitHub git blob request failed: 401 Unauthorized');
+                }
+                if (blobResp.ok) {
+                    const rawBlob: unknown = await blobResp.json();
+                    const parsedBlob = GitHubBlobResponseSchema.safeParse(rawBlob);
+                    if (
+                        parsedBlob.success &&
+                        parsedBlob.data.encoding === 'base64' &&
+                        parsedBlob.data.content !== undefined
+                    ) {
+                        return decodeBase64ToUint8Array(parsedBlob.data.content);
+                    }
+                } else if (blobResp.status !== 404) {
+                    throw new Error(`GitHub git blob request failed with status ${blobResp.status}`);
+                }
+            }
+
+            const encodedPath = cleanPath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+            const contentsUrl = `${restBaseUrl}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/contents/${encodedPath}?ref=${encodeURIComponent(request.revisionId)}`;
+            const contentsResp = await this.githubFetch(contentsUrl, credential, {
+                method: 'GET',
+                headers: {
+                    Accept: 'application/vnd.github.raw+json',
+                    'X-GitHub-Api-Version': '2022-11-28',
+                },
+            });
+            if (contentsResp.status === 401) {
+                await this.clearInvalidCredential(credential);
+                throw new Error('GitHub file content request failed: 401 Unauthorized');
+            }
+            if (contentsResp.status === 404) {
+                return undefined;
+            }
+            if (!contentsResp.ok) {
+                throw new Error(`GitHub file content request failed with status ${contentsResp.status}`);
+            }
+            return new Uint8Array(await contentsResp.arrayBuffer());
+        });
     }
 
     public getUploadCommand(
@@ -642,14 +903,14 @@ export class GitHubProvider implements CodeForgeProvider {
             return;
         }
 
-        const token = await this.getSessionToken();
-        if (!token) {
+        const credential = await this.getSessionCredential();
+        if (!credential) {
             return;
         }
 
         const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
-        const { defaultBranch } = await this.fetchRepositoryMetadata(apiUrl, token);
-        const existingPrs = await this.fetchExistingPrs(apiUrl, token, stack);
+        const { defaultBranch } = await this.fetchRepositoryMetadata(apiUrl, credential);
+        const existingPrs = await this.fetchExistingPrs(apiUrl, credential, stack);
 
         // Map bookmark names to their new positions in the stack
         const bookmarkIndexMap = new Map<string, number>();
@@ -673,7 +934,7 @@ export class GitHubProvider implements CodeForgeProvider {
                     `[GitHubProvider] Preemptively retargeting PR #${existingPr.number} (${node.bookmark}) from ${existingPr.baseRefName} to ${defaultBranch} before push to avoid forge auto-closure`,
                 );
                 try {
-                    await this.retargetPullRequest(apiUrl, token, existingPr.id, defaultBranch);
+                    await this.retargetPullRequest(apiUrl, credential, existingPr.id, defaultBranch);
                 } catch (err: unknown) {
                     const msg = err instanceof Error ? err.message : String(err);
                     this.outputChannel?.warn(
@@ -690,14 +951,14 @@ export class GitHubProvider implements CodeForgeProvider {
             return result;
         }
 
-        const token = await this.getSessionToken();
-        if (!token) {
+        const credential = await this.getSessionCredential();
+        if (!credential) {
             return result;
         }
 
         const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
-        const { repositoryId, defaultBranch } = await this.fetchRepositoryMetadata(apiUrl, token);
-        const existingPrs = await this.fetchExistingPrs(apiUrl, token, stack);
+        const { repositoryId, defaultBranch } = await this.fetchRepositoryMetadata(apiUrl, credential);
+        const existingPrs = await this.fetchExistingPrs(apiUrl, credential, stack);
 
         const orderedPrNumbers: number[] = [];
         // Process each commit in the stack
@@ -709,7 +970,7 @@ export class GitHubProvider implements CodeForgeProvider {
             try {
                 if (existingPr) {
                     if (existingPr.baseRefName !== expectedBase) {
-                        await this.retargetPullRequest(apiUrl, token, existingPr.id, expectedBase);
+                        await this.retargetPullRequest(apiUrl, credential, existingPr.id, expectedBase);
                         orderedPrNumbers.push(existingPr.number);
                         result.retargeted.push({
                             changeId: node.changeId,
@@ -734,7 +995,7 @@ export class GitHubProvider implements CodeForgeProvider {
 
                 const createdPr = await this.createPullRequest(
                     apiUrl,
-                    token,
+                    credential,
                     repositoryId,
                     expectedBase,
                     node.bookmark,
@@ -763,15 +1024,87 @@ export class GitHubProvider implements CodeForgeProvider {
 
         // Only register native stack if the entire stack succeeded without gaps or failures
         if (orderedPrNumbers.length > 1 && orderedPrNumbers.length === stack.length) {
-            await this.registerNativeStack(apiUrl, token, orderedPrNumbers);
+            await this.registerNativeStack(apiUrl, credential, orderedPrNumbers);
         }
 
         return result;
     }
 
+    private async clearInvalidCredential(credential: AuthCredential): Promise<void> {
+        this.outputChannel?.error(
+            `[GitHubProvider] Request failed with 401 Unauthorized using token. Stored token may be invalid or expired.`,
+        );
+        await this.authManager.clearInvalidCredential({
+            providerId: 'github',
+            credential,
+        });
+    }
+
+    /**
+     * Whether the repo is a fork, so PRs may live in its parent. Cached per owner/repo; on failure returns
+     * true (without caching) so fork PRs are never missed. A 401 clears the token and rejects instead.
+     */
+    private isForkRepo(apiUrl: string, credential: AuthCredential, owner: string, repo: string): Promise<boolean> {
+        const key = `${apiUrl} ${owner}/${repo}`;
+        if (this.forkCheck?.key !== key) {
+            const entry = {
+                key,
+                isFork: this.fetchIsFork(apiUrl, credential, owner, repo).catch((err: unknown) => {
+                    if (this.forkCheck === entry) {
+                        this.forkCheck = undefined;
+                    }
+                    if (err instanceof GitHubUnauthorizedError) {
+                        throw err;
+                    }
+                    const msg = err instanceof Error ? err.message : String(err);
+                    this.outputChannel?.warn(
+                        `[GitHubProvider] Fork check failed, querying the parent repo too: ${msg}`,
+                    );
+                    return true;
+                }),
+            };
+            this.forkCheck = entry;
+        }
+        return this.forkCheck.isFork;
+    }
+
+    private async fetchIsFork(
+        apiUrl: string,
+        credential: AuthCredential,
+        owner: string,
+        repo: string,
+    ): Promise<boolean> {
+        const response = await this.githubFetch(apiUrl, credential, {
+            method: 'POST',
+            body: JSON.stringify({
+                query: 'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { isFork } }',
+                variables: { owner, name: repo },
+            }),
+        });
+        if (response.status === 401) {
+            await this.clearInvalidCredential(credential);
+            throw new GitHubUnauthorizedError('Fork check failed: 401 Unauthorized');
+        }
+        if (!response.ok) {
+            throw new Error(`Fork check failed with status: ${response.statusText}`);
+        }
+        const parsed = GitHubForkCheckSchema.safeParse(await response.json());
+        if (!parsed.success) {
+            throw new Error(`Failed to parse fork check: ${parsed.error.message}`);
+        }
+        if (parsed.data.errors && parsed.data.errors.length > 0) {
+            throw new Error(`GraphQL errors: ${JSON.stringify(parsed.data.errors)}`);
+        }
+        const isFork = parsed.data.data?.repository?.isFork;
+        if (isFork === undefined) {
+            throw new Error('Repository not found');
+        }
+        return isFork;
+    }
+
     private async fetchRepositoryMetadata(
         apiUrl: string,
-        token: string,
+        credential: AuthCredential,
     ): Promise<{ repositoryId: string; defaultBranch: string }> {
         const repoQuery = `
         query($owner: String!, $name: String!) {
@@ -783,13 +1116,8 @@ export class GitHubProvider implements CodeForgeProvider {
             }
         }
         `;
-        const repoResp = await fetchWithTimeout(apiUrl, 15000, {
+        const repoResp = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query: repoQuery,
                 variables: { owner: this.owner, name: this.repo },
@@ -817,7 +1145,7 @@ export class GitHubProvider implements CodeForgeProvider {
 
     private async fetchExistingPrs(
         apiUrl: string,
-        token: string,
+        credential: AuthCredential,
         stack: StackCommitNode[],
     ): Promise<Map<string, GitHubStackedPrNode>> {
         const aliasQueries = stack
@@ -833,13 +1161,8 @@ export class GitHubProvider implements CodeForgeProvider {
             }
         }
         `;
-        const prsResp = await fetchWithTimeout(apiUrl, 15000, {
+        const prsResp = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query: prsQuery,
                 variables: { owner: this.owner, name: this.repo },
@@ -885,7 +1208,7 @@ export class GitHubProvider implements CodeForgeProvider {
 
     private async retargetPullRequest(
         apiUrl: string,
-        token: string,
+        credential: AuthCredential,
         pullRequestId: string,
         baseRefName: string,
     ): Promise<void> {
@@ -901,13 +1224,8 @@ export class GitHubProvider implements CodeForgeProvider {
             }
         }
         `;
-        const updateResp = await fetchWithTimeout(apiUrl, 15000, {
+        const updateResp = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query: updateMutation,
                 variables: {
@@ -934,7 +1252,7 @@ export class GitHubProvider implements CodeForgeProvider {
 
     private async createPullRequest(
         apiUrl: string,
-        token: string,
+        credential: AuthCredential,
         repositoryId: string,
         baseRefName: string,
         headRefName: string,
@@ -954,13 +1272,8 @@ export class GitHubProvider implements CodeForgeProvider {
             }
         }
         `;
-        const createResp = await fetchWithTimeout(apiUrl, 15000, {
+        const createResp = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query: createMutation,
                 variables: {
@@ -1010,7 +1323,7 @@ export class GitHubProvider implements CodeForgeProvider {
 
     private async findExistingStack(
         restBaseUrl: string,
-        token: string,
+        credential: AuthCredential,
         pullRequestNumbers: number[],
     ): Promise<{ number: number; prNumbers: number[] } | undefined> {
         if (!this.owner || !this.repo) {
@@ -1020,13 +1333,11 @@ export class GitHubProvider implements CodeForgeProvider {
         for (const prNum of pullRequestNumbers) {
             const endpoint = `${restBaseUrl}/repos/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/stacks?pull_request=${prNum}`;
             try {
-                const response = await fetchWithTimeout(endpoint, 15000, {
+                const response = await this.githubFetch(endpoint, credential, {
                     method: 'GET',
                     headers: {
-                        Authorization: `Bearer ${token}`,
                         Accept: 'application/vnd.github+json',
                         'X-GitHub-Api-Version': '2022-11-28',
-                        'User-Agent': 'jj-view-vscode-extension',
                     },
                 });
                 if (!response.ok) {
@@ -1061,7 +1372,11 @@ export class GitHubProvider implements CodeForgeProvider {
         return undefined;
     }
 
-    private async registerNativeStack(apiUrl: string, token: string, pullRequestNumbers: number[]): Promise<void> {
+    private async registerNativeStack(
+        apiUrl: string,
+        credential: AuthCredential,
+        pullRequestNumbers: number[],
+    ): Promise<void> {
         if (!this.owner || !this.repo || pullRequestNumbers.length <= 1) {
             return;
         }
@@ -1070,14 +1385,11 @@ export class GitHubProvider implements CodeForgeProvider {
         const endpoint = `${restBaseUrl}/repos/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/stacks`;
 
         try {
-            const response = await fetchWithTimeout(endpoint, 15000, {
+            const response = await this.githubFetch(endpoint, credential, {
                 method: 'POST',
                 headers: {
-                    Authorization: `Bearer ${token}`,
                     Accept: 'application/vnd.github+json',
                     'X-GitHub-Api-Version': '2022-11-28',
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'jj-view-vscode-extension',
                 },
                 body: JSON.stringify({
                     pull_requests: pullRequestNumbers,
@@ -1094,7 +1406,7 @@ export class GitHubProvider implements CodeForgeProvider {
             // 422 indicates that one or more pull requests are already part of an existing stack.
             // In that case, look up the existing stack and append the new PR(s) to it via /stacks/{stack_number}/add.
             if (response.status === 422) {
-                const existingStack = await this.findExistingStack(restBaseUrl, token, pullRequestNumbers);
+                const existingStack = await this.findExistingStack(restBaseUrl, credential, pullRequestNumbers);
                 if (existingStack) {
                     const existingSet = new Set(existingStack.prNumbers);
                     const toAdd = pullRequestNumbers.filter((num) => !existingSet.has(num));
@@ -1107,14 +1419,11 @@ export class GitHubProvider implements CodeForgeProvider {
                     }
 
                     const addEndpoint = `${restBaseUrl}/repos/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}/stacks/${existingStack.number}/add`;
-                    const addResp = await fetchWithTimeout(addEndpoint, 15000, {
+                    const addResp = await this.githubFetch(addEndpoint, credential, {
                         method: 'POST',
                         headers: {
-                            Authorization: `Bearer ${token}`,
                             Accept: 'application/vnd.github+json',
                             'X-GitHub-Api-Version': '2022-11-28',
-                            'Content-Type': 'application/json',
-                            'User-Agent': 'jj-view-vscode-extension',
                         },
                         body: JSON.stringify({
                             pull_requests: toAdd,
@@ -1150,8 +1459,8 @@ export class GitHubProvider implements CodeForgeProvider {
      * and the first 100 comments per thread. It does not perform cursor-based pagination.
      */
     public async getCommentThreads(changeId: string, signal?: AbortSignal): Promise<CodeForgeCommentThread[]> {
-        const token = await this.getSessionToken();
-        if (!token) {
+        const credential = await this.getSessionCredential();
+        if (!credential) {
             return [];
         }
 
@@ -1184,13 +1493,8 @@ export class GitHubProvider implements CodeForgeProvider {
         `;
 
         const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
-        const response = await fetchWithTimeout(apiUrl, 15000, {
+        const response = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query,
                 variables: { id: changeId },
@@ -1254,8 +1558,8 @@ export class GitHubProvider implements CodeForgeProvider {
         body: string,
         resolved?: boolean,
     ): Promise<CodeForgeComment> {
-        const token = await this.getSessionToken();
-        if (!token) {
+        const credential = await this.getSessionCredential();
+        if (!credential) {
             throw new Error('Not authenticated');
         }
 
@@ -1299,13 +1603,8 @@ export class GitHubProvider implements CodeForgeProvider {
             `;
 
         const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
-        const response = await fetchWithTimeout(apiUrl, 15000, {
+        const response = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query,
                 variables: { threadId: thread.id, body },
@@ -1343,8 +1642,8 @@ export class GitHubProvider implements CodeForgeProvider {
         thread: CodeForgeCommentThread,
         resolved: boolean,
     ): Promise<void> {
-        const token = await this.getSessionToken();
-        if (!token) {
+        const credential = await this.getSessionCredential();
+        if (!credential) {
             throw new Error('Not authenticated');
         }
 
@@ -1367,13 +1666,8 @@ export class GitHubProvider implements CodeForgeProvider {
             }`;
 
         const apiUrl = process.env.JJ_VIEW_GITHUB_API_URL || 'https://api.github.com/graphql';
-        const response = await fetchWithTimeout(apiUrl, 15000, {
+        const response = await this.githubFetch(apiUrl, credential, {
             method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'jj-view-vscode-extension',
-            },
             body: JSON.stringify({
                 query,
                 variables: { threadId: thread.id },
@@ -1393,6 +1687,11 @@ export class GitHubProvider implements CodeForgeProvider {
 
     public clearCache(): void {
         this.cache.clear();
+        this.contentSyncCache.clear();
+        this.prOwnerRepoByKey.clear();
+        void this.uploadedDetailsCache.clear();
+        void this.uploadedBlobCache.clear();
+        this.forkCheck = undefined;
         this._onDidUpdate.fire();
     }
 
@@ -1408,8 +1707,8 @@ export class GitHubProvider implements CodeForgeProvider {
         this._onDidUpdate.dispose();
     }
 
-    private async getSessionToken(): Promise<string | undefined> {
-        return this.authManager.getSessionToken(this.id, {
+    private async getSessionCredential(): Promise<AuthCredential | undefined> {
+        return this.authManager.getSessionCredential(this.id, {
             scopes: ['repo'],
             envTokenKey: 'JJ_VIEW_GITHUB_TOKEN',
             secretTokenKey: 'github_token',
@@ -1439,8 +1738,7 @@ export class GitHubProvider implements CodeForgeProvider {
             return true;
         }
         try {
-            const storedToken = await this.authManager.secrets.get('github_token');
-            if (storedToken) {
+            if (await this.authManager.secrets.has('github_token')) {
                 return true;
             }
         } catch {}

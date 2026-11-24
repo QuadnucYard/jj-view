@@ -6,14 +6,23 @@
 import { File } from '@pierre/diffs';
 import { Editor } from '@pierre/diffs/edit';
 import { onDestroy, onMount, untrack } from 'svelte';
+import type { HostPlatform } from '../../../src/core/host/host-system';
 import type { Uri } from '../../../src/core/uri-utils';
-import { isBinaryFile } from './binary-detection';
+import { isBinaryFile, isImageByExtension, isSvgByExtension } from './binary-detection';
+import {
+    buildEditorContextJson,
+    type EditorChatContextSelection,
+    resolveDiffOrFileSelection,
+} from './chat-context-selection';
 import { handleEditorKeyDown } from './editor-shortcuts';
 import { ensureHighlighterRegistered, isLightTheme } from './highlighter-setup';
+import { adoptDiffCustomStyles, HUNK_EXPANSION_CSS } from './hunk-expansion';
+import ImageDiffViewer from './ImageDiffViewer.svelte';
 
 interface Props {
     filename: string;
     resourceUri?: Uri;
+    platform?: HostPlatform | string;
     content?: string;
     isWorkingCopy?: boolean;
     theme?: string;
@@ -23,11 +32,13 @@ interface Props {
     onDirtyChange?: (isDirty: boolean) => void;
     onContentChange?: (newContent: string) => void;
     onSelectionChange?: (ranges: { startLine: number; endLine: number }[] | undefined) => void;
+    onAddSelectionToChat?: () => Promise<void> | void;
 }
 
 let {
     filename,
     resourceUri,
+    platform,
     content = '',
     isWorkingCopy = false,
     theme: themeProp = '',
@@ -37,6 +48,7 @@ let {
     onDirtyChange,
     onContentChange,
     onSelectionChange,
+    onAddSelectionToChat,
 }: Props = $props();
 
 let containerEl: HTMLDivElement | null = $state(null);
@@ -55,10 +67,16 @@ let detachEditor: (() => void) | null = null;
 let saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let saveMessageTimer: ReturnType<typeof setTimeout> | null = null;
 
-const isBinary = $derived(isBinaryFile(filename, content));
+const isRasterImage = $derived(isImageByExtension(filename, platform));
+const isSvg = $derived(isSvgByExtension(filename, platform));
+let svgPreviewMode = $state(false);
+const showImagePreview = $derived(isRasterImage || (isSvg && svgPreviewMode));
+const isBinary = $derived(!isRasterImage && isBinaryFile(filename, content, platform));
 
 function cleanupInstances(): void {
     selectedRanges = undefined;
+    canUndo = false;
+    canRedo = false;
     onSelectionChange?.(undefined);
     if (saveDebounceTimer) {
         clearTimeout(saveDebounceTimer);
@@ -100,6 +118,7 @@ async function handleSave(): Promise<void> {
     }
 
     const savingContent = currentContent;
+    let shouldRescheduleSave = false;
     try {
         isSaving = true;
         saveMessage = 'Saving...';
@@ -108,6 +127,11 @@ async function handleSave(): Promise<void> {
             isDirty = false;
             lastLoadedContent = currentContent;
             onDirtyChange?.(false);
+        } else {
+            // Re-assert newer unsaved edits if handleSaveFile cleared tab.isDirty mid-await
+            onDirtyChange?.(true);
+            onContentChange?.(currentContent);
+            shouldRescheduleSave = !saveDebounceTimer;
         }
         saveMessage = 'Saved';
         if (saveMessageTimer) {
@@ -122,6 +146,9 @@ async function handleSave(): Promise<void> {
         saveMessage = 'Failed to save';
     } finally {
         isSaving = false;
+        if (shouldRescheduleSave && !saveDebounceTimer) {
+            scheduleAutoSave();
+        }
     }
 }
 
@@ -146,12 +173,13 @@ function scheduleAutoSave(): void {
         clearTimeout(saveDebounceTimer);
     }
     saveDebounceTimer = setTimeout(() => {
+        saveDebounceTimer = null;
         void handleSave();
     }, 750);
 }
 
 function renderFile(): void {
-    if (!containerEl || isBinary || typeof window === 'undefined') {
+    if (!containerEl || isBinary || showImagePreview || typeof window === 'undefined') {
         return;
     }
 
@@ -172,6 +200,7 @@ function renderFile(): void {
         theme: effectiveTheme,
         themeType,
         enableLineSelection: true,
+        unsafeCSS: HUNK_EXPANSION_CSS,
         onLineSelected: handleLineSelection,
         onLineSelectionChange: handleLineSelection,
         onLineSelectionEnd: handleLineSelection,
@@ -184,6 +213,8 @@ function renderFile(): void {
         containerWrapper: containerEl,
         file: { name: cleanName, contents: contentToRender },
     });
+
+    adoptDiffCustomStyles(containerEl.querySelector('diffs-container'));
 
     if (isWorkingCopy) {
         try {
@@ -225,6 +256,21 @@ function handleRedo(): void {
     }
 }
 
+export function getChatContextSelection(): EditorChatContextSelection | null {
+    return (
+        resolveDiffOrFileSelection({
+            filename,
+            resourceUri,
+            platform,
+            isWorkingCopy,
+            containerEl,
+            modifiedContent: currentContent || content,
+            editorInstance,
+            selectedRanges,
+        }) ?? null
+    );
+}
+
 function handleKeyDown(e: KeyboardEvent): void {
     handleEditorKeyDown(e, {
         isWorkingCopy,
@@ -233,6 +279,7 @@ function handleKeyDown(e: KeyboardEvent): void {
         onSave: handleSave,
         onUndo: handleUndo,
         onRedo: handleRedo,
+        onAddSelectionToChat,
         onEscape: () => {
             if (selectedRanges) {
                 selectedRanges = undefined;
@@ -245,23 +292,39 @@ function handleKeyDown(e: KeyboardEvent): void {
 let lastRenderedFilename = '';
 // svelte-ignore state_referenced_locally
 let lastLoadedContent = content;
+// svelte-ignore state_referenced_locally
+let lastPropDirty = initialDirty;
 
 // Synchronize and re-render when filename or content changes
 $effect(() => {
     const fn = filename;
     const c = content;
     const wc = isWorkingCopy;
+    const propDirty = initialDirty;
+    const wasPropDirty = lastPropDirty;
+    lastPropDirty = propDirty;
 
     if (fn !== lastRenderedFilename) {
         lastRenderedFilename = fn;
         lastLoadedContent = c;
         currentContent = c;
-        isDirty = initialDirty;
+        isDirty = propDirty;
         canUndo = false;
         canRedo = false;
-        onDirtyChange?.(initialDirty);
+        onDirtyChange?.(propDirty);
         renderFile();
-    } else if (!isDirty && c !== lastLoadedContent) {
+        return;
+    }
+
+    if (wasPropDirty && !propDirty && !isSaving) {
+        if (saveDebounceTimer) {
+            clearTimeout(saveDebounceTimer);
+            saveDebounceTimer = null;
+        }
+        isDirty = false;
+    }
+
+    if (!isDirty && c !== lastLoadedContent) {
         lastLoadedContent = c;
         currentContent = c;
         renderFile();
@@ -283,11 +346,32 @@ onDestroy(() => {
     }
     cleanupInstances();
 });
+
+const editorContextJson = $derived(
+    buildEditorContextJson({
+        isInDiffEditor: false,
+        resourceUri,
+        isWorkingCopy,
+        filename,
+    }),
+);
 </script>
 
 <div class="pierre-file-viewer" data-testid="pierre-file-viewer">
-    {#if isBinary}
-        <div class="binary-card" data-testid="binary-file-card">
+    {#if showImagePreview}
+        <ImageDiffViewer
+            {filename}
+            modifiedContent={currentContent || content}
+            singleFile={true}
+            onSwitchToCode={isSvg
+                ? () => {
+                      svgPreviewMode = false;
+                      queueMicrotask(() => renderFile());
+                  }
+                : undefined}
+        />
+    {:else if isBinary}
+        <div class="binary-card" data-testid="binary-file-card" data-vscode-context={editorContextJson}>
             <i class="codicon codicon-file-binary binary-icon" aria-hidden="true"></i>
             <h3>Binary file not shown</h3>
             <p class="binary-filename">{filename}</p>
@@ -300,23 +384,7 @@ onDestroy(() => {
             bind:this={containerEl}
             class="file-content-container"
             data-testid="file-content-container"
-            data-vscode-context={JSON.stringify({
-                menuId: 'editor/context',
-                isInDiffEditor: false,
-                resourceScheme: resourceUri?.scheme ?? (isWorkingCopy ? 'file' : 'jj-view'),
-                resourceFilename: filename.replace(/\s*\([^)]*\)$/, '').trim(),
-                resourceUri: resourceUri
-                    ? {
-                          scheme: resourceUri.scheme,
-                          path: resourceUri.path,
-                          fsPath: resourceUri.fsPath,
-                          authority: resourceUri.authority,
-                          query: resourceUri.query,
-                          fragment: resourceUri.fragment,
-                      }
-                    : undefined,
-                preventDefaultContextMenuItems: true,
-            })}
+            data-vscode-context={editorContextJson}
         ></div>
     {/if}
 </div>
@@ -335,8 +403,8 @@ onDestroy(() => {
     flex-direction: column;
     height: 100%;
     width: 100%;
-    background-color: var(--vscode-editor-background, #171717);
-    color: var(--vscode-editor-foreground, #d4d4d4);
+    background-color: var(--vscode-editor-background);
+    color: var(--vscode-editor-foreground, var(--vscode-foreground));
     overflow: hidden;
     --diffs-font-family: var(--vscode-editor-font-family, monospace);
     --diffs-font-size: var(--vscode-editor-font-size, 12px);
@@ -359,27 +427,27 @@ onDestroy(() => {
     flex: 1;
     padding: 40px;
     text-align: center;
-    color: var(--vscode-descriptionForeground, #8a8a8a);
+    color: var(--vscode-descriptionForeground);
 }
 
 .binary-icon {
     font-size: 48px;
     margin-bottom: 16px;
-    color: var(--vscode-disabledForeground, #5a5a5a);
+    color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
 }
 
 .binary-card h3 {
     margin: 0 0 8px 0;
     font-size: 16px;
     font-weight: 500;
-    color: var(--vscode-foreground, #d4d4d4);
+    color: var(--vscode-foreground);
 }
 
 .binary-filename {
     margin: 0 0 4px 0;
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 13px;
-    color: var(--vscode-editor-foreground, #d4d4d4);
+    color: var(--vscode-editor-foreground, var(--vscode-foreground));
 }
 
 .binary-description {

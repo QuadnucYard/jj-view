@@ -120,7 +120,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     context.subscriptions.push(
         codeForgeRegistry.register({
             id: 'github',
-            create: (outputChannel) => new GitHubProvider(authManager, outputChannel),
+            create: (outputChannel, host) => new GitHubProvider(authManager, outputChannel, host),
         }),
     );
     context.subscriptions.push(
@@ -231,11 +231,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
     const updateContextKeys = (provider: CodeForgeProvider | undefined) => {
         hostEnvironment.commands.setContextKey('jj.codeForgeActive', !!provider);
         hostEnvironment.commands.setContextKey('jj.codeForgeProvider', provider?.id);
+        hostEnvironment.commands.setContextKey(JjContextKey.CodeForgeUploadModel, provider?.uploadModel);
         const manageable = !!provider?.isAuthManageable;
         hostEnvironment.commands.setContextKey('jj.codeForgeAuthManageable', manageable);
         hostEnvironment.commands.setContextKey('jj.codeForgeTerm', provider?.changeTerm?.toLowerCase() || 'change');
     };
     updateContextKeys(undefined);
+    hostEnvironment.commands.setContextKey(JjContextKey.HasRepository, repositoryManager.repositories.length > 0);
 
     context.subscriptions.push(
         vscode.commands.registerCommand('jj-view.manageAuth', async () => {
@@ -398,6 +400,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
 
     // Wire up edit provider refresh
     editFileSystemProvider.onDidWrite = (repo) => {
+        viewFileSystemProvider.invalidateCache();
         const scm = Array.from(scmProviders.values()).find((provider) => provider.repo === repo);
         scm?.refresh();
     };
@@ -539,6 +542,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
             checkGitColocation(repo.jj).catch((e) => {
                 outputChannel.error(`[Extension] Colocation check failed for ${repo.rootUri.fsPath}`, toError(e));
             });
+            hostEnvironment.commands.setContextKey(
+                JjContextKey.HasRepository,
+                repositoryManager.repositories.length > 0,
+            );
         }),
         repositoryManager.onDidCloseRepository(async (repo) => {
             scmWorkspacePickers.get(repo.rootUri.fsPath)?.dispose();
@@ -555,6 +562,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
                 mergeProviders.get(workspace.rootUri.fsPath)?.dispose();
                 mergeProviders.delete(workspace.rootUri.fsPath);
             }
+            hostEnvironment.commands.setContextKey(
+                JjContextKey.HasRepository,
+                repositoryManager.repositories.length > 0,
+            );
         }),
     );
 
@@ -596,6 +607,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Api> {
                 updateContextKeys(undefined);
                 hostEnvironment.commands.setContextKey(JjContextKey.ParentMutable, false);
                 hostEnvironment.commands.setContextKey(JjContextKey.HasChild, false);
+                logWebviewProvider.updateRepository(undefined).catch((err) => {
+                    outputChannel.error('[Extension] Failed to clear webview repository', toError(err));
+                });
             }
         }),
         {

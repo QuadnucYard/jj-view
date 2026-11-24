@@ -6,7 +6,14 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { buildGraph } from '../test-repo';
-import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
+import {
+    ARTIFACT_DIR,
+    expect,
+    recordGifFlow,
+    recordInteractionFlow,
+    test,
+    waitForScmReady,
+} from './standalone-fixture';
 
 test.describe('Standalone Web Quick Input & Command Palette', () => {
     test('should wrap ancestor subjects and preview searchable full descriptions', async ({
@@ -304,5 +311,140 @@ test.describe('Standalone Web Quick Input & Command Palette', () => {
         );
 
         expect(fs.existsSync(gifOutputPath)).toBe(true);
+    });
+
+    test('should execute Previous Change and Next Change commands from command palette', async ({
+        page,
+        server,
+        testRepo,
+    }) => {
+        testRepo.writeFile('step1.txt', 'step 1 content\n');
+        testRepo.describe('feat: step 1');
+        const step1Id = testRepo.getChangeId('@');
+
+        testRepo.new(['@'], 'feat: step 2');
+        testRepo.writeFile('step2.txt', 'step 2 content\n');
+        const step2Id = testRepo.getChangeId('@');
+
+        testRepo.new(['@'], '');
+
+        await page.goto(server.serverUrl);
+        await waitForScmReady(page);
+        await expect(page.locator('[data-testid="scm-pane"]')).toContainText('feat: step 2');
+
+        const gifOutputPath = path.join(ARTIFACT_DIR, 'prev-next-flow.gif');
+
+        await recordInteractionFlow(page, { gifPath: gifOutputPath, fps: 24, scale: 1280 }, async (rec) => {
+            await rec.setHud('Initial State: @ on top of feat: step 2');
+            await rec.hover(16);
+
+            // Open Command Palette and run Previous Change
+            await rec.setHud('Open Command Palette (Ctrl+Shift+P)');
+            await page.keyboard.press('Control+Shift+P');
+            const widget = page.locator('[data-testid="quick-input-widget"]');
+            await expect(widget).toBeVisible();
+            await rec.hover(10);
+
+            await rec.setHud('Run: Previous Change (jj prev)');
+            const input = page.locator('[data-testid="quick-input-text-input"]');
+            await input.fill('Previous Change');
+            const prevItem = page.locator('[data-testid="quick-pick-item-jj-view.prev"]');
+            await expect(prevItem).toBeVisible();
+            await rec.hover(12);
+
+            await rec.click(prevItem, 6);
+            await expect(widget).toHaveCount(0);
+            await expect.poll(() => testRepo.getParents('@')).toEqual([step1Id]);
+            await rec.setHud('Moved @ to child of feat: step 1');
+            await rec.hover(18);
+
+            // Open Command Palette and run Next Change
+            await rec.setHud('Open Command Palette (Ctrl+Shift+P)');
+            await page.keyboard.press('Control+Shift+P');
+            await expect(widget).toBeVisible();
+            await rec.hover(10);
+
+            await rec.setHud('Run: Next Change (jj next)');
+            await input.fill('Next Change');
+            const nextItem = page.locator('[data-testid="quick-pick-item-jj-view.next"]');
+            await expect(nextItem).toBeVisible();
+            await rec.hover(12);
+
+            await rec.click(nextItem, 6);
+            await expect(widget).toHaveCount(0);
+            await expect.poll(() => testRepo.getParents('@')).toEqual([step2Id]);
+            await rec.setHud('Moved @ forward to child of feat: step 2');
+            await rec.hover(18);
+        });
+
+        expect(fs.existsSync(gifOutputPath)).toBe(true);
+    });
+
+    test('should prompt for revision when running Show Details from command palette (list item and arbitrary commit SHA)', async ({
+        page,
+        server,
+        testRepo,
+    }) => {
+        const ids = await buildGraph(testRepo, [
+            {
+                label: 'bookmarked',
+                description: 'feat: bookmarked ancestor',
+                files: { 'a.txt': 'a\n' },
+                bookmarks: ['base-bm'],
+            },
+            {
+                label: 'target',
+                parents: ['bookmarked'],
+                description: 'feat: target by sha',
+                files: { 'b.txt': 'b\n' },
+            },
+            {
+                label: 'wc',
+                parents: ['target'],
+                description: 'working copy',
+                files: { 'c.txt': 'c\n' },
+                isCurrentWorkingCopy: true,
+            },
+        ]);
+
+        await page.goto(server.serverUrl);
+        await waitForScmReady(page);
+
+        const widget = page.locator('[data-testid="quick-input-widget"]');
+        const input = page.locator('[data-testid="quick-input-text-input"]');
+        const detailsView = page.locator('[data-testid="commit-details-view"]');
+
+        // 1. Pick a bookmarked revision from the Show Details QuickPick list
+        await page.keyboard.press('Control+Shift+P');
+        await expect(widget).toBeVisible();
+        await input.fill('Show Details');
+        const showDetailsCmd = page.locator('[data-testid="quick-pick-item-jj-view.showDetails"]');
+        await expect(showDetailsCmd).toBeVisible();
+        await page.keyboard.press('Enter');
+
+        await expect(input).toHaveAttribute('placeholder', 'Select or enter a revision to view details');
+        await input.fill('base-bm');
+        const bmItem = page.locator(`[data-testid="quick-pick-item-${ids.bookmarked.changeId}"]`);
+        await expect(bmItem).toBeVisible();
+        await page.keyboard.press('Enter');
+
+        await expect(widget).toHaveCount(0);
+        await expect(detailsView).toBeVisible({ timeout: 5000 });
+        await expect(detailsView.locator('.commit-textarea')).toHaveValue('feat: bookmarked ancestor');
+
+        // 2. Enter an arbitrary commit SHA not matched in the list via acceptCustomValue
+        await page.keyboard.press('Control+Shift+P');
+        await expect(widget).toBeVisible();
+        await input.fill('Show Details');
+        await expect(showDetailsCmd).toBeVisible();
+        await page.keyboard.press('Enter');
+
+        await expect(input).toHaveAttribute('placeholder', 'Select or enter a revision to view details');
+        await input.fill(ids.target.commitId);
+        await expect(page.locator('[data-testid="quick-pick-no-results"]')).toBeVisible();
+        await page.keyboard.press('Enter');
+
+        await expect(widget).toHaveCount(0);
+        await expect(detailsView.locator('.commit-textarea')).toHaveValue('feat: target by sha');
     });
 });

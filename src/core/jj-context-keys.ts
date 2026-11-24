@@ -28,6 +28,12 @@ export enum JjContextKey {
 
     /** Mirrors the jj-view.openDiffOnClick setting; controls inline button visibility */
     OpenDiffOnClick = 'jj.openDiffOnClick',
+
+    /** Current code forge upload model ('revision' | 'branch' | 'branch-stack' | undefined) */
+    CodeForgeUploadModel = 'jj.codeForgeUploadModel',
+
+    /** True when at least one Jujutsu repository is open */
+    HasRepository = 'jj.hasRepository',
 }
 
 /**
@@ -59,4 +65,5 @@ export enum ScmContextValue {
     ResourceAllowSquashIntoChild = 'jj.resource.allowSquashIntoChild',
     ResourceAllowOpen = 'jj.resource.allowOpen',
     ResourceAllowOpenMergeEditor = 'jj.resource.allowOpenMergeEditor',
+    ResourceAllowSplit = 'jj.resource.allowSplit',
 }

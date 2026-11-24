@@ -4,12 +4,17 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import * as vscode from 'vscode';
-import type { CodeForgeAuthManager } from '../core/code-forge-auth';
+import type { AuthCredential, CodeForgeAuthManager } from '../core/code-forge-auth';
 import type { AuthManageItem, ChangeStatusRequest, StackCommitNode } from '../core/code-forge-provider';
+import { CodeForgeRegistry } from '../core/code-forge-registry';
+import { CodeForgeService } from '../core/code-forge-service';
+import { computeUnuploadedComparison } from '../core/commands/compare-with-uploaded';
 import { GitHubProvider } from '../core/github-provider';
 import type { HostSecrets } from '../core/host/host-environment';
-import { JjService } from '../core/jj-service';
+import type { JjRepository } from '../core/jj-repository';
+import { JjService, NO_OP_LOGGER } from '../core/jj-service';
 import type { CodeForgeChangeInfo } from '../core/jj-types';
+import { FakeHostEnvironment } from './fake-host-environment';
 import { FakeGitHubServer } from './helpers/fake-github-server';
 import { TestRepo } from './test-repo';
 import {
@@ -49,8 +54,20 @@ vi.mock('vscode', () => ({
     },
 }));
 
+/** Wraps a fetch mock for batch queries so the fork check, which precedes them, gets its own answer. */
+function withForkCheck(batchMock: (url: string, init?: { body?: string }) => Promise<unknown>, isFork: boolean) {
+    return vi.fn().mockImplementation(async (url: string, init?: { body?: string }) => {
+        const query = (JSON.parse(init?.body ?? '{}') as { query?: string }).query ?? '';
+        if (query.includes('isFork') && !query.includes('pullRequests')) {
+            return { ok: true, status: 200, json: async () => ({ data: { repository: { isFork } } }) };
+        }
+        return batchMock(url, init);
+    });
+}
+
 describe('GitHubProvider', () => {
     let provider: GitHubProvider;
+    let host: FakeHostEnvironment;
     let mockOutputChannel: vscode.LogOutputChannel;
     let mockAuthManager: CodeForgeAuthManager;
     let originalEnv: string | undefined;
@@ -66,18 +83,21 @@ describe('GitHubProvider', () => {
             markPromptedThisSession: vi.fn(),
             setAuthSkipped: vi.fn(),
             registerProvider: vi.fn(),
-            getSessionToken: vi.fn().mockResolvedValue('test-token'),
+            getSessionCredential: vi.fn().mockResolvedValue({ kind: 'bearer', token: 'test-token' }),
+            clearInvalidCredential: vi.fn().mockResolvedValue(undefined),
             hasOAuthSession: vi.fn().mockResolvedValue(false),
             performOAuthSignIn: vi.fn(),
             getAuthManageItems: vi.fn(),
             promptForPat: vi.fn(),
             secrets: createMock<HostSecrets>({
                 get: vi.fn(),
+                has: vi.fn().mockResolvedValue(false),
                 store: vi.fn(),
                 delete: vi.fn(),
             }),
         });
-        provider = new GitHubProvider(mockAuthManager, mockOutputChannel);
+        host = new FakeHostEnvironment();
+        provider = new GitHubProvider(mockAuthManager, mockOutputChannel, host);
         vi.mocked(vscode.window.showWarningMessage).mockReset();
     });
 
@@ -399,14 +419,14 @@ describe('GitHubProvider', () => {
         expect(cachedEntry?.status).toBe('NEW');
     });
 
-    test('getSessionToken delegates to authManager.getSessionToken', async () => {
-        vi.mocked(mockAuthManager.getSessionToken).mockResolvedValue('delegated-token');
-        const getSession = exposePrivate<{ getSessionToken(): Promise<string | undefined> }>(
+    test('getSessionCredential delegates to authManager.getSessionCredential', async () => {
+        vi.mocked(mockAuthManager.getSessionCredential).mockResolvedValue({ kind: 'secret', key: 'github_token' });
+        const getSession = exposePrivate<{ getSessionCredential(): Promise<AuthCredential | undefined> }>(
             provider,
-        ).getSessionToken.bind(provider);
-        const token = await getSession();
-        expect(token).toBe('delegated-token');
-        expect(mockAuthManager.getSessionToken).toHaveBeenCalledWith('github', {
+        ).getSessionCredential.bind(provider);
+        const credential = await getSession();
+        expect(credential).toEqual({ kind: 'secret', key: 'github_token' });
+        expect(mockAuthManager.getSessionCredential).toHaveBeenCalledWith('github', {
             scopes: ['repo'],
             envTokenKey: 'JJ_VIEW_GITHUB_TOKEN',
             secretTokenKey: 'github_token',
@@ -425,12 +445,13 @@ describe('GitHubProvider', () => {
 
     test('hasAuth returns true if stored token is found, false otherwise', async () => {
         delete process.env.JJ_VIEW_GITHUB_TOKEN;
-        vi.mocked(mockAuthManager.secrets.get).mockResolvedValue('stored-pat');
+        vi.mocked(mockAuthManager.secrets.has).mockResolvedValue(true);
         let hasAuth = await provider.hasAuth();
         expect(hasAuth).toBe(true);
-        expect(mockAuthManager.secrets.get).toHaveBeenCalledWith('github_token');
+        expect(mockAuthManager.secrets.has).toHaveBeenCalledWith('github_token');
+        expect(mockAuthManager.secrets.get).not.toHaveBeenCalled();
 
-        vi.mocked(mockAuthManager.secrets.get).mockResolvedValue(undefined);
+        vi.mocked(mockAuthManager.secrets.has).mockResolvedValue(false);
         vi.mocked(mockAuthManager.hasOAuthSession).mockResolvedValue(true);
         hasAuth = await provider.hasAuth();
         expect(hasAuth).toBe(true);
@@ -462,7 +483,7 @@ describe('GitHubProvider', () => {
     });
 
     test('promptForPat delegates to authManager.promptForPat', async () => {
-        const expectedResult = { status: 'success', token: 'mock-token' } as const;
+        const expectedResult = { status: 'success', credential: { kind: 'secret', key: 'github_token' } } as const;
         vi.mocked(mockAuthManager.promptForPat).mockResolvedValue(expectedResult);
 
         const result = await provider.promptForPat();
@@ -483,7 +504,7 @@ describe('GitHubProvider', () => {
         setPrivate(provider, 'owner', 'fork-owner');
         setPrivate(provider, 'repo', 'fork-repo');
 
-        const fetchMock = vi.fn().mockResolvedValue({
+        const batchMock = vi.fn().mockResolvedValue({
             ok: true,
             status: 200,
             json: async () => ({
@@ -519,7 +540,7 @@ describe('GitHubProvider', () => {
                 },
             }),
         });
-        global.fetch = fetchMock;
+        global.fetch = withForkCheck(batchMock, true);
 
         const fetchBatch = exposePrivate<{
             fetchBatchFromNetwork(
@@ -536,8 +557,8 @@ describe('GitHubProvider', () => {
         expect(pr?.number).toBe(42);
         expect(pr?.url).toBe('https://github.com/parent-owner/parent-repo/pull/42');
 
-        expect(fetchMock).toHaveBeenCalledTimes(1);
-        const requestBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+        expect(batchMock).toHaveBeenCalledTimes(1);
+        const requestBody = JSON.parse(batchMock.mock.calls[0][1]?.body as string);
         expect(requestBody.query).toContain('parent {');
     });
 
@@ -550,7 +571,7 @@ describe('GitHubProvider', () => {
 
         const origFetch = global.fetch;
         try {
-            const fetchMock = vi.fn().mockResolvedValue({
+            const batchMock = vi.fn().mockResolvedValue({
                 ok: true,
                 status: 200,
                 json: async () => ({
@@ -586,7 +607,7 @@ describe('GitHubProvider', () => {
                     },
                 }),
             });
-            global.fetch = fetchMock;
+            global.fetch = withForkCheck(batchMock, false);
 
             const fetchBatch = exposePrivate<{
                 fetchBatchFromNetwork(
@@ -604,7 +625,7 @@ describe('GitHubProvider', () => {
             expect(pr?.status).toBe('NEW');
             expect(pr?.displayLabel).toBe('PR #4');
 
-            const requestBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+            const requestBody = JSON.parse(batchMock.mock.calls[0][1]?.body as string);
             expect(requestBody.query).toContain('orderBy: { field: CREATED_AT, direction: DESC }');
         } finally {
             global.fetch = origFetch;
@@ -682,7 +703,11 @@ describe('GitHubProvider', () => {
 
         afterEach(async () => {
             await server.stop();
-            process.env.JJ_VIEW_GITHUB_API_URL = originalApiUrl;
+            if (originalApiUrl === undefined) {
+                delete process.env.JJ_VIEW_GITHUB_API_URL;
+            } else {
+                process.env.JJ_VIEW_GITHUB_API_URL = originalApiUrl;
+            }
         });
 
         test('getCommentThreads fetches threads from GitHub', async () => {
@@ -955,7 +980,11 @@ describe('GitHubProvider', () => {
 
         afterEach(async () => {
             await server.stop();
-            process.env.JJ_VIEW_GITHUB_API_URL = originalApiUrl;
+            if (originalApiUrl === undefined) {
+                delete process.env.JJ_VIEW_GITHUB_API_URL;
+            } else {
+                process.env.JJ_VIEW_GITHUB_API_URL = originalApiUrl;
+            }
         });
 
         test('creates chained PRs when none exist', async () => {
@@ -1323,6 +1352,718 @@ describe('GitHubProvider', () => {
             } finally {
                 testRepo.dispose();
             }
+        });
+    });
+
+    describe('fork check', () => {
+        let server: FakeGitHubServer;
+        let originalApiUrl: string | undefined;
+        let testRepo: TestRepo;
+        let jj: JjService;
+
+        const forkChecks = () => server.requests.filter((r) => r.body.includes('isFork')).length;
+        const batchQueries = () =>
+            server.requests
+                .map((r) => (JSON.parse(r.body) as { query?: string }).query ?? '')
+                .filter((q) => q.includes('pullRequests'));
+        const pr = (number: number, headOwner: string) => ({
+            id: `pr_node_${number}`,
+            number,
+            state: 'OPEN' as const,
+            mergeable: 'MERGEABLE' as const,
+            url: `https://github.com/mainline/repo/pull/${number}`,
+            headOwner,
+        });
+
+        beforeEach(async () => {
+            testRepo = new TestRepo();
+            testRepo.init();
+            jj = new JjService(testRepo.path, NO_OP_LOGGER);
+            server = new FakeGitHubServer();
+            await server.start();
+            originalApiUrl = process.env.JJ_VIEW_GITHUB_API_URL;
+            process.env.JJ_VIEW_GITHUB_API_URL = server.url;
+            setPrivate(provider, 'owner', 'me');
+            setPrivate(provider, 'repo', 'repo');
+            accessPrivate<Set<string>>(provider, 'allowedOwners').add('me');
+        });
+
+        afterEach(async () => {
+            await server.stop();
+            await testRepo.dispose();
+            if (originalApiUrl === undefined) {
+                delete process.env.JJ_VIEW_GITHUB_API_URL;
+            } else {
+                process.env.JJ_VIEW_GITHUB_API_URL = originalApiUrl;
+            }
+        });
+
+        test('omits the parent block for a repo that is not a fork', async () => {
+            server.registerPR('feature', pr(1, 'me'));
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])?.number).toBe(1);
+            expect(batchQueries()).toHaveLength(1);
+            expect(batchQueries()[0]).not.toContain('parent {');
+        });
+
+        test('finds PRs in the parent repo when the repo is a fork', async () => {
+            server.isFork = true;
+            server.registerParentPR('feature', pr(7, 'me'));
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])?.number).toBe(7);
+            expect(batchQueries()[0]).toContain('parent {');
+        });
+
+        test('still finds PRs in the fork itself when the repo is a fork', async () => {
+            server.isFork = true;
+            server.registerPR('feature', pr(3, 'me'));
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])?.number).toBe(3);
+        });
+
+        test('does not resolve a parent PR when the repo is not a fork', async () => {
+            server.registerParentPR('feature', pr(7, 'me'));
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])).toBeUndefined();
+        });
+
+        test('checks once per repo, even across parallel batches and later refreshes', async () => {
+            const bookmarks = Array.from({ length: 45 }, (_, i) => `bm-${i}`);
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks }], jj);
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks }], jj);
+
+            expect(batchQueries()).toHaveLength(6);
+            expect(forkChecks()).toBe(1);
+        });
+
+        test('checks again after the cache is cleared', async () => {
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+            provider.clearCache();
+            server.isFork = true;
+            server.registerParentPR('feature', pr(7, 'me'));
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            expect(forkChecks()).toBe(2);
+            expect(batchQueries()[1]).toContain('parent {');
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])?.number).toBe(7);
+        });
+
+        test('checks again when detect() resolves a different repo', async () => {
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            await provider.detect('/ws', [{ name: 'origin', url: 'https://github.com/me/other-repo.git' }]);
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            expect(forkChecks()).toBe(2);
+        });
+
+        test('checks again when the API host changes', async () => {
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+            const other = new FakeGitHubServer();
+            await other.start();
+            try {
+                process.env.JJ_VIEW_GITHUB_API_URL = other.url;
+
+                await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+                expect(other.requests.filter((r) => r.body.includes('isFork'))).toHaveLength(1);
+            } finally {
+                await other.stop();
+            }
+        });
+
+        test('sends the batch to the repo the fork check was for when detect() switches repos mid-check', async () => {
+            const realFetch = global.fetch;
+            let releaseCheck!: () => void;
+            const checkGate = new Promise<void>((resolve) => {
+                releaseCheck = resolve;
+            });
+            let checkSeen!: () => void;
+            const checkStarted = new Promise<void>((resolve) => {
+                checkSeen = resolve;
+            });
+            global.fetch = vi.fn().mockImplementation(async (url: string, init?: { body?: string }) => {
+                const query = (JSON.parse(init?.body ?? '{}') as { query?: string }).query ?? '';
+                if (query.includes('isFork')) {
+                    checkSeen();
+                    await checkGate;
+                }
+                return realFetch(url, init as RequestInit);
+            });
+
+            const fetching = provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+            await checkStarted;
+            await provider.detect('/ws', [{ name: 'origin', url: 'https://github.com/me/other-repo.git' }]);
+            releaseCheck();
+            await fetching;
+
+            const batch = server.requests.map((r) => JSON.parse(r.body) as { query?: string; variables?: unknown });
+            const batchVariables = batch.find((b) => b.query?.includes('pullRequests'))?.variables;
+            expect(batchVariables).toEqual({ owner: 'me', name: 'repo' });
+        });
+
+        test('clears the token and sends no batch query when the fork check gets a 401', async () => {
+            const realFetch = global.fetch;
+            let unauthorized = true;
+            const fetchMock = vi.fn().mockImplementation((url: string, init?: { body?: string }) => {
+                const query = (JSON.parse(init?.body ?? '{}') as { query?: string }).query ?? '';
+                if (unauthorized && query.includes('isFork')) {
+                    return Promise.resolve(new Response('{}', { status: 401, statusText: 'Unauthorized' }));
+                }
+                return realFetch(url, init as RequestInit);
+            });
+            global.fetch = fetchMock;
+            server.registerPR('feature', pr(1, 'me'));
+            const bookmarks = ['feature', ...Array.from({ length: 44 }, (_, i) => `bm-${i}`)];
+
+            const changed = await provider.fetchStatuses([{ commitId: 'c1', bookmarks }], jj);
+
+            expect(changed).toBe(false);
+            expect(batchQueries()).toHaveLength(0);
+            expect(mockAuthManager.clearInvalidCredential).toHaveBeenCalledTimes(1);
+            expect(mockAuthManager.clearInvalidCredential).toHaveBeenCalledWith({
+                providerId: 'github',
+                credential: { kind: 'bearer', token: 'test-token' },
+            });
+
+            // Once the token has been replaced the check runs again, and the batches go out.
+            unauthorized = false;
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks }], jj);
+
+            const checkRequests = fetchMock.mock.calls.filter((call) => String(call[1]?.body).includes('isFork'));
+            expect(checkRequests).toHaveLength(2);
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])?.number).toBe(1);
+        });
+
+        test('falls back to querying the parent, and retries the check, when the check fails', async () => {
+            const realFetch = global.fetch;
+            let failChecks = true;
+            global.fetch = vi.fn().mockImplementation((url: string, init?: { body?: string }) => {
+                const query = (JSON.parse(init?.body ?? '{}') as { query?: string }).query ?? '';
+                if (failChecks && query.includes('isFork')) {
+                    return Promise.reject(new Error('network down'));
+                }
+                return realFetch(url, init as RequestInit);
+            });
+            server.registerParentPR('feature', pr(7, 'me'));
+            server.isFork = true;
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])?.number).toBe(7);
+            expect(batchQueries()[0]).toContain('parent {');
+
+            failChecks = false;
+            server.isFork = false;
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            expect(batchQueries()[1]).not.toContain('parent {');
+        });
+
+        test('falls back to querying the parent when the check reports GraphQL errors', async () => {
+            const realFetch = global.fetch;
+            global.fetch = vi.fn().mockImplementation((url: string, init?: { body?: string }) => {
+                const query = (JSON.parse(init?.body ?? '{}') as { query?: string }).query ?? '';
+                if (query.includes('isFork')) {
+                    return Promise.resolve(
+                        new Response(JSON.stringify({ errors: [{ type: 'RATE_LIMIT' }] }), { status: 200 }),
+                    );
+                }
+                return realFetch(url, init as RequestInit);
+            });
+
+            server.registerPR('feature', pr(1, 'me'));
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['feature'] }], jj);
+
+            // The server is not a fork here, so it answers `parent: null` and the repo's own PR is used.
+            expect(batchQueries()[0]).toContain('parent {');
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['feature'])?.number).toBe(1);
+        });
+
+        test('resolves parent PRs for bookmark names containing braces', async () => {
+            server.isFork = true;
+            server.registerParentPR('a}b', pr(4, 'me'));
+            server.registerParentPR('c{d', pr(5, 'me'));
+
+            await provider.fetchStatuses([{ commitId: 'c1', bookmarks: ['plain', 'a}b', 'c{d'] }], jj);
+
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['a}b'])?.number).toBe(4);
+            expect(provider.getCachedChangeInfo(undefined, undefined, ['c{d'])?.number).toBe(5);
+        });
+    });
+
+    describe('Uploaded revision comparison & rebase-aware content sync', () => {
+        let server: FakeGitHubServer;
+        let testRepo: TestRepo;
+        let jj: JjService;
+        let originalApiUrl: string | undefined;
+
+        beforeEach(async () => {
+            testRepo = new TestRepo();
+            testRepo.init();
+            testRepo.addRemote('origin', 'https://github.com/test-owner/test-repo.git');
+            jj = new JjService(testRepo.path, NO_OP_LOGGER);
+            server = new FakeGitHubServer();
+            await server.start();
+            originalApiUrl = process.env.JJ_VIEW_GITHUB_API_URL;
+            process.env.JJ_VIEW_GITHUB_API_URL = server.url;
+            setPrivate(provider, 'owner', 'test-owner');
+            setPrivate(provider, 'repo', 'test-repo');
+        });
+
+        afterEach(async () => {
+            await server.stop();
+            await testRepo.dispose();
+            if (originalApiUrl === undefined) {
+                delete process.env.JJ_VIEW_GITHUB_API_URL;
+            } else {
+                process.env.JJ_VIEW_GITHUB_API_URL = originalApiUrl;
+            }
+        });
+
+        test('populates remoteBaseRevision and keeps contentSynced true after clean rebase via local git store', async () => {
+            testRepo.new(['root()'], 'base 1');
+            testRepo.writeFile('base.txt', 'v1\n');
+            const base1Sha = testRepo.getCommitId('@');
+            testRepo.bookmark('main', base1Sha);
+
+            testRepo.new([base1Sha], 'Feat title\n\nFeat body');
+            testRepo.writeFile('a.ts', 'export const a = 1;\n');
+            const featOrig = testRepo.getChangeAndCommitId('@');
+            const uploadedSha = featOrig.commitId;
+            testRepo.bookmark('feat-bm', '@');
+
+            testRepo.new([base1Sha], 'upstream advance');
+            testRepo.writeFile('upstream.ts', 'export const upstream = true;\n');
+            const base2Sha = testRepo.getCommitId('@');
+            testRepo.bookmarkMove('main', base2Sha);
+
+            testRepo.rebase({ revision: featOrig.changeId, destination: base2Sha });
+            const [rebasedEntry] = await jj.getLog({ revision: featOrig.changeId, limit: 1, omitChanges: false });
+            expect(rebasedEntry).toBeDefined();
+            expect(rebasedEntry.commit_id).not.toBe(uploadedSha);
+
+            server.registerPR('feat-bm', {
+                id: 'PR_sync_1',
+                number: 101,
+                state: 'OPEN',
+                mergeable: 'MERGEABLE',
+                url: 'https://github.com/test-owner/test-repo/pull/101',
+                baseRefName: 'main',
+                baseRefOid: base1Sha,
+                remoteParents: [base1Sha],
+                currentRevision: uploadedSha,
+                commitMessage: 'Feat title\n\nFeat body',
+                headOwner: 'test-owner',
+            });
+
+            await provider.fetchStatuses(
+                [
+                    {
+                        commitId: rebasedEntry.commit_id,
+                        changeId: rebasedEntry.change_id,
+                        description: rebasedEntry.description,
+                        bookmarks: ['feat-bm'],
+                        parents: rebasedEntry.parents,
+                        changes: rebasedEntry.changes,
+                    },
+                ],
+                jj,
+            );
+
+            const cached = provider.getCachedChangeInfo(
+                rebasedEntry.change_id,
+                rebasedEntry.description,
+                ['feat-bm'],
+                rebasedEntry.commit_id,
+            );
+            expect(cached).toBeDefined();
+            expect(cached?.remoteBaseRevision).toBe(base1Sha);
+            expect(cached?.remoteBaseRefName).toBe('main');
+            expect(cached?.files?.['a.ts']?.newSha).toMatch(/^[0-9a-f]{40}$/);
+            expect(cached?.contentSynced).toBe(true);
+            expect(server.requests.filter((r) => r.url.includes('/pulls/'))).toEqual([]);
+
+            // Editing a file locally marks contentSynced false
+            testRepo.edit(featOrig.changeId);
+            testRepo.writeFile('a.ts', 'export const a = 2;\n');
+            const [editedEntry] = await jj.getLog({ revision: featOrig.changeId, limit: 1, omitChanges: false });
+            await provider.fetchStatuses(
+                [
+                    {
+                        commitId: editedEntry.commit_id,
+                        changeId: editedEntry.change_id,
+                        description: editedEntry.description,
+                        bookmarks: ['feat-bm'],
+                        parents: editedEntry.parents,
+                        changes: editedEntry.changes,
+                    },
+                ],
+                jj,
+            );
+
+            const editedCached = provider.getCachedChangeInfo(
+                editedEntry.change_id,
+                editedEntry.description,
+                ['feat-bm'],
+                editedEntry.commit_id,
+            );
+            expect(editedCached?.contentSynced).toBe(false);
+        });
+
+        test('supports multi-commit branch PR clean rebase and scoped computeUnuploadedComparison', async () => {
+            testRepo.new(['root()'], 'base 1');
+            testRepo.writeFile('base.txt', 'v1\n');
+            const base1Sha = testRepo.getCommitId('@');
+            testRepo.bookmark('main', base1Sha);
+
+            testRepo.new([base1Sha], 'Branch commit 1');
+            testRepo.writeFile('c1.ts', 'export const c1 = 1;\n');
+            const c1Orig = testRepo.getChangeAndCommitId('@');
+
+            testRepo.new([c1Orig.commitId], 'Branch commit 2\n\nDetails');
+            testRepo.writeFile('c2.ts', 'export const c2 = 2;\n');
+            const c2Orig = testRepo.getChangeAndCommitId('@');
+            const uploadedHeadSha = c2Orig.commitId;
+            testRepo.bookmark('branch-bm', '@');
+
+            testRepo.new([base1Sha], 'upstream advance');
+            testRepo.writeFile('upstream.ts', 'export const upstream = true;\n');
+            const base2Sha = testRepo.getCommitId('@');
+            testRepo.bookmarkMove('main', base2Sha);
+
+            testRepo.rebase({ source: c1Orig.changeId, destination: base2Sha });
+            const [rebasedC2] = await jj.getLog({ revision: c2Orig.changeId, limit: 1, omitChanges: false });
+            expect(rebasedC2).toBeDefined();
+
+            server.registerPR('branch-bm', {
+                id: 'PR_branch_1',
+                number: 102,
+                state: 'OPEN',
+                mergeable: 'MERGEABLE',
+                url: 'https://github.com/test-owner/test-repo/pull/102',
+                baseRefName: 'main',
+                baseRefOid: base1Sha,
+                remoteParents: [c1Orig.commitId],
+                currentRevision: uploadedHeadSha,
+                commitMessage: 'Branch commit 2\n\nDetails',
+                headOwner: 'test-owner',
+            });
+
+            const registry = new CodeForgeRegistry();
+            registry.register({
+                id: 'github',
+                create: () => provider,
+            });
+            const codeForge = new CodeForgeService(testRepo.path, jj, registry, host, NO_OP_LOGGER);
+
+            try {
+                await codeForge.detectActiveProvider();
+                await codeForge.ensureFreshStatuses([
+                    {
+                        commitId: rebasedC2.commit_id,
+                        changeId: rebasedC2.change_id,
+                        description: rebasedC2.description,
+                        bookmarks: ['branch-bm'],
+                        parents: rebasedC2.parents,
+                        changes: rebasedC2.changes,
+                    },
+                ]);
+
+                const syncedCached = provider.getCachedChangeInfo(
+                    rebasedC2.change_id,
+                    rebasedC2.description,
+                    ['branch-bm'],
+                    rebasedC2.commit_id,
+                );
+                expect(syncedCached?.contentSynced).toBe(true);
+
+                // Modify c2.ts locally while keeping c1.ts and upstream.ts unchanged
+                testRepo.edit(c2Orig.changeId);
+                testRepo.writeFile('c2.ts', 'export const c2 = 99;\n');
+                const [editedC2] = await jj.getLog({ revision: c2Orig.changeId, limit: 1, omitChanges: false });
+                await codeForge.ensureFreshStatuses([
+                    {
+                        commitId: editedC2.commit_id,
+                        changeId: editedC2.change_id,
+                        description: editedC2.description,
+                        bookmarks: ['branch-bm'],
+                        parents: editedC2.parents,
+                        changes: editedC2.changes,
+                    },
+                ]);
+
+                const result = await computeUnuploadedComparison(
+                    createMock<JjRepository>({ jj, codeForge }),
+                    c2Orig.changeId,
+                );
+                expect(result.unuploadedFilePaths).toEqual(['c2.ts']);
+                expect(result.unuploadedFilePaths).not.toContain('c1.ts');
+                expect(result.unuploadedFilePaths).not.toContain('upstream.ts');
+            } finally {
+                codeForge.dispose();
+                registry.dispose();
+            }
+        });
+
+        test('falls back to REST for uncached PR files, binary blobs, 404 caching, and 500 errors', async () => {
+            const remoteSha = 'deadbeef'.repeat(5);
+            const addedBlobSha = 'aa11'.repeat(10);
+            const fallbackBlobSha = 'ff99'.repeat(10);
+            const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+            const rawFallbackBytes = new Uint8Array([0x01, 0x02, 0x00, 0xfe, 0xff]);
+
+            server.registerPR('tier2-bm', {
+                id: 'PR_tier2',
+                number: 202,
+                state: 'OPEN',
+                mergeable: 'MERGEABLE',
+                url: 'https://github.com/test-owner/test-repo/pull/202',
+                baseRefName: 'main',
+                currentRevision: remoteSha,
+                headOwner: 'test-owner',
+                files: [
+                    { filename: 'added.png', status: 'added', sha: addedBlobSha },
+                    { filename: 'modified.ts', status: 'modified', sha: 'bb22'.repeat(10) },
+                    { filename: 'deleted.ts', status: 'removed', sha: null },
+                    {
+                        filename: 'new-name.ts',
+                        previous_filename: 'old-name.ts',
+                        status: 'renamed',
+                        sha: 'cc33'.repeat(10),
+                    },
+                ],
+            });
+            server.registerBlob(addedBlobSha, pngBytes);
+            server.registerContent(remoteSha, 'fallback.bin', rawFallbackBytes);
+
+            await provider.fetchStatuses([{ commitId: 'local-commit', bookmarks: ['tier2-bm'] }], jj);
+            const cachedInfo = provider.getCachedChangeInfo(undefined, undefined, ['tier2-bm']);
+            expect(cachedInfo).toBeDefined();
+            expect(cachedInfo?.files).toBeUndefined();
+
+            if (!cachedInfo) {
+                throw new Error('Expected cachedInfo to be defined');
+            }
+
+            const details = await provider.fetchUploadedRevisionDetails(cachedInfo);
+            expect(details?.files).toEqual({
+                'added.png': { status: 'A', newSha: addedBlobSha },
+                'modified.ts': { status: 'M', newSha: 'bb22'.repeat(10) },
+                'deleted.ts': { status: 'D' },
+                'new-name.ts': { status: 'R', oldPath: 'old-name.ts', newSha: 'cc33'.repeat(10) },
+            });
+
+            // Binary blob via /git/blobs/:sha
+            const fetchedPng = await provider.getUploadedFileContent({
+                changeId: cachedInfo.id,
+                changeNumber: cachedInfo.number,
+                revisionId: remoteSha,
+                filePath: 'added.png',
+                blobSha: addedBlobSha,
+            });
+            expect(fetchedPng).toEqual(pngBytes);
+
+            // Fallback via /contents/:path?ref=... when blobSha is missing in /git/blobs (404)
+            const fetchedRaw = await provider.getUploadedFileContent({
+                changeId: cachedInfo.id,
+                changeNumber: cachedInfo.number,
+                revisionId: remoteSha,
+                filePath: '/fallback.bin',
+                blobSha: fallbackBlobSha,
+            });
+            expect(fetchedRaw).toEqual(rawFallbackBytes);
+
+            // 404 returns undefined and is cached
+            const reqCountBeforeMissing = server.requests.length;
+            const missingFirst = await provider.getUploadedFileContent({
+                changeId: cachedInfo.id,
+                changeNumber: cachedInfo.number,
+                revisionId: remoteSha,
+                filePath: 'does-not-exist.txt',
+            });
+            expect(missingFirst).toBeUndefined();
+            const missingSecond = await provider.getUploadedFileContent({
+                changeId: cachedInfo.id,
+                changeNumber: cachedInfo.number,
+                revisionId: remoteSha,
+                filePath: 'does-not-exist.txt',
+            });
+            expect(missingSecond).toBeUndefined();
+            expect(server.requests.length).toBe(reqCountBeforeMissing + 1);
+
+            // 500 throws without caching so retry succeeds once healthy
+            const retryBytes = new Uint8Array([10, 20, 30, 40]);
+            server.registerContent(remoteSha, 'transient.bin', retryBytes);
+            server.failRestWithStatus = 500;
+            await expect(
+                provider.getUploadedFileContent({
+                    changeId: cachedInfo.id,
+                    changeNumber: cachedInfo.number,
+                    revisionId: remoteSha,
+                    filePath: 'transient.bin',
+                }),
+            ).rejects.toThrow('status 500');
+
+            server.failRestWithStatus = undefined;
+            const recovered = await provider.getUploadedFileContent({
+                changeId: cachedInfo.id,
+                changeNumber: cachedInfo.number,
+                revisionId: remoteSha,
+                filePath: 'transient.bin',
+            });
+            expect(recovered).toEqual(retryBytes);
+        });
+
+        test('treats locally split commits matching a 1-commit PR as contentSynced', async () => {
+            testRepo.new(['root()'], 'base');
+            testRepo.writeFile('base.txt', 'base\n');
+            const baseSha = testRepo.getCommitId('@');
+            testRepo.bookmark('main', baseSha);
+
+            // Uploaded commit adds f1.ts and f2.ts together in a single remote commit
+            testRepo.new([baseSha], 'Combined PR\n\nBody');
+            testRepo.writeFile('f1.ts', 'export const f1 = 1;\n');
+            testRepo.writeFile('f2.ts', 'export const f2 = 2;\n');
+            const uploaded = testRepo.getChangeAndCommitId('@');
+
+            // Local history splits the same changes into 2 commits above main
+            testRepo.new([baseSha], 'Part 1');
+            testRepo.writeFile('f1.ts', 'export const f1 = 1;\n');
+            const part1 = testRepo.getChangeAndCommitId('@');
+
+            testRepo.new([part1.commitId], 'Combined PR\n\nBody');
+            testRepo.writeFile('f2.ts', 'export const f2 = 2;\n');
+            const part2 = testRepo.getChangeAndCommitId('@');
+            testRepo.bookmark('split-bm', '@');
+
+            server.registerPR('split-bm', {
+                id: 'PR_split',
+                number: 103,
+                state: 'OPEN',
+                mergeable: 'MERGEABLE',
+                url: 'https://github.com/test-owner/test-repo/pull/103',
+                baseRefName: 'main',
+                baseRefOid: baseSha,
+                remoteParents: [baseSha],
+                currentRevision: uploaded.commitId,
+                commitMessage: 'Combined PR\n\nBody',
+                headOwner: 'test-owner',
+            });
+
+            const [part2Entry] = await jj.getLog({ revision: part2.changeId, limit: 1, omitChanges: false });
+            await provider.fetchStatuses(
+                [
+                    {
+                        commitId: part2Entry.commit_id,
+                        changeId: part2Entry.change_id,
+                        description: part2Entry.description,
+                        bookmarks: ['split-bm'],
+                        parents: part2Entry.parents,
+                        changes: part2Entry.changes,
+                    },
+                ],
+                jj,
+            );
+
+            const cached = provider.getCachedChangeInfo(
+                part2Entry.change_id,
+                part2Entry.description,
+                ['split-bm'],
+                part2Entry.commit_id,
+            );
+            expect(cached?.contentSynced).toBe(true);
+        });
+
+        test('paginates /pulls/:number/files across multiple pages, handles 401, and avoids partial local range fallback', async () => {
+            const files = Array.from({ length: 105 }, (_, i) => ({
+                filename: `src/file-${String(i).padStart(3, '0')}.ts`,
+                status: 'modified',
+                sha: `${i.toString(16).padStart(4, '0')}${'a'.repeat(36)}`,
+            }));
+            const remoteSha = 'abcd1234'.repeat(5);
+            const missingBaseSha = '99990000'.repeat(5);
+
+            // Create a local commit that exists in .git, while remoteBaseRevision does NOT exist locally
+            testRepo.new(['root()'], 'Local head present');
+            testRepo.writeFile('head-only.ts', 'export const h = 1;\n');
+            const localHead = testRepo.getChangeAndCommitId('@');
+            testRepo.bookmark('multi-page-bm', '@');
+
+            server.registerPR('multi-page-bm', {
+                id: 'PR_paged',
+                number: 303,
+                state: 'OPEN',
+                mergeable: 'MERGEABLE',
+                url: 'https://github.com/upstream-org/upstream-repo/pull/303',
+                baseRefName: 'main',
+                baseRefOid: missingBaseSha,
+                remoteParents: ['88887777'.repeat(5)], // multi-commit / shifted base
+                currentRevision: localHead.commitId,
+                commitMessage: 'Local head present',
+                files,
+            });
+
+            await provider.fetchStatuses(
+                [
+                    {
+                        commitId: localHead.commitId,
+                        changeId: localHead.changeId,
+                        description: 'Local head present',
+                        bookmarks: ['multi-page-bm'],
+                    },
+                ],
+                jj,
+            );
+            const cachedAfterFetch = provider.getCachedChangeInfo(undefined, undefined, ['multi-page-bm']);
+            // Must NOT populate partial 1-commit local files when remoteBaseRevision is missing from local .git
+            expect(cachedAfterFetch?.files).toBeUndefined();
+
+            if (!cachedAfterFetch) {
+                throw new Error('Expected cachedAfterFetch to be defined');
+            }
+            const pagedDetails = await provider.fetchUploadedRevisionDetails(cachedAfterFetch);
+            expect(Object.keys(pagedDetails?.files ?? {})).toHaveLength(105);
+            expect(pagedDetails?.files['src/file-104.ts']?.newSha).toBe(files[104].sha);
+            expect(server.requests.some((r) => r.url.includes('page=2'))).toBe(true);
+
+            // Clearing main bookmark cache still preserves prOwnerRepoByKey target for /upstream-org/upstream-repo/
+            (setPrivate as (obj: unknown, key: string, val: unknown) => void)(provider, 'cache', new Map());
+            const page2Blob = new Uint8Array([1, 2, 3, 4]);
+            server.registerBlob(files[104].sha, page2Blob);
+            const fetchedAfterCacheEvict = await provider.getUploadedFileContent({
+                changeId: cachedAfterFetch.id,
+                changeNumber: cachedAfterFetch.number,
+                revisionId: remoteSha,
+                filePath: 'src/file-104.ts',
+                blobSha: files[104].sha,
+            });
+            expect(fetchedAfterCacheEvict).toEqual(page2Blob);
+            expect(server.requests.some((r) => r.url.includes('/repos/upstream-org/upstream-repo/git/blobs/'))).toBe(
+                true,
+            );
+
+            // HTTP 401 clears invalid credential
+            server.failRestWithStatus = 401;
+            await expect(
+                provider.getUploadedFileContent({
+                    changeId: cachedAfterFetch.id,
+                    changeNumber: cachedAfterFetch.number,
+                    revisionId: remoteSha,
+                    filePath: 'auth-fail.ts',
+                }),
+            ).rejects.toThrow('401 Unauthorized');
+            expect(mockAuthManager.clearInvalidCredential).toHaveBeenCalled();
         });
     });
 });

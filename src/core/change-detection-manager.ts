@@ -4,12 +4,12 @@
  */
 
 import type { BackendType } from '@parcel/watcher';
-import path from 'pathe';
 import { toError } from '../utils/error-utils';
 import type { LoggerChannel } from '../utils/output-channel';
 import { DirectoryWatcher } from './directory-watcher';
 import type { HostDisposable, HostEnvironment } from './host/host-environment';
 import type { JjService } from './jj-service';
+import { isWindowsPlatform, pathBasename, pathIsAbsolute, pathJoin, pathRelative } from './path-utils';
 import { Poller } from './poller';
 
 export class ChangeDetectionManager implements HostDisposable {
@@ -49,9 +49,9 @@ export class ChangeDetectionManager implements HostDisposable {
     }
 
     private _pendingForceSnapshot = false;
+    private _pendingSkipIfOpUnchanged = true;
 
-    private _scheduleDeferredRefresh(forceSnapshot = false) {
-        this._pendingForceSnapshot = this._pendingForceSnapshot || forceSnapshot;
+    private _armDeferredRefreshTimer() {
         if (this._deferredRefreshTimeout) {
             return;
         }
@@ -62,21 +62,37 @@ export class ChangeDetectionManager implements HostDisposable {
             }
             const writes = this.hasActiveOrRecentWrites;
             if (writes) {
-                this._scheduleDeferredRefresh();
+                this._armDeferredRefreshTimer();
             } else {
                 this.lastExternalOpTime = Date.now();
                 const force = this._pendingForceSnapshot;
+                const skipIfOpUnchanged = this._pendingSkipIfOpUnchanged;
                 this._pendingForceSnapshot = false;
-                this.triggerRefresh({ forceSnapshot: force, reason: 'deferred watcher event' });
+                this._pendingSkipIfOpUnchanged = true;
+                this.triggerRefresh({
+                    forceSnapshot: force,
+                    reason: 'deferred watcher event',
+                    ...(skipIfOpUnchanged ? { skipIfOpUnchanged: true } : {}),
+                });
             }
         }, 500);
+    }
+
+    private _scheduleDeferredRefresh(forceSnapshot = false, skipIfOpUnchanged = false) {
+        this._pendingForceSnapshot = this._pendingForceSnapshot || forceSnapshot;
+        this._pendingSkipIfOpUnchanged = this._pendingSkipIfOpUnchanged && skipIfOpUnchanged;
+        this._armDeferredRefreshTimer();
     }
 
     constructor(
         private workspaceRoot: string,
         private jj: JjService,
         private outputChannel: LoggerChannel,
-        private triggerRefresh: (event: { forceSnapshot: boolean; reason: string }) => Promise<void>,
+        private triggerRefresh: (event: {
+            forceSnapshot: boolean;
+            reason: string;
+            skipIfOpUnchanged?: boolean;
+        }) => Promise<void>,
         private readonly host: HostEnvironment,
         private readonly watcherBackend?: BackendType,
     ) {
@@ -84,7 +100,7 @@ export class ChangeDetectionManager implements HostDisposable {
         this._poller = new Poller(5000, async () => {
             // Skip if a write operation is in progress or just finished
             if (!this.hasActiveOrRecentWrites) {
-                await this.triggerRefresh({ forceSnapshot: true, reason: 'poll' });
+                await this.triggerRefresh({ forceSnapshot: true, reason: 'poll', skipIfOpUnchanged: true });
             }
         });
 
@@ -99,11 +115,13 @@ export class ChangeDetectionManager implements HostDisposable {
                         return;
                     }
                     const { fsPath } = uri;
-                    if (/[\\/]\.jj[\\/]/.test(fsPath)) {
+                    const platform = this.host.system?.platform;
+                    const jjInternalPattern = isWindowsPlatform(platform) ? /[\\/]\.jj[\\/]/ : /\/\.jj\//;
+                    if (jjInternalPattern.test(fsPath)) {
                         return;
                     }
-                    const relative = path.relative(this.workspaceRoot, fsPath);
-                    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+                    const relative = pathRelative(this.workspaceRoot, fsPath, platform);
+                    if (relative.startsWith('..') || pathIsAbsolute(relative, platform)) {
                         return;
                     }
                     this.triggerRefresh({ forceSnapshot: true, reason: 'file saved' });
@@ -245,26 +263,69 @@ export class ChangeDetectionManager implements HostDisposable {
                     return;
                 }
 
-                const opHeadsPath = path.join(repoStorePath, 'op_heads');
+                const platform = this.host.system?.platform;
+                const opHeadsPath = pathJoin([repoStorePath, 'op_heads'], platform);
 
                 // Final check that the directory exists and we have a real path
                 const hostFs = this.host.system?.fs;
-                const realOpHeadsPath = hostFs ? await hostFs.realpath(opHeadsPath) : opHeadsPath;
+                const hasOpHeadsSubdir = hostFs
+                    ? await hostFs.exists(pathJoin([opHeadsPath, 'heads'], platform))
+                    : true;
+                const watchTargetPath = hasOpHeadsSubdir
+                    ? opHeadsPath
+                    : pathJoin([this.workspaceRoot, '.jj', 'working_copy'], platform);
+                const realWatchPath = hostFs ? await hostFs.realpath(watchTargetPath) : watchTargetPath;
+                const checkoutFilePath = pathJoin([realWatchPath, 'checkout'], platform);
+                let lastCheckoutHex = '';
+                if (!hasOpHeadsSubdir && hostFs) {
+                    try {
+                        const initialBytes = await hostFs.readBinaryFile(checkoutFilePath);
+                        lastCheckoutHex = Buffer.from(initialBytes).toString('hex');
+                    } catch {
+                        // Ignore missing initial checkout file
+                    }
+                }
 
                 if (this._disposed) {
                     return;
                 }
 
+                const handleOpHeadChange = () => {
+                    const writes = this.hasActiveOrRecentWrites;
+                    if (writes) {
+                        this._scheduleDeferredRefresh(false, true);
+                        return;
+                    }
+                    this.lastExternalOpTime = Date.now();
+                    this.triggerRefresh({ forceSnapshot: false, reason: 'jj operation', skipIfOpUnchanged: true });
+                };
+
                 this._opHeadsWatcher = new DirectoryWatcher(
-                    realOpHeadsPath,
-                    () => {
-                        const writes = this.hasActiveOrRecentWrites;
-                        if (writes) {
-                            this._scheduleDeferredRefresh();
-                            return;
+                    realWatchPath,
+                    (events) => {
+                        if (!hasOpHeadsSubdir) {
+                            const touchesCheckout = events.some((e) => pathBasename(e.path, platform) === 'checkout');
+                            if (!touchesCheckout) {
+                                return;
+                            }
+                            if (hostFs) {
+                                void hostFs
+                                    .readBinaryFile(checkoutFilePath)
+                                    .then((bytes) => {
+                                        const hex = Buffer.from(bytes).toString('hex');
+                                        if (hex === lastCheckoutHex) {
+                                            return;
+                                        }
+                                        lastCheckoutHex = hex;
+                                        handleOpHeadChange();
+                                    })
+                                    .catch(() => {
+                                        handleOpHeadChange();
+                                    });
+                                return;
+                            }
                         }
-                        this.lastExternalOpTime = Date.now();
-                        this.triggerRefresh({ forceSnapshot: false, reason: 'jj operation' });
+                        handleOpHeadChange();
                     },
                     this.outputChannel,
                     {
@@ -322,6 +383,8 @@ export class ChangeDetectionManager implements HostDisposable {
             await this.startWorkingCopyWatcherInternal().catch((err) => {
                 this.outputChannel.error(`Failed to start working copy watcher: ${err}`);
                 this.outputChannel.info('Falling back to polling mode.');
+                void this._workingCopyWatcher?.stop().catch(() => {});
+                this._workingCopyWatcher = undefined;
                 this._fileWatcherMode = 'polling';
                 this.updatePollingState();
             });
@@ -360,15 +423,22 @@ export class ChangeDetectionManager implements HostDisposable {
         const ignore = ['.git', '.jj', '.vscode-test', 'node_modules', ...gitIgnores, ...gitModules, ...workspaceRoots];
         this.outputChannel.debug(`[ChangeDetectionManager] Watcher ignore list: ${JSON.stringify(ignore)}`);
 
+        const citcModifiedPath = pathJoin([this.workspaceRoot, '.citc', 'modified'], this.host.system?.platform);
+        const hasCitcModified = this.host.system?.fs ? await this.host.system.fs.exists(citcModifiedPath) : false;
+        if (this._disposed || this._fileWatcherMode !== 'watch') {
+            return;
+        }
+        const watchRoot = hasCitcModified ? citcModifiedPath : this.workspaceRoot;
+
         this._workingCopyWatcher = new DirectoryWatcher(
-            this.workspaceRoot,
+            watchRoot,
             () => {
                 const writes = this.hasActiveOrRecentWrites;
                 if (writes) {
-                    this._scheduleDeferredRefresh(true);
+                    this._scheduleDeferredRefresh(true, true);
                     return;
                 }
-                this.triggerRefresh({ forceSnapshot: true, reason: 'file watcher event' });
+                this.triggerRefresh({ forceSnapshot: true, reason: 'file watcher event', skipIfOpUnchanged: true });
             },
             this.outputChannel,
             {
@@ -420,8 +490,9 @@ export class ChangeDetectionManager implements HostDisposable {
             for (const ws of workspaceList) {
                 const wsReal = hostFs ? await hostFs.realpath(ws.path).catch(() => ws.path) : ws.path;
                 if (wsReal !== rootReal) {
-                    const relative = path.relative(rootReal, wsReal);
-                    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+                    const platform = this.host.system?.platform;
+                    const relative = pathRelative(rootReal, wsReal, platform);
+                    if (relative && !relative.startsWith('..') && !pathIsAbsolute(relative, platform)) {
                         patterns.push(relative);
                     }
                 }
@@ -439,7 +510,7 @@ export class ChangeDetectionManager implements HostDisposable {
             if (!hostFs) {
                 return [];
             }
-            const gitIgnorePath = path.join(this.workspaceRoot, '.gitignore');
+            const gitIgnorePath = pathJoin([this.workspaceRoot, '.gitignore'], this.host.system?.platform);
             const data = await hostFs.readTextFile(gitIgnorePath);
             return data
                 .split('\n')
@@ -468,7 +539,7 @@ export class ChangeDetectionManager implements HostDisposable {
             if (!hostFs) {
                 return [];
             }
-            const gitModulesPath = path.join(this.workspaceRoot, '.gitmodules');
+            const gitModulesPath = pathJoin([this.workspaceRoot, '.gitmodules'], this.host.system?.platform);
             const data = await hostFs.readTextFile(gitModulesPath);
             const paths: string[] = [];
 
@@ -491,6 +562,7 @@ export class ChangeDetectionManager implements HostDisposable {
         }
         this._disposed = true;
         this._pendingForceSnapshot = false;
+        this._pendingSkipIfOpUnchanged = true;
 
         this.disposables.forEach((d) => {
             d.dispose();

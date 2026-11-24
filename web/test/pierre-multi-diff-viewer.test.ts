@@ -75,4 +75,55 @@ describe('PierreMultiDiffViewer Component', () => {
         expect(html).toContain('pierre-multi-diff-viewer');
         expect(html).not.toContain('multi-diff-toolbar');
     });
+
+    it('renders multi-diff viewer when filenames have leading slashes', () => {
+        const result = render(PierreMultiDiffViewer, {
+            props: {
+                title: 'Changes with leading slash paths',
+                files: [
+                    {
+                        filename: '/src/targeting.ts',
+                        originalContent: 'old',
+                        modifiedContent: 'new',
+                    },
+                    {
+                        filename: '\\config\\settings.json',
+                        originalContent: '{}',
+                        modifiedContent: '{"a": 1}',
+                    },
+                ],
+            },
+        });
+        const html = result.body;
+
+        expect(html).toContain('pierre-multi-diff-viewer');
+        expect(html).toContain('multi-diff-content-container');
+    });
+
+    it('renders modified and genuine renamed entries including pure renames without failing', () => {
+        const result = render(PierreMultiDiffViewer, {
+            props: {
+                title: 'Mixed Modified and Renamed',
+                files: [
+                    {
+                        filename: 'cli/src/cli_util.rs',
+                        fileStatus: 'modified',
+                        originalContent: 'fn util() { 1 }\n',
+                        modifiedContent: 'fn util() { 2 }\n',
+                    },
+                    {
+                        filename: 'new_name.txt',
+                        oldFilename: 'old_name.txt',
+                        fileStatus: 'renamed',
+                        originalContent: 'same content\n',
+                        modifiedContent: 'same content\n',
+                    },
+                ],
+            },
+        });
+        const html = result.body;
+
+        expect(html).toContain('pierre-multi-diff-viewer');
+        expect(html).toContain('multi-diff-content-container');
+    });
 });

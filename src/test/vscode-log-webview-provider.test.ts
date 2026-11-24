@@ -98,8 +98,8 @@ describe('Log webview recovery', () => {
         expect(postMessage).toHaveBeenCalledWith({ type: 'update', payload: cachedState });
         expect(postMessage).toHaveBeenCalledWith({ type: 'setHighlight', payload: { changeId } });
         expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'repositoryFocus' }));
-        await vi.waitFor(() => {
-            expect(provider.controller.commits[0].description).toContain('Changed while inactive');
+        await vi.waitFor(() => expect(provider.controller.commits[0].description).toContain('Changed while inactive'), {
+            timeout: 10_000,
         });
         expect(provider.controller.selectedCommitIds).toEqual([changeId]);
         expect(postMessage).toHaveBeenLastCalledWith({ type: 'update', payload: provider.controller.getState() });

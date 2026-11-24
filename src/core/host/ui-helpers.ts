@@ -3,13 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import path from 'pathe';
 import { getErrorMessage, toError } from '../../utils/error-utils';
 import type { LoggerChannel } from '../../utils/output-channel';
 import { extractUriFromArgs } from '../commands/command-utils';
 import type { JjRepository } from '../jj-repository';
 import type { JjRepositoryManager } from '../jj-repository-manager';
 import { JjService, StaleWorkspaceError } from '../jj-service';
+import { pathJoin } from '../path-utils';
 import { parseCommitDetailsUri, Uri } from '../uri-utils';
 import type { HostEnvironment, HostNavigation, HostUi } from './host-environment';
 
@@ -19,6 +19,8 @@ export interface PromptRevisionOptions {
     emptyPrompt?: string;
     repoRoot?: Uri;
     nav?: HostNavigation;
+    log?: LoggerChannel;
+    throwOnError?: boolean;
     onActiveRevisionChange?: (revision: string | undefined) => void;
 }
 
@@ -114,16 +116,24 @@ export async function promptForRevision(
 ): Promise<string | undefined> {
     const placeHolder = options?.placeHolder ?? 'Select target revision';
     const emptyPrompt = options?.emptyPrompt ?? 'Enter revision';
+    const query = options?.revisionQuery ?? 'visible()';
 
     try {
-        const query = options?.revisionQuery ?? 'visible()';
         const entries = await jj.getLog({
             revision: query,
             omitChanges: true,
         });
 
         const items = entries.map((entry) => {
-            const shortId = entry.change_id.substring(0, 8);
+            const baseShortId = entry.change_id.split('/')[0].substring(0, 8);
+            const slashIndex = entry.change_id.indexOf('/');
+            const offsetSuffix =
+                slashIndex !== -1
+                    ? entry.change_id.substring(slashIndex)
+                    : (entry.is_divergent || entry.is_hidden) && entry.change_id_offset !== undefined
+                      ? `/${entry.change_id_offset}`
+                      : '';
+            const shortId = `${baseShortId}${offsetSuffix}`;
             const desc = entry.description || '(no description set)';
             const [subject, ...bodyLines] = desc.split('\n');
             const body = bodyLines.join('\n').replace(/^\n+|\n+$/g, '');
@@ -143,7 +153,7 @@ export async function promptForRevision(
 
         if (items.length === 0) {
             return await ui.showInputBox({
-                prompt: `${emptyPrompt} (no ancestors found)`,
+                prompt: `${emptyPrompt} (no matching revisions)`,
                 placeHolder: 'e.g. main, @-',
             });
         }
@@ -169,7 +179,13 @@ export async function promptForRevision(
         } finally {
             tracker.cleanup();
         }
-    } catch {
+    } catch (error: unknown) {
+        if (options?.throwOnError) {
+            throw error;
+        }
+        (options?.log ?? jj.logger).warn(
+            `[promptForRevision] Failed to load revisions for revset "${query}": ${getErrorMessage(error)}`,
+        );
         return await ui.showInputBox({
             prompt: emptyPrompt,
             placeHolder: 'e.g. main, @-',
@@ -218,7 +234,7 @@ export async function showJjError(
     if (isLockError && jj) {
         try {
             const repoRoot = await jj.getRepoRoot();
-            lockPath = path.join(repoRoot, '.git', 'index.lock');
+            lockPath = pathJoin([repoRoot, '.git', 'index.lock'], jj.system.platform);
             fullMessage = `${prefix}: Git index is locked. Another process may have crashed. Delete .git/index.lock to resolve.`;
             if (!actions.includes(DELETE_LOCK)) {
                 actions = [DELETE_LOCK, ...actions];
@@ -322,24 +338,28 @@ export function resolveRepository(
 
     // 1. Check if args contain URI, SCM object with rootUri, or resource group
     if (options?.args && options.args.length > 0) {
-        const firstArg = options.args[0];
-        if (firstArg && typeof firstArg === 'object') {
-            if ('rootUri' in firstArg) {
-                const scmObj = firstArg as { rootUri: unknown };
-                if (Uri.isUri(scmObj.rootUri)) {
-                    uri = scmObj.rootUri;
-                }
-            } else if ('resourceUri' in firstArg) {
-                const stateObj = firstArg as { resourceUri: unknown };
-                if (Uri.isUri(stateObj.resourceUri)) {
-                    uri = stateObj.resourceUri;
-                }
-            } else if ('resourceStates' in firstArg) {
-                const groupObj = firstArg as { resourceStates: unknown };
-                if (Array.isArray(groupObj.resourceStates) && groupObj.resourceStates.length > 0) {
-                    const firstState = groupObj.resourceStates[0] as { resourceUri?: unknown };
-                    if (firstState && Uri.isUri(firstState.resourceUri)) {
-                        uri = firstState.resourceUri;
+        for (const arg of options.args) {
+            if (arg && typeof arg === 'object') {
+                if ('rootUri' in arg) {
+                    const scmObj = arg as { rootUri: unknown };
+                    if (Uri.isUri(scmObj.rootUri)) {
+                        uri = scmObj.rootUri;
+                        break;
+                    }
+                } else if ('resourceUri' in arg) {
+                    const stateObj = arg as { resourceUri: unknown };
+                    if (Uri.isUri(stateObj.resourceUri)) {
+                        uri = stateObj.resourceUri;
+                        break;
+                    }
+                } else if ('resourceStates' in arg) {
+                    const groupObj = arg as { resourceStates: unknown };
+                    if (Array.isArray(groupObj.resourceStates) && groupObj.resourceStates.length > 0) {
+                        const firstState = groupObj.resourceStates[0] as { resourceUri?: unknown };
+                        if (firstState && Uri.isUri(firstState.resourceUri)) {
+                            uri = firstState.resourceUri;
+                            break;
+                        }
                     }
                 }
             }

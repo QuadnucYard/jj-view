@@ -13,6 +13,7 @@ export const CommitActionSchema = z.enum([
     'openCodeForge',
     'upload',
     'describe',
+    'compareWithUploaded',
 ]);
 export type CommitAction = z.infer<typeof CommitActionSchema>;
 
@@ -92,9 +93,10 @@ export const LogViewToHostMessageSchema = z.discriminatedUnion('type', [
     z.object({
         type: z.literal('rebaseCommit'),
         payload: z.object({
-            sourceChangeId: z.string(),
-            targetChangeId: z.string(),
+            sourceChangeId: z.string().trim().min(1),
+            targetChangeId: z.string().trim().min(1),
             mode: z.enum(['revision', 'source']),
+            placement: z.enum(['onto', 'before', 'after']).optional(),
         }),
     }),
     z.object({
@@ -121,6 +123,10 @@ export const LogViewToHostMessageSchema = z.discriminatedUnion('type', [
     }),
     z.object({
         type: z.literal('upload'),
+        payload: ActionPayloadSchema,
+    }),
+    z.object({
+        type: z.literal('compareWithUploaded'),
         payload: ActionPayloadSchema,
     }),
     z.object({
@@ -160,6 +166,8 @@ export const LogViewPayloadSchema = z.object({
     graphLabelAlignment: z.string().optional(),
     graphShowCommitId: z.boolean().optional(),
     hiddenActions: z.array(CommitActionSchema).optional(),
+    hasRepository: z.boolean().optional(),
+    errorMessage: z.string().optional(),
 });
 export type LogViewPayload = z.infer<typeof LogViewPayloadSchema>;
 

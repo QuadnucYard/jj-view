@@ -9,8 +9,9 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { NodeHostProcess, NodeHostSystem } from '../core/host/node-host-system';
+import { NodeHostFs, NodeHostProcess, NodeHostSystem } from '../core/host/node-host-system';
 import { JjService, NO_OP_LOGGER } from '../core/jj-service';
+import { ScopedTempDir } from './scoped-helpers';
 import { buildGraph, TestRepo } from './test-repo';
 
 describe('JjService Diff Tests', () => {
@@ -23,12 +24,14 @@ describe('JjService Diff Tests', () => {
         jjService = new JjService(repo.path, NO_OP_LOGGER);
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         vi.restoreAllMocks();
+        await jjService.clearCache();
+        await repo.dispose();
     });
 
     test.each([
-        'existence check',
+        'before batch read',
         'content read',
         'cache warming',
         'forced replacement',
@@ -65,23 +68,20 @@ describe('JjService Diff Tests', () => {
             });
         } else {
             await service.getDiffForRevision(ids.child.changeId);
-            if (stage === 'content read') {
-                const read = system.fs.readTextFile.bind(system.fs);
-                vi.spyOn(system.fs, 'readTextFile').mockImplementation(async (file) => {
-                    if (!invalidated && file.endsWith('file.txt')) {
+            const read = system.fs.readTextFiles.bind(system.fs);
+            vi.spyOn(system.fs, 'readTextFiles').mockImplementation(async (files) => {
+                if (stage === 'content read') {
+                    const content = await read(files);
+                    if (!invalidated) {
                         await invalidate();
                     }
-                    return read(file);
-                });
-            } else {
-                const exists = system.fs.exists.bind(system.fs);
-                vi.spyOn(system.fs, 'exists').mockImplementation(async (file) => {
-                    if (!invalidated && file.endsWith('file.txt')) {
-                        await invalidate();
-                    }
-                    return exists(file);
-                });
-            }
+                    return content;
+                }
+                if (!invalidated) {
+                    await invalidate();
+                }
+                return read(files);
+            });
         }
 
         try {
@@ -106,14 +106,12 @@ describe('JjService Diff Tests', () => {
         ]);
         const system = new NodeHostSystem();
         const service = new JjService(repo.path, NO_OP_LOGGER, { system });
-        const exists = system.fs.exists.bind(system.fs);
+        const read = system.fs.readTextFiles.bind(system.fs);
         let invalidations = 0;
-        vi.spyOn(system.fs, 'exists').mockImplementation(async (file) => {
-            if (file.replace(/\\/g, '/').endsWith('/left/file.txt')) {
-                invalidations++;
-                await service.clearCache();
-            }
-            return exists(file);
+        vi.spyOn(system.fs, 'readTextFiles').mockImplementation(async (files) => {
+            invalidations++;
+            await service.clearCache();
+            return read(files);
         });
         try {
             await expect(service.getDiffContent(ids.child.changeId, 'file.txt')).rejects.toThrow(
@@ -503,19 +501,18 @@ describe('JjService Diff Tests', () => {
             { label: 'child', parents: ['base'], files: { 'nested/file.txt': 'after\n' } },
         ]);
         const scriptsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'jj helpers without execute '));
-        const processHost = new NodeHostProcess();
-        const system = new NodeHostSystem({
-            process: {
-                execFile: processHost.execFile.bind(processHost),
-                getHelperScriptPath: async (name) => {
-                    const source = await processHost.getHelperScriptPath(name);
-                    const target = path.join(scriptsDir, `${name}.sh`);
-                    await fs.copyFile(source, target);
-                    await fs.chmod(target, 0o644);
-                    return target;
-                },
-            },
-        });
+        class NonExecutableHelperProcess extends NodeHostProcess {
+            override async getHelperScriptPath(
+                name: Parameters<NodeHostProcess['getHelperScriptPath']>[0],
+            ): Promise<string> {
+                const source = await super.getHelperScriptPath(name);
+                const target = path.join(scriptsDir, `${name}.sh`);
+                await fs.copyFile(source, target);
+                await fs.chmod(target, 0o644);
+                return target;
+            }
+        }
+        const system = new NodeHostSystem({ process: new NonExecutableHelperProcess() });
         const service = new JjService(repo.path, NO_OP_LOGGER, { system });
         try {
             expect(await service.getDiffContent(ids.child.changeId, 'nested/file.txt')).toEqual({
@@ -737,11 +734,36 @@ describe('JjService Diff Tests', () => {
     });
 
     test('getDiffForRevision throws and does not cache when revision is invalid or diff extraction fails', async () => {
-        await expect(jjService.getDiffForRevision('non-existent-rev-12345')).rejects.toThrow();
+        using scratchRoot = new ScopedTempDir(path.join(os.tmpdir(), 'jj-diff-scratch-'));
+        const mkdtempCalls: string[] = [];
+        class IsolatedTempFs extends NodeHostFs {
+            constructor() {
+                super(scratchRoot.path);
+            }
+
+            override async mkdtemp(prefix: string): Promise<string> {
+                const created = await super.mkdtemp(prefix);
+                mkdtempCalls.push(created);
+                return created;
+            }
+        }
+        const isolatedService = new JjService(repo.path, NO_OP_LOGGER, {
+            system: new NodeHostSystem({ fs: new IsolatedTempFs() }),
+        });
+
+        await expect(isolatedService.getDiffForRevision('non-existent-rev-12345')).rejects.toThrow();
 
         // Ensure invalid cache entry was not stored
-        const invalidCache = await jjService.getDiffForRevision('non-existent-rev-12345').catch(() => null);
+        const invalidCache = await isolatedService.getDiffForRevision('non-existent-rev-12345').catch(() => null);
         expect(invalidCache).toBeNull();
+
+        // Verify scratch directories were created inside the isolated temp root and cleaned up without leaking
+        expect(mkdtempCalls.length).toBeGreaterThanOrEqual(1);
+        for (const dir of mkdtempCalls) {
+            expect(path.dirname(dir)).toBeSameFsPath(scratchRoot.path);
+        }
+        const leaked = (await fs.readdir(scratchRoot.path)).filter((name) => name.startsWith('jj-bulk-diff-'));
+        expect(leaked).toEqual([]);
     });
 
     test('setFilesContent handles file paths with potential temp slug collisions', async () => {

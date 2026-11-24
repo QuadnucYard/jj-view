@@ -15,6 +15,8 @@ import type {
     HostDocuments,
     HostEnvironment,
     HostExtensions,
+    HostHttp,
+    HostHttpRequest,
     HostNavigation,
     HostOpenOptions,
     HostSecrets,
@@ -26,29 +28,34 @@ import type {
     HostWorkspace,
     HostWorkspaceFolder,
     HostWorkspaceFoldersChangeEvent,
+    MultiDiffResource,
     TextSelectionRange,
 } from '../../../src/core/host/host-environment';
+import type { FuzzyFileMatch } from '../../../src/core/host/host-system';
 import type { RemoteHostSystem } from '../../../src/core/host/remote-host-system';
+import { isWindowsPlatform, pathBasename } from '../../../src/core/path-utils';
 import type { Uri } from '../../../src/core/uri-utils';
 import { Uri as UriImpl } from '../../../src/core/uri-utils';
+import { writeClipboardText } from '../../../src/utils/clipboard';
 import { NotificationService } from '../notifications/notification-service';
 import type { NotificationPosition } from '../notifications/notification-types';
 import { QuickInputService } from '../quick-input/quick-input-service';
 import { SidecarService } from '../sidecar/sidecar-service';
 import { StatusBarService } from '../status/status-bar-service';
+import { WebActivationTracker } from './web-activation-tracker';
 
 export interface WebHostNavigationCallbacks {
     onOpenDiff?: (leftUri: Uri, rightUri: Uri, title: string, options?: HostOpenOptions) => Promise<void> | void;
     onOpenFile?: (uri: Uri, options?: HostOpenOptions) => Promise<void> | void;
     onOpenMergeEditor?: (resourceUri: Uri) => Promise<void> | void;
-    onOpenCommitDetails?: (changeId: string, options?: HostOpenOptions) => Promise<void> | void;
+    onOpenCommitDetails?: (changeId: string, repoRoot: Uri, options?: HostOpenOptions) => Promise<void> | void;
     onFocusScmInput?: () => Promise<void> | void;
     onOpenSettings?: (settingId?: string) => Promise<void> | void;
     onHighlightCommit?: (repoRoot: Uri, changeId: string | undefined) => void;
     onOpenFolder?: (folderUri: Uri, forceNewWindow?: boolean) => Promise<void> | void;
     onOpenMultiDiff?: (
         title: string,
-        resources: { leftUri: Uri; rightUri: Uri; label: string }[],
+        resources: MultiDiffResource[],
         options?: HostOpenOptions,
     ) => Promise<void> | void;
     onCloseTab?: (uri: Uri) => Promise<void> | void;
@@ -62,78 +69,39 @@ export class WebHostUi implements HostUi {
     private quickInputService?: QuickInputService;
     private notificationService?: NotificationService;
     private statusBarService?: StatusBarService;
-    private _isActive: boolean;
-    private readonly _onDidChangeActive = new EventEmitter<boolean>();
-    private _cleanupListeners?: () => void;
+    private readonly _activationTracker: WebActivationTracker;
+
+    public readonly onDidChangeActive: Event<boolean>;
+    public readonly onDidChangeFocus: Event<boolean>;
 
     constructor(
         quickInputService?: QuickInputService,
         notificationService?: NotificationService,
         statusBarService?: StatusBarService,
+        activationTracker?: WebActivationTracker,
     ) {
         this.quickInputService = quickInputService;
         this.notificationService = notificationService;
         this.statusBarService = statusBarService;
-        this._isActive =
-            typeof document !== 'undefined'
-                ? !document.hidden && (typeof document.hasFocus === 'function' ? document.hasFocus() : true)
-                : true;
-        this._setupWindowListeners();
-    }
-
-    private _setupWindowListeners(): void {
-        if (typeof window === 'undefined' || typeof document === 'undefined') {
-            return;
-        }
-
-        const handleFocus = () => this.setActiveState(true);
-        const handleBlur = () => {
-            const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : false;
-            const isVisible = !document.hidden;
-            this.setActiveState(isVisible && hasFocus);
-        };
-        const handleVisibilityChange = () => {
-            const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : false;
-            const isVisible = !document.hidden;
-            this.setActiveState(isVisible && hasFocus);
-        };
-
-        window.addEventListener('focus', handleFocus);
-        window.addEventListener('blur', handleBlur);
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-
-        this._cleanupListeners = () => {
-            window.removeEventListener('focus', handleFocus);
-            window.removeEventListener('blur', handleBlur);
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-        };
+        this._activationTracker = activationTracker ?? new WebActivationTracker();
+        this.onDidChangeActive = this._activationTracker.onDidChangeActive;
+        this.onDidChangeFocus = this._activationTracker.onDidChangeActive;
     }
 
     public setActiveState(active: boolean): void {
-        if (this._isActive === active) {
-            return;
-        }
-        this._isActive = active;
-        this._onDidChangeActive.fire(active);
+        this._activationTracker.setActiveState(active);
     }
 
     public get isActive(): boolean {
-        return this._isActive;
+        return this._activationTracker.isActive;
     }
 
     public get isFocused(): boolean {
-        return this._isActive;
+        return this._activationTracker.isActive;
     }
 
-    public readonly onDidChangeActive: Event<boolean> = this._onDidChangeActive.event;
-    public readonly onDidChangeFocus: Event<boolean> = this._onDidChangeActive.event;
-
     public dispose(): void {
-        if (this._cleanupListeners) {
-            this._cleanupListeners();
-            this._cleanupListeners = undefined;
-        }
-        this._onDidChangeActive.dispose();
+        this._activationTracker.dispose();
     }
 
     public setQuickInputService(service: QuickInputService | undefined): void {
@@ -268,7 +236,7 @@ export class WebHostUi implements HostUi {
 }
 
 export class WebHostConfig implements HostConfig {
-    private readonly values = new Map<string, unknown>([['fileWatcherMode', 'watch']]);
+    private readonly values = new Map<string, unknown>();
     private readonly _onDidChangeConfiguration = new EventEmitter<HostConfigurationChangeEvent>();
     public readonly onDidChangeConfiguration = this._onDidChangeConfiguration.event;
     private readonly _hostSystem?: RemoteHostSystem;
@@ -314,10 +282,16 @@ export class WebHostConfig implements HostConfig {
                 await this._hostSystem.ready;
             }
             const all = await this._hostSystem.getAllConfig('effective');
-            for (const [k, v] of Object.entries(all)) {
+            const entries = Object.entries(all);
+            for (const [k, v] of entries) {
                 this.values.set(k, v);
                 const norm = k.replace(/^jj-view\./, '');
                 this.values.set(norm, v);
+            }
+            if (entries.length > 0) {
+                this._onDidChangeConfiguration.fire({
+                    affectsConfiguration: () => true,
+                });
             }
         } catch (err) {
             console.warn('[WebHostConfig] Failed to load initial config:', err);
@@ -330,6 +304,7 @@ export class WebHostConfig implements HostConfig {
         }
         try {
             const all = await this._hostSystem.getAllConfig('effective');
+            this.values.clear();
             for (const [k, v] of Object.entries(all)) {
                 this.values.set(k, v);
                 const norm = k.replace(/^jj-view\./, '');
@@ -338,6 +313,13 @@ export class WebHostConfig implements HostConfig {
         } catch (err) {
             console.warn('[WebHostConfig] Failed to reload config:', err);
         }
+    }
+
+    public async reload(): Promise<void> {
+        await this._reloadConfig();
+        this._onDidChangeConfiguration.fire({
+            affectsConfiguration: () => true,
+        });
     }
 
     public async waitForInit(): Promise<void> {
@@ -376,6 +358,9 @@ export class WebHostConfig implements HostConfig {
         if (this._hostSystem?.isConnected && typeof this._hostSystem.setConfig === 'function') {
             try {
                 await this._hostSystem.setConfig(key, value, scope);
+                if (value === undefined || value === null) {
+                    await this._reloadConfig();
+                }
             } catch (err) {
                 console.error('[WebHostConfig] Failed to persist config to daemon:', err);
             }
@@ -426,7 +411,7 @@ export class WebHostNavigation implements HostNavigation {
 
     public async openMultiDiff(
         title: string,
-        resources: { leftUri: Uri; rightUri: Uri; label: string }[],
+        resources: MultiDiffResource[],
         options?: HostOpenOptions,
     ): Promise<void> {
         if (this.callbacks.onOpenMultiDiff) {
@@ -452,7 +437,7 @@ export class WebHostNavigation implements HostNavigation {
     }
 
     public async openCommitDetails(
-        _repoRoot: Uri,
+        repoRoot: Uri,
         changeId: string,
         _shortestChangeId?: string,
         _isDivergent?: boolean,
@@ -463,7 +448,7 @@ export class WebHostNavigation implements HostNavigation {
             const effectiveOptions: HostOpenOptions = {
                 preview: options?.preview ?? true,
             };
-            await this.callbacks.onOpenCommitDetails(changeId, effectiveOptions);
+            await this.callbacks.onOpenCommitDetails(changeId, repoRoot, effectiveOptions);
         }
     }
 
@@ -507,9 +492,7 @@ export class WebHostNavigation implements HostNavigation {
     }
 
     public async copyToClipboard(text: string): Promise<void> {
-        if (typeof navigator !== 'undefined' && navigator.clipboard) {
-            await navigator.clipboard.writeText(text);
-        }
+        await writeClipboardText(text);
     }
 
     public async openSettings(settingId?: string): Promise<void> {
@@ -717,6 +700,18 @@ export class WebHostSecrets implements HostSecrets {
         return this.inMemorySecrets.get(key);
     }
 
+    public async has(key: string): Promise<boolean> {
+        if (this._hostSystem) {
+            try {
+                return await this._hostSystem.hasSecret(key);
+            } catch (err) {
+                console.warn(`[WebHostSecrets] Failed to check secret '${key}':`, err);
+                return false;
+            }
+        }
+        return this.inMemorySecrets.has(key);
+    }
+
     public async store(key: string, value: string): Promise<void> {
         if (this._hostSystem) {
             await this._hostSystem.storeSecret(key, value);
@@ -738,6 +733,31 @@ export class WebHostSecrets implements HostSecrets {
     }
 }
 
+/** Statuses for which the Fetch API forbids a response body. */
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+
+/**
+ * {@link HostHttp} backed by the daemon's `http.fetch` RPC. The browser never
+ * contacts the upstream host (no CORS) and never holds the credential.
+ */
+export class WebHostHttp implements HostHttp {
+    constructor(private readonly hostSystem: RemoteHostSystem) {}
+
+    public async fetch(url: string, request: HostHttpRequest = {}): Promise<Response> {
+        const remote = await this.hostSystem.httpFetch(url, request);
+        const body = NULL_BODY_STATUSES.has(remote.status) ? null : remote.body;
+        return new Response(body, {
+            status: remote.status,
+            statusText: remote.statusText,
+            headers: remote.headers,
+        });
+    }
+
+    public hasGitCredentials(url: string, gitDir?: string): Promise<boolean> {
+        return this.hostSystem.httpHasGitCredentials(url, gitDir);
+    }
+}
+
 export class WebHostAuth implements HostAuth {
     public readonly supportsOAuth = false;
 
@@ -752,10 +772,17 @@ export class WebHostAuth implements HostAuth {
 
 export class WebHostCommands implements HostCommands {
     private readonly commandMap = new Map<string, (...args: never[]) => unknown>();
+    private readonly pendingContextKeys = new Map<string, unknown>();
     private contextKeySetter: ContextKeySetter | undefined;
 
     public setContextKeySetter(setter: ContextKeySetter | undefined): void {
         this.contextKeySetter = setter;
+        if (setter && this.pendingContextKeys.size > 0) {
+            for (const [key, value] of this.pendingContextKeys.entries()) {
+                setter.set(key, value);
+            }
+            this.pendingContextKeys.clear();
+        }
     }
 
     public registerCommand<T extends (...args: never[]) => unknown>(commandId: string, callback: T): HostDisposable {
@@ -784,7 +811,11 @@ export class WebHostCommands implements HostCommands {
     }
 
     public async setContextKey(key: string, value: unknown): Promise<void> {
-        this.contextKeySetter?.set(key, value);
+        if (this.contextKeySetter) {
+            this.contextKeySetter.set(key, value);
+        } else {
+            this.pendingContextKeys.set(key, value);
+        }
     }
 }
 
@@ -814,6 +845,7 @@ export class WebHostWorkspace implements HostWorkspace {
     private readonly _onDidChangeWorkspaceFolders = new EventEmitter<HostWorkspaceFoldersChangeEvent>();
     public readonly onDidChangeWorkspaceFolders = this._onDidChangeWorkspaceFolders.event;
     private _workspaceFolders: readonly HostWorkspaceFolder[];
+    private readonly _gitIgnoreCache = new Map<string, { patterns: string[]; expiresAt: number }>();
 
     constructor(
         workspaceFolders: readonly HostWorkspaceFolder[] = [],
@@ -841,16 +873,7 @@ export class WebHostWorkspace implements HostWorkspace {
         }
     }
 
-    public async findFiles(pattern: string, baseFolderUri?: Uri, maxResults?: number): Promise<Uri[]> {
-        if (!this.hostSystem) {
-            return [];
-        }
-
-        const baseDir = baseFolderUri?.fsPath ?? this.workspaceFolders[0]?.uri.fsPath ?? this.hostSystem.repoRoot;
-        if (!baseDir) {
-            return [];
-        }
-
+    private async _resolveExcludes(baseDir: string, includeGitIgnore: boolean): Promise<string[]> {
         const excludes: string[] = [];
 
         // 1. files.exclude from config
@@ -880,28 +903,83 @@ export class WebHostWorkspace implements HostWorkspace {
         }
 
         // 4. Loosely check .gitignore in baseDir (skip when searching for repository markers like .jj)
-        const isRepoDiscovery = pattern.includes('.jj');
-        if (!isRepoDiscovery) {
-            try {
-                const gitIgnorePath = `${baseDir.replace(/[/\\]+$/, '')}/.gitignore`;
-                const content = await this.hostSystem.fs.readTextFile(gitIgnorePath);
-                const lines = content.split(/\r?\n/);
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (trimmed.length > 0 && !trimmed.startsWith('#') && !trimmed.startsWith('!')) {
-                        const clean = trimmed.replace(/^\/+|\/+$/g, '');
-                        if (clean.length > 0 && !excludes.includes(clean)) {
-                            excludes.push(clean);
+        if (includeGitIgnore && this.hostSystem) {
+            const cleanBase = isWindowsPlatform(this.hostSystem.platform)
+                ? baseDir.replace(/[/\\]+$/, '')
+                : baseDir.replace(/\/+$/, '');
+            const cached = this._gitIgnoreCache.get(cleanBase);
+            let gitIgnorePatterns: string[] = [];
+            if (cached && Date.now() < cached.expiresAt) {
+                gitIgnorePatterns = cached.patterns;
+            } else {
+                try {
+                    const gitIgnorePath = `${cleanBase}/.gitignore`;
+                    const content = await this.hostSystem.fs.readTextFile(gitIgnorePath);
+                    const lines = content.split(/\r?\n/);
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (trimmed.length > 0 && !trimmed.startsWith('#') && !trimmed.startsWith('!')) {
+                            const isRootAnchored = trimmed.startsWith('/');
+                            const stripped = trimmed.replace(/^\/+|\/+$/g, '');
+                            if (stripped.length > 0) {
+                                const clean = isRootAnchored ? `./${stripped}` : stripped;
+                                if (!gitIgnorePatterns.includes(clean)) {
+                                    gitIgnorePatterns.push(clean);
+                                }
+                            }
                         }
                     }
+                } catch {
+                    // Ignore missing .gitignore
                 }
-            } catch {
-                // Ignore missing .gitignore
+                this._gitIgnoreCache.set(cleanBase, {
+                    patterns: gitIgnorePatterns,
+                    expiresAt: Date.now() + 30_000,
+                });
+            }
+            for (const p of gitIgnorePatterns) {
+                if (!excludes.includes(p)) {
+                    excludes.push(p);
+                }
             }
         }
 
+        return excludes;
+    }
+
+    public async findFiles(pattern: string, baseFolderUri?: Uri, maxResults?: number): Promise<Uri[]> {
+        if (!this.hostSystem) {
+            return [];
+        }
+
+        const baseDir = baseFolderUri?.fsPath ?? this.workspaceFolders[0]?.uri.fsPath ?? this.hostSystem.repoRoot;
+        if (!baseDir) {
+            return [];
+        }
+
+        const isRepoDiscovery = pattern.includes('.jj');
+        const excludes = await this._resolveExcludes(baseDir, !isRepoDiscovery);
         const files = await this.hostSystem.findFiles(pattern, baseDir, maxResults, excludes);
         return files.map((f) => UriImpl.file(f));
+    }
+
+    public async fuzzyFindFiles(
+        query: string,
+        baseFolderUri?: Uri,
+        maxResults?: number,
+        signal?: AbortSignal,
+    ): Promise<FuzzyFileMatch[]> {
+        if (!this.hostSystem) {
+            return [];
+        }
+
+        const baseDir = baseFolderUri?.fsPath ?? this.workspaceFolders[0]?.uri.fsPath ?? this.hostSystem.repoRoot;
+        if (!baseDir) {
+            return [];
+        }
+
+        const excludes = await this._resolveExcludes(baseDir, true);
+        return this.hostSystem.fuzzyFindFiles(query, baseDir, maxResults, excludes, signal);
     }
 }
 
@@ -916,6 +994,7 @@ export class WebHostEnvironment implements HostEnvironment {
     public readonly storage: WebHostStorage;
     public readonly secrets: WebHostSecrets;
     public readonly auth: HostAuth = new WebHostAuth();
+    public readonly http: WebHostHttp;
     public readonly commands: WebHostCommands = new WebHostCommands();
     public readonly views: HostViews = new WebHostViews();
     public readonly workspace: WebHostWorkspace;
@@ -932,9 +1011,13 @@ export class WebHostEnvironment implements HostEnvironment {
         statusBarService?: StatusBarService,
     ) {
         this.system = hostSystem;
+        if (repoRoot && repoRoot !== '.' && typeof hostSystem.setWorkspaceRoot === 'function') {
+            hostSystem.setWorkspaceRoot(repoRoot);
+        }
         this.sidecar = new SidecarService();
         this.storage = new WebHostStorage(hostSystem);
         this.secrets = new WebHostSecrets(hostSystem);
+        this.http = new WebHostHttp(hostSystem);
         this.nav = new WebHostNavigation(navCallbacks);
         this.config = new WebHostConfig(hostSystem);
         this.documents = new WebHostDocuments(hostSystem);
@@ -957,11 +1040,7 @@ export class WebHostEnvironment implements HostEnvironment {
             }
         });
 
-        const folderName =
-            repoRoot
-                .replace(/[/\\]+$/, '')
-                .split(/[/\\]/)
-                .pop() || 'Workspace';
+        const folderName = pathBasename(repoRoot, this.system.platform) || 'Workspace';
         this.workspace = new WebHostWorkspace(
             [
                 {

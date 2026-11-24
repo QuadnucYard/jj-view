@@ -4,7 +4,9 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
+import type { JjLogEntry } from '../core/jj-types';
+import type { ScmModel, ScmSnapshot } from '../core/scm-model';
 import type { JjResourceState } from '../core/scm-resource-state';
 import { Uri } from '../core/uri-utils';
 import { createAbandonPayload } from '../vscode/payloads/abandon.payload';
@@ -14,6 +16,7 @@ import { createAdvanceBookmarkPayload } from '../vscode/payloads/bookmark-advanc
 import { createAdvanceBookmarkAndUploadPayload } from '../vscode/payloads/bookmark-advance-upload.payload';
 import { createCommitPayload, createCommitPromptPayload } from '../vscode/payloads/commit.payload';
 import { createCompareAllFilesWithRevisionPayload } from '../vscode/payloads/compare-all-files-with-revision.payload';
+import { createCompareWithUploadedPayload } from '../vscode/payloads/compare-with-uploaded.payload';
 import { createDescribePromptPayload, createSetDescriptionPayload } from '../vscode/payloads/describe.payload';
 import { createShowDetailsPayload } from '../vscode/payloads/details.payload';
 import { createDuplicatePayload } from '../vscode/payloads/duplicate.payload';
@@ -24,8 +27,13 @@ import { createShowMultiFileDiffPayload } from '../vscode/payloads/multi-diff.pa
 import { createNewPayload } from '../vscode/payloads/new.payload';
 import { createNewAfterPayload } from '../vscode/payloads/new-after.payload';
 import { createNewBeforePayload } from '../vscode/payloads/new-before.payload';
+import { createPickChangePayload } from '../vscode/payloads/pick-change.payload';
 import { createRebaseOntoSelectedPayload } from '../vscode/payloads/rebase.payload';
+import { createRemoteFileUrlPayload } from '../vscode/payloads/remote-file-url.payload';
 import { createRestorePayload } from '../vscode/payloads/restore.payload';
+import { createRestoreFileFromRevisionPayload } from '../vscode/payloads/restore-file-from-revision.payload';
+import { createSimplifyParentsPayload } from '../vscode/payloads/simplify-parents.payload';
+import { createSplitFilesPayload } from '../vscode/payloads/split-files.payload';
 import {
     createSquashFilesIntoAncestorPayload,
     createSquashFilesIntoChildPayload,
@@ -39,6 +47,7 @@ import {
     createSquashHunkIntoParentPayload,
     createSquashSelectionIntoParentPayload,
 } from '../vscode/payloads/squash-selection.payload';
+import { createToggleDiffEditablePayload } from '../vscode/payloads/toggle-diff-editable.payload';
 import { createUploadPayload, createUploadStackPayload } from '../vscode/payloads/upload.payload';
 import {
     createWorkspaceOpenInCurrentWindowPayload,
@@ -80,6 +89,48 @@ describe('vscode payloads', () => {
             });
             const payload = createAbandonPayload([], scmProvider);
             expect(payload.revisions).toEqual(['sel1', 'sel2']);
+        });
+    });
+
+    describe('simplify parents payload', () => {
+        it('extracts working copy when resource group is working copy', () => {
+            const scmGroup = { id: 'jj.group.workingCopy', label: 'Working Copy', resourceStates: [] };
+            const payload = createSimplifyParentsPayload([scmGroup]);
+            expect(payload.revisions).toEqual(['@']);
+        });
+
+        it('extracts single clicked commit when not part of selection', () => {
+            const scmProvider = createMock<VsCodeScmProvider>({
+                getSelectedCommitIds: vi.fn().mockReturnValue(['sel1', 'sel2']),
+            });
+            const payload = createSimplifyParentsPayload([{ changeId: 'other1' }], scmProvider);
+            expect(payload.revisions).toEqual(['other1']);
+        });
+
+        it('expands clicked commit to selection when clicked commit is selected', () => {
+            const scmProvider = createMock<VsCodeScmProvider>({
+                getSelectedCommitIds: vi.fn().mockReturnValue(['sel1', 'sel2']),
+            });
+            const payload = createSimplifyParentsPayload([{ changeId: 'sel1' }], scmProvider);
+            expect(payload.revisions).toEqual(['sel1', 'sel2']);
+        });
+
+        it('extracts multiple revisions from args', () => {
+            const payload = createSimplifyParentsPayload(['rev1', 'rev2']);
+            expect(payload.revisions).toEqual(['rev1', 'rev2']);
+        });
+
+        it('falls back to selected revisions from scmProvider when args are empty', () => {
+            const scmProvider = createMock<VsCodeScmProvider>({
+                getSelectedCommitIds: vi.fn().mockReturnValue(['sel1', 'sel2']),
+            });
+            const payload = createSimplifyParentsPayload([], scmProvider);
+            expect(payload.revisions).toEqual(['sel1', 'sel2']);
+        });
+
+        it('returns empty revisions when args and selection are empty', () => {
+            const payload = createSimplifyParentsPayload([]);
+            expect(payload.revisions).toEqual([]);
         });
     });
 
@@ -159,6 +210,35 @@ describe('vscode payloads', () => {
             const payload = createShowDetailsPayload(['rev1']);
             expect(payload.revision).toBe('rev1');
         });
+
+        it('returns undefined revision when invoked without arguments', () => {
+            const payload = createShowDetailsPayload([]);
+            expect(payload).toEqual({ revision: undefined });
+        });
+
+        it('resolves empty ancestor group revision via scmProvider snapshot', () => {
+            const emptyAncestorGroup = { id: 'ancestor-0', resourceStates: [] };
+            const scmProvider = createMock<VsCodeScmProvider>({
+                scmModel: createMock<ScmModel>({
+                    snapshot: createMock<ScmSnapshot>({
+                        ancestors: [
+                            {
+                                entry: createMock<JjLogEntry>({ change_id: 'parent-rev-id' }),
+                                prefix: '@-1',
+                                isMutable: true,
+                                canSquash: false,
+                                changes: [],
+                                label: '@-1',
+                                contextValue: 'jj.group.allowShowDetails',
+                            },
+                        ],
+                    }),
+                }),
+            });
+
+            const payload = createShowDetailsPayload([emptyAncestorGroup], scmProvider);
+            expect(payload).toEqual({ revision: 'parent-rev-id' });
+        });
     });
 
     describe('duplicate payload', () => {
@@ -215,6 +295,27 @@ describe('vscode payloads', () => {
         });
     });
 
+    describe('pick change payload', () => {
+        it('extracts valid revset string from first argument object', () => {
+            expect(createPickChangePayload([{ revset: 'mutable()' }])).toEqual({ revset: 'mutable()' });
+        });
+
+        it('returns empty payload for missing, null, array, or non-object args', () => {
+            expect(createPickChangePayload([])).toEqual({});
+            expect(createPickChangePayload([undefined])).toEqual({});
+            expect(createPickChangePayload([null])).toEqual({});
+            expect(createPickChangePayload([['mutable()']])).toEqual({});
+            expect(createPickChangePayload(['mutable()'])).toEqual({});
+        });
+
+        it('ignores non-string revset fields', () => {
+            expect(createPickChangePayload([{ revset: 123 }])).toEqual({});
+            expect(createPickChangePayload([{ revset: true }])).toEqual({});
+            expect(createPickChangePayload([{ revset: {} }])).toEqual({});
+            expect(createPickChangePayload([{ revset: null }])).toEqual({});
+        });
+    });
+
     describe('rebase payload', () => {
         it('extracts source and destination revisions', () => {
             const scmProvider = createMock<VsCodeScmProvider>({
@@ -234,10 +335,69 @@ describe('vscode payloads', () => {
         });
     });
 
+    describe('restore file from revision payload', () => {
+        it('extracts fileUri and optional revision from args', () => {
+            const uri = Uri.file('/path/to/file.txt');
+            const directUriPayload = createRestoreFileFromRevisionPayload([uri]);
+            expect(directUriPayload.fileUri?.fsPath).toBeSameFsPath(uri.fsPath);
+            expect(directUriPayload.revision).toBeUndefined();
+
+            const objPayload = createRestoreFileFromRevisionPayload([{ resourceUri: uri, revision: 'main' }]);
+            expect(objPayload.fileUri?.fsPath).toBeSameFsPath(uri.fsPath);
+            expect(objPayload.revision).toBe('main');
+        });
+
+        it('falls back to active tab modified URI before activeTextEditor when invoked without args', () => {
+            const activeFileUri = Uri.file('/path/to/active-editor.txt');
+            const leftDiffUri = Uri.parse('jj-view:///path/to/diff-target.txt?jj-revision=@-');
+            const rightDiffUri = Uri.file('/path/to/diff-target.txt');
+            const tabGroup = vscode.window.tabGroups.activeTabGroup as { activeTab?: vscode.Tab };
+            const prevTab = tabGroup.activeTab;
+            const prevEditor = vscode.window.activeTextEditor;
+
+            try {
+                tabGroup.activeTab = undefined;
+                vscode.window.activeTextEditor = createMock<vscode.TextEditor>({
+                    document: createMock<vscode.TextDocument>({ uri: activeFileUri }),
+                });
+
+                const editorFallback = createRestoreFileFromRevisionPayload([]);
+                expect(editorFallback.fileUri?.fsPath).toBeSameFsPath(activeFileUri.fsPath);
+                expect(editorFallback.revision).toBeUndefined();
+
+                vscode.window.activeTextEditor = createMock<vscode.TextEditor>({
+                    document: createMock<vscode.TextDocument>({ uri: leftDiffUri }),
+                });
+                tabGroup.activeTab = createMock<vscode.Tab>({
+                    input: new vscode.TabInputTextDiff(leftDiffUri, rightDiffUri),
+                });
+
+                const diffTabFallback = createRestoreFileFromRevisionPayload([]);
+                expect(diffTabFallback.fileUri?.scheme).toBe('file');
+                expect(diffTabFallback.fileUri?.fsPath).toBeSameFsPath(rightDiffUri.fsPath);
+            } finally {
+                tabGroup.activeTab = prevTab;
+                vscode.window.activeTextEditor = prevEditor;
+            }
+        });
+    });
+
     describe('compare all files with revision payload', () => {
         it('extracts revision', () => {
             const payload = createCompareAllFilesWithRevisionPayload(['rev1']);
             expect(payload.revision).toBe('rev1');
+        });
+    });
+
+    describe('compare with uploaded payload', () => {
+        it('extracts revision from arguments', () => {
+            const payload = createCompareWithUploadedPayload(['rev123']);
+            expect(payload.revision).toBe('rev123');
+        });
+
+        it('defaults to working copy @ when no argument is passed', () => {
+            const payload = createCompareWithUploadedPayload([]);
+            expect(payload.revision).toBe('@');
         });
     });
 
@@ -284,6 +444,46 @@ describe('vscode payloads', () => {
         });
     });
 
+    describe('split files payloads', () => {
+        it('createSplitFilesPayload extracts single and multi-selected SCM resource states', () => {
+            const uri1 = Uri.file('/test/a.txt');
+            const uri2 = Uri.file('/test/b.txt');
+            const clicked = { resourceUri: uri1, revision: 'rev1' };
+            const selected = [clicked, { resourceUri: uri2, revision: 'rev1' }];
+
+            const payload = createSplitFilesPayload([clicked, selected]);
+            expect(payload.paths).toEqual([uri1.fsPath, uri2.fsPath]);
+            expect(payload.revision).toBe('rev1');
+        });
+
+        it('createSplitFilesPayload extracts explicit paths and revision object payloads', () => {
+            const payload = createSplitFilesPayload([{ paths: ['a.txt', 'b.txt', 'a.txt'], revision: 'rev42' }]);
+            expect(payload.paths).toEqual(['a.txt', 'b.txt']);
+            expect(payload.revision).toBe('rev42');
+        });
+
+        it('createSplitFilesPayload defaults revision to @ when omitted', () => {
+            const payload = createSplitFilesPayload([{ paths: ['a.txt'] }]);
+            expect(payload.paths).toEqual(['a.txt']);
+            expect(payload.revision).toBe('@');
+        });
+
+        it('createSplitFilesPayload rejects mixed-revision SCM resource states including same path across revisions', () => {
+            const wcUri = Uri.file('/test/shared.txt');
+            const ancestorUri = Uri.from({
+                scheme: 'jj-edit',
+                path: '/shared.txt',
+                fragment: 'root=/test&jj-revision=rev-ancestor&revision=rev-ancestor',
+            });
+            const clicked = { resourceUri: wcUri, revision: '@' };
+            const selected = [clicked, { resourceUri: ancestorUri, revision: 'rev-ancestor' }];
+
+            const payload = createSplitFilesPayload([clicked, selected]);
+            expect(payload.paths).toEqual([]);
+            expect(payload.validationError).toContain('multiple revisions');
+        });
+    });
+
     describe('squash revision payloads', () => {
         it('createSquashRevisionIntoParentPayload extracts targetParent from object arg', () => {
             const payload = createSquashRevisionIntoParentPayload([{ revision: 'rev1', targetParent: 'parent1' }]);
@@ -307,6 +507,47 @@ describe('vscode payloads', () => {
             const payload = createSquashRevisionIntoAncestorPayload(['rev1', 'anc1']);
             expect(payload.revision).toBe('rev1');
             expect(payload.ancestorRevision).toBe('anc1');
+        });
+
+        it('resolves empty ancestor resource group via scmProvider snapshot instead of defaulting to @', () => {
+            const emptyAncestorGroup = { id: 'ancestor-0', label: 'Parent', resourceStates: [] };
+            const scmProvider = createMock<VsCodeScmProvider>({
+                scmModel: createMock<VsCodeScmProvider['scmModel']>({
+                    snapshot: createMock<NonNullable<VsCodeScmProvider['scmModel']['snapshot']>>({
+                        ancestors: [
+                            {
+                                entry: {
+                                    change_id: 'parentchangeid',
+                                    commit_id: 'parentcommitid',
+                                    description: 'Parent',
+                                    author: { name: 'A', email: 'a@a.com', timestamp: '' },
+                                    committer: { name: 'A', email: 'a@a.com', timestamp: '' },
+                                    parents: [],
+                                    bookmarks: [],
+                                },
+                                prefix: 'Parent',
+                                isMutable: true,
+                                canSquash: true,
+                                changes: [],
+                                label: 'Parent: parentch',
+                                contextValue: 'jj.group.allowSquash',
+                            },
+                        ],
+                    }),
+                }),
+            });
+
+            expect(createSquashRevisionIntoParentPayload([emptyAncestorGroup], scmProvider)).toEqual({
+                revision: 'parentchangeid',
+                targetParent: undefined,
+            });
+            expect(createSquashRevisionIntoAncestorPayload([emptyAncestorGroup], scmProvider)).toEqual({
+                revision: 'parentchangeid',
+                ancestorRevision: undefined,
+            });
+            expect(() => createSquashRevisionIntoParentPayload([emptyAncestorGroup])).toThrow(
+                'Could not resolve revision for resource group ancestor-0',
+            );
         });
     });
 
@@ -396,6 +637,112 @@ describe('vscode payloads', () => {
             const payloadEmpty = createUploadStackPayload([]);
             expect(payloadEmpty.revision).toBeUndefined();
             expect(payloadEmpty.mode).toBe('stack');
+        });
+    });
+
+    describe('toggle diff editable payload', () => {
+        it('extracts leftUri, rightUri, resourceUri, and title for active diff tab and guards focused left pane', () => {
+            const leftUri = Uri.parse('jj-view:///file.txt#mode=diff&base=abc&side=left');
+            const rightUri = Uri.parse('jj-view:///file.txt#mode=diff&base=abc&side=right');
+            const tabGroup = vscode.window.tabGroups.activeTabGroup as { activeTab?: vscode.Tab };
+            const prevTab = tabGroup.activeTab;
+            const prevEditor = vscode.window.activeTextEditor;
+
+            try {
+                tabGroup.activeTab = createMock<vscode.Tab>({
+                    label: 'file.txt (abc)',
+                    input: new vscode.TabInputTextDiff(leftUri, rightUri),
+                });
+                vscode.window.activeTextEditor = undefined;
+
+                // Direct editor/title invocation passes modified URI in args[0]
+                const fromTitle = createToggleDiffEditablePayload([rightUri]);
+                expect(fromTitle.leftUri?.toString()).toBe(leftUri.toString());
+                expect(fromTitle.rightUri?.toString()).toBe(rightUri.toString());
+                expect(fromTitle.resourceUri?.toString()).toBe(rightUri.toString());
+                expect(fromTitle.title).toBe('file.txt (abc)');
+
+                // Command Palette invocation with no args defaults to active diff tab
+                const fromPalette = createToggleDiffEditablePayload([]);
+                expect(fromPalette.leftUri?.toString()).toBe(leftUri.toString());
+                expect(fromPalette.rightUri?.toString()).toBe(rightUri.toString());
+
+                // Command Palette when activeTextEditor is explicitly focused on the left pane keeps left resourceUri
+                vscode.window.activeTextEditor = createMock<vscode.TextEditor>({
+                    document: createMock<vscode.TextDocument>({ uri: leftUri }),
+                });
+                const fromLeftPane = createToggleDiffEditablePayload([]);
+                expect(fromLeftPane.leftUri).toBeUndefined();
+                expect(fromLeftPane.resourceUri?.toString()).toBe(leftUri.toString());
+            } finally {
+                tabGroup.activeTab = prevTab;
+                vscode.window.activeTextEditor = prevEditor;
+            }
+        });
+    });
+
+    describe('remote file url payload', () => {
+        it('extracts active editor URI and 1-based line range for Command Palette and editor/context', () => {
+            const fileUri = Uri.file('/workspace/repo/src/app.ts');
+            const prevEditor = vscode.window.activeTextEditor;
+
+            try {
+                vscode.window.activeTextEditor = createMock<vscode.TextEditor>({
+                    document: createMock<vscode.TextDocument>({ uri: fileUri }),
+                    selection: new vscode.Selection(new vscode.Position(3, 0), new vscode.Position(8, 5)),
+                });
+
+                const fromPalette = createRemoteFileUrlPayload([]);
+                expect(fromPalette.fileUri?.toString()).toBe(fileUri.toString());
+                expect(fromPalette.lineRange).toEqual({ startLine: 4, endLine: 9 });
+                expect(fromPalette.skipActiveSelection).toBeUndefined();
+
+                const fromEditorContext = createRemoteFileUrlPayload([fileUri]);
+                expect(fromEditorContext.fileUri?.toString()).toBe(fileUri.toString());
+                expect(fromEditorContext.lineRange).toEqual({ startLine: 4, endLine: 9 });
+                expect(fromEditorContext.skipActiveSelection).toBe(false);
+
+                // Explorer context menu passes [clickedUri, selectedUris] and skips active editor selection
+                const fromExplorer = createRemoteFileUrlPayload([fileUri, [fileUri]]);
+                expect(fromExplorer.fileUri?.toString()).toBe(fileUri.toString());
+                expect(fromExplorer.lineRange).toBeUndefined();
+                expect(fromExplorer.skipActiveSelection).toBe(true);
+            } finally {
+                vscode.window.activeTextEditor = prevEditor;
+            }
+        });
+
+        it('extracts SCM resource state and explicit Commit Details payloads without active editor selection', () => {
+            const revUri = Uri.parse('jj-view:///src/a.ts#root=/repo&jj-revision=xyz&revision=xyz');
+            const fromScm = createRemoteFileUrlPayload([
+                {
+                    resourceUri: revUri,
+                    revision: 'xyz',
+                    status: 'deleted',
+                },
+            ]);
+            expect(fromScm.fileUri?.toString()).toBe(revUri.toString());
+            expect(fromScm.revision).toBe('xyz');
+            expect(fromScm.fileStatus).toBe('deleted');
+            expect(fromScm.skipActiveSelection).toBe(true);
+
+            const fromDetails = createRemoteFileUrlPayload([
+                {
+                    filePath: 'src/a.ts',
+                    isRepoRelative: true,
+                    revision: 'commit123',
+                    fileStatus: 'modified',
+                },
+            ]);
+            expect(fromDetails).toEqual({
+                fileUri: undefined,
+                filePath: 'src/a.ts',
+                isRepoRelative: true,
+                revision: 'commit123',
+                fileStatus: 'modified',
+                lineRange: undefined,
+                skipActiveSelection: true,
+            });
         });
     });
 });

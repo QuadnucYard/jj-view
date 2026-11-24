@@ -209,8 +209,10 @@ export class VsCodeBlameProvider implements vscode.Disposable {
                     }
                     revision = entry.parents[0].commit_id;
                 }
-            } else {
+            } else if (query.mode === 'revision') {
                 revision = query.revision;
+            } else {
+                return undefined;
             }
         }
         const [blame, workingCopy] = await Promise.all([

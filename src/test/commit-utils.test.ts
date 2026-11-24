@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { JjService, NO_OP_LOGGER } from '../core/jj-service';
 import type { CommitAction, JjLogEntry } from '../core/jj-types';
 import { computeCommitActions } from '../core/webview/log/utils/commit-utils';
@@ -17,6 +17,10 @@ describe('computeCommitActions', () => {
         repo = new TestRepo();
         repo.init();
         jj = new JjService(repo.path, NO_OP_LOGGER);
+    });
+
+    afterEach(async () => {
+        await repo.dispose();
     });
 
     async function getCommit(revision: string): Promise<JjLogEntry> {
@@ -44,6 +48,7 @@ describe('computeCommitActions', () => {
         });
         expect(result.vscodeContext['jj.canEdit']).toBe(true);
         expect(result.vscodeContext['jj.canAbandon']).toBe(true);
+        expect(result.vscodeContext['jj.canSquash']).toBe(true);
     });
 
     it('should hide immutable actions', async () => {
@@ -59,6 +64,7 @@ describe('computeCommitActions', () => {
         expect(result.vscodeContext['jj.canAbandon']).toBe(false);
         expect(result.vscodeContext['jj.canDescribe']).toBe(false);
         expect(result.vscodeContext['jj.canAbandonDescendants']).toBe(false);
+        expect(result.vscodeContext['jj.canSquash']).toBe(false);
     });
 
     it('should respect hiddenActions', async () => {
@@ -207,5 +213,119 @@ describe('computeCommitActions', () => {
 
         expect(result.visibleActions.edit).toBe(false);
         expect(result.vscodeContext['jj.canEdit']).toBe(false);
+    });
+    it('should compute jj.canSimplifyParents for mutable merge commits and multi-selections', async () => {
+        const ids = await buildGraph(repo, [
+            { label: 'A', parents: ['root()'] },
+            { label: 'B', parents: ['A'] },
+            { label: 'Merge', parents: ['B', 'A'] },
+        ]);
+
+        const singleParent = await getCommit(ids.B.changeId);
+        const mergeCommit = await getCommit(ids.Merge.changeId);
+        const rootCommit = await getCommit('root()');
+
+        // Unselected single-parent commit cannot simplify parents
+        expect(
+            computeCommitActions(singleParent, new Set(), false, 0, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(false);
+
+        // Single-selected single-parent commit cannot simplify parents
+        expect(
+            computeCommitActions(singleParent, new Set(), true, 1, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(false);
+
+        // Unselected single-parent commit while others are selected cannot simplify parents
+        expect(
+            computeCommitActions(singleParent, new Set(), false, 2, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(false);
+
+        // Multi-selected mutable single-parent commit can simplify parents
+        expect(
+            computeCommitActions(singleParent, new Set(), true, 2, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(true);
+
+        // Mutable merge commit can simplify parents (unselected, single-selected, or multi-selected)
+        expect(
+            computeCommitActions(mergeCommit, new Set(), false, 0, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(true);
+        expect(
+            computeCommitActions(mergeCommit, new Set(), true, 1, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(true);
+        expect(
+            computeCommitActions(mergeCommit, new Set(), true, 2, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(true);
+
+        // Unselected mutable merge commit remains eligible even if an immutable commit is selected elsewhere
+        expect(
+            computeCommitActions(mergeCommit, new Set(), false, 2, true).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(true);
+
+        // Immutable commit or multi-selection containing immutable commit cannot simplify parents
+        expect(
+            computeCommitActions(rootCommit, new Set(), false, 0, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(false);
+        expect(computeCommitActions(mergeCommit, new Set(), true, 2, true).vscodeContext['jj.canSimplifyParents']).toBe(
+            false,
+        );
+
+        const immutableMerge = { ...mergeCommit, is_immutable: true };
+        expect(
+            computeCommitActions(immutableMerge, new Set(), false, 0, false).vscodeContext['jj.canSimplifyParents'],
+        ).toBe(false);
+    });
+
+    it('should compute jj.canSquash based on single mutable parent and single-item context', async () => {
+        const ids = await buildGraph(repo, [
+            { label: 'A', parents: ['root()'] },
+            { label: 'B', parents: ['A'] },
+            { label: 'C', parents: ['root()'] },
+            { label: 'Merge', parents: ['A', 'C'] },
+        ]);
+
+        // Child of immutable root -> cannot squash
+        const commitA = await getCommit(ids.A.changeId);
+        expect(computeCommitActions(commitA, new Set(), false, 0, false).vscodeContext['jj.canSquash']).toBe(false);
+
+        // Merge commit -> cannot squash
+        const commitMerge = await getCommit(ids.Merge.changeId);
+        expect(computeCommitActions(commitMerge, new Set(), false, 0, false).vscodeContext['jj.canSquash']).toBe(false);
+
+        // Mutable commit with single mutable parent
+        const commitB = await getCommit(ids.B.changeId);
+        expect(computeCommitActions(commitB, new Set(), false, 0, false).vscodeContext['jj.canSquash']).toBe(true);
+        expect(computeCommitActions(commitB, new Set(), true, 1, false).vscodeContext['jj.canSquash']).toBe(true);
+        // Selected in multi-selection -> restricted
+        expect(computeCommitActions(commitB, new Set(), true, 2, false).vscodeContext['jj.canSquash']).toBe(false);
+        // Unselected while others are selected -> allowed
+        expect(computeCommitActions(commitB, new Set(), false, 2, false).vscodeContext['jj.canSquash']).toBe(true);
+    });
+
+    it('should set jj.canCompareWithUploaded based on codeForgeChange currentRevision and selection count', async () => {
+        const ids = await buildGraph(repo, [{ label: 'A', parents: ['root()'] }]);
+        const commit = await getCommit(ids.A.changeId);
+
+        // Initially no codeForgeChange
+        const resultWithout = computeCommitActions(commit, new Set(), false, 0, false);
+        expect(resultWithout.vscodeContext['jj.canCompareWithUploaded']).toBe(false);
+
+        // With codeForgeChange having currentRevision (including GitHub/GitLab before files is populated)
+        commit.codeForgeChange = {
+            id: 'PR_kwDO123',
+            number: 42,
+            displayLabel: 'PR #42',
+            providerName: 'GitHub',
+            status: 'NEW',
+            submittable: true,
+            url: 'https://github.com/owner/repo/pull/42',
+            unresolvedComments: 0,
+            currentRevision: 'uploaded-sha-999',
+        };
+
+        const resultWithSingle = computeCommitActions(commit, new Set(), true, 1, false);
+        expect(resultWithSingle.vscodeContext['jj.canCompareWithUploaded']).toBe(true);
+
+        const resultWithMulti = computeCommitActions(commit, new Set(), true, 2, false);
+        expect(resultWithMulti.vscodeContext['jj.canCompareWithUploaded']).toBe(false);
     });
 });

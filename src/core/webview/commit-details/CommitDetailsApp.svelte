@@ -80,6 +80,7 @@ $effect(() => {
         changeIdOffset={detailsCommit.changeIdOffset}
         commitId={detailsCommit.commitId || ''}
         description={detailsCommit.description || ''}
+        unsavedDraft={detailsCommit.unsavedDraft}
         files={detailsCommit.files || []}
         isLoadingFiles={detailsCommit.isLoadingFiles ?? false}
         isImmutable={detailsCommit.isImmutable || false}
@@ -101,6 +102,10 @@ $effect(() => {
                 isRefreshing = false;
             }
         }}
+        codeForgeChange={detailsCommit.codeForgeChange}
+        codeForgeNeedsUpload={detailsCommit.codeForgeNeedsUpload}
+        descriptionModifiedFromRemote={detailsCommit.descriptionModifiedFromRemote}
+        unuploadedFilePaths={detailsCommit.unuploadedFilePaths}
         onSave={(description) => {
             if (detailsCommit?.changeId) {
                 void sender.saveDescription({ changeId: detailsCommit.changeId, description });
@@ -116,8 +121,36 @@ $effect(() => {
                 void sender.openMultiDiff({ changeId: detailsCommit.changeId });
             }
         }}
+        onCompareWithUploaded={() => {
+            if (detailsCommit?.changeId) {
+                void sender.openCompareWithUploaded({ changeId: detailsCommit.changeId });
+            }
+        }}
         onDescriptionChange={(description, selectionStart, selectionEnd) => {
             void sender.descriptionChanged({ description, selectionStart, selectionEnd });
+        }}
+        onSplitFiles={(paths, placement) => {
+            if (detailsCommit?.changeId && paths.length > 0) {
+                void sender.splitFiles({ changeId: detailsCommit.changeId, paths, placement });
+            }
+        }}
+        onOpenFileOnRemote={(file) => {
+            if (detailsCommit?.changeId) {
+                void sender.openFileOnRemote({
+                    changeId: detailsCommit.changeId,
+                    path: file.path,
+                    status: file.status,
+                });
+            }
+        }}
+        onCopyRemoteFileUrl={(file) => {
+            if (detailsCommit?.changeId) {
+                void sender.copyRemoteFileUrl({
+                    changeId: detailsCommit.changeId,
+                    path: file.path,
+                    status: file.status,
+                });
+            }
         }}
     />
 {/if}

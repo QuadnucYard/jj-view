@@ -22,7 +22,9 @@ describe('ChangeDetectionManager', () => {
     let host: FakeHostEnvironment;
     let changeManager: ChangeDetectionManager | undefined;
     let outputChannel: LoggerChannel;
-    let triggerRefreshSpy: Mock<(event: { forceSnapshot: boolean; reason: string }) => Promise<void>>;
+    let triggerRefreshSpy: Mock<
+        (event: { forceSnapshot: boolean; reason: string; skipIfOpUnchanged?: boolean }) => Promise<void>
+    >;
 
     beforeEach(async () => {
         repo = new TestRepo();
@@ -119,7 +121,11 @@ describe('ChangeDetectionManager', () => {
             changeManager = new ChangeDetectionManager(repo.path, jj, outputChannel, triggerRefreshSpy, pollingHost);
 
             await vi.advanceTimersByTimeAsync(5000);
-            expect(triggerRefreshSpy).toHaveBeenCalledWith({ forceSnapshot: true, reason: 'poll' });
+            expect(triggerRefreshSpy).toHaveBeenCalledWith({
+                forceSnapshot: true,
+                reason: 'poll',
+                skipIfOpUnchanged: true,
+            });
             await changeManager.awaitWatchersReady();
             expect(watcherStartSpy).not.toHaveBeenCalled();
 
@@ -256,6 +262,41 @@ describe('ChangeDetectionManager', () => {
             host.documents.fireDidSaveDocument(Uri.file(path.join(repo.path, '..', 'outside.txt')));
             expect(triggerRefreshSpy).not.toHaveBeenCalled();
         });
+
+        it('preserves skipIfOpUnchanged when all deferred callers allow it, and clears it when any requires unconditional refresh', async () => {
+            changeManager = new ChangeDetectionManager(repo.path, jj, outputChannel, triggerRefreshSpy, host);
+            await changeManager.awaitWatchersReady();
+            triggerRefreshSpy.mockClear();
+
+            const scheduleDeferred = accessPrivate<(force?: boolean, skipIfOpUnchanged?: boolean) => void>(
+                changeManager,
+                '_scheduleDeferredRefresh',
+            );
+
+            // 1. Both op_heads (false, true) and working_copy (true, true) allow skipping if ops unchanged
+            setPrivate(changeManager, 'lastExternalOpTime', Date.now());
+            scheduleDeferred.call(changeManager, false, true);
+            scheduleDeferred.call(changeManager, true, true);
+
+            await vi.advanceTimersByTimeAsync(500);
+            expect(triggerRefreshSpy).toHaveBeenCalledWith({
+                forceSnapshot: true,
+                reason: 'deferred watcher event',
+                skipIfOpUnchanged: true,
+            });
+
+            // 2. Subsequent batch resets _pendingSkipIfOpUnchanged, then combining (false, true) with (true, false) clears it
+            triggerRefreshSpy.mockClear();
+            setPrivate(changeManager, 'lastExternalOpTime', Date.now());
+            scheduleDeferred.call(changeManager, false, true);
+            scheduleDeferred.call(changeManager, true, false);
+
+            await vi.advanceTimersByTimeAsync(500);
+            expect(triggerRefreshSpy).toHaveBeenCalledWith({
+                forceSnapshot: true,
+                reason: 'deferred watcher event',
+            });
+        });
     });
 
     describe('Native Watcher Integration (Real Timers)', () => {
@@ -364,6 +405,27 @@ describe('ChangeDetectionManager', () => {
             expect(accessPrivate<DirectoryWatcher | undefined>(changeManager, '_workingCopyWatcher')).toBeUndefined();
             const poller = accessPrivate<Poller>(changeManager, '_poller');
             expect(accessPrivate<boolean>(poller, '_isPolling')).toBe(true);
+        });
+
+        it('falls back to polling mode without showing inotify warning toast when directory limit or timeout is exceeded', async () => {
+            let watchAttempts = 0;
+            vi.spyOn(host.system.watcher, 'watch').mockImplementation(async (dirPath: string) => {
+                if (dirPath === repo.path) {
+                    watchAttempts++;
+                    throw new Error('watcher: directory limit or timeout exceeded');
+                }
+                return { unsubscribe: async () => {} };
+            });
+            const warnSpy = vi.spyOn(host.ui, 'showWarning');
+
+            host.config.set('fileWatcherMode', 'watch');
+            changeManager = new ChangeDetectionManager(repo.path, jj, outputChannel, triggerRefreshSpy, host);
+
+            await waitForLog('Falling back to polling mode');
+            expect(watchAttempts).toBe(1);
+            expect(accessPrivate<string>(changeManager, '_fileWatcherMode')).toBe('polling');
+            expect(accessPrivate<DirectoryWatcher | undefined>(changeManager, '_workingCopyWatcher')).toBeUndefined();
+            expect(warnSpy).not.toHaveBeenCalled();
         });
 
         it('cleans up op_heads watcher when reporting permanent failure', async () => {
@@ -652,6 +714,46 @@ describe('ChangeDetectionManager', () => {
                 },
                 { timeout: 2000, interval: 50 },
             );
+        });
+
+        it('falls back to watching .jj/working_copy/checkout when op_heads/heads does not exist (custom jj backend)', async () => {
+            await fs.rm(path.join(repo.path, '.jj', 'repo', 'op_heads', 'heads'), { recursive: true, force: true });
+
+            const heads1 = await jj.getOperationHeads();
+            expect(heads1).toHaveLength(1);
+            expect(heads1[0]).toMatch(/^[0-9a-f]+$/);
+
+            changeManager = new ChangeDetectionManager(repo.path, jj, outputChannel, triggerRefreshSpy, host);
+            await waitForLog('OpHeads Watcher] Started');
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            triggerRefreshSpy.mockClear();
+
+            const checkoutPath = path.join(repo.path, '.jj', 'working_copy', 'checkout');
+            await fs.writeFile(checkoutPath, Buffer.from('new-custom-op-head-state'));
+
+            await vi.waitFor(
+                () => {
+                    const found = triggerRefreshSpy.mock.calls.some((call) => call[0].reason === 'jj operation');
+                    expect(found, 'Expected jj operation refresh when checkout file changed').toBe(true);
+                },
+                { timeout: 5000, interval: 100 },
+            );
+        });
+
+        it('watches .citc/modified when present in watch mode instead of full workspace root', async () => {
+            const citcModifiedDir = path.join(repo.path, '.citc', 'modified');
+            await fs.mkdir(citcModifiedDir, { recursive: true });
+            host.config.set('fileWatcherMode', 'watch');
+
+            changeManager = new ChangeDetectionManager(repo.path, jj, outputChannel, triggerRefreshSpy, host);
+            await waitForLog('Working Copy Watcher] Started');
+
+            const wcWatcher = accessPrivate<DirectoryWatcher | undefined>(changeManager, '_workingCopyWatcher');
+            expect(wcWatcher).toBeDefined();
+            if (!wcWatcher) {
+                throw new Error('Working copy watcher undefined');
+            }
+            expect(accessPrivate<string>(wcWatcher, 'path')).toBeSameFsPath(citcModifiedDir);
         });
     });
 });

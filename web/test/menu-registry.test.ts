@@ -182,6 +182,64 @@ describe('MenuRegistry & Icon Resolution', () => {
         const squashParentIdx = commands.indexOf('jj-view.squashRevisionIntoParent');
         expect(diffIdx).toBeLessThan(abandonIdx);
         expect(abandonIdx).toBeLessThan(squashParentIdx);
+
+        // Keep-message variants are non-inline context actions, not inline hover buttons
+        expect(commands).not.toContain('jj-view.squashRevisionIntoParentKeepMessage');
+        expect(commands).not.toContain('jj-view.squashRevisionIntoAncestorKeepMessage');
+    });
+
+    it('resolves scm/resourceGroup/context non-inline keep-message squash actions when allowSquash is set', () => {
+        const registry = new MenuRegistry();
+        const rootContext = new ContextKeyService();
+
+        const allowSquashContext = rootContext.createScoped({
+            scmResourceGroupState: 'jj.group.workingCopy jj.group.allowSquash',
+        });
+        const groupsWithSquash = registry.getContextActions('scm/resourceGroup/context', allowSquashContext);
+        const modGroup = groupsWithSquash.find((g) => g.groupName === '1_modification');
+        expect(modGroup?.items.map((i) => i.command)).toEqual([
+            'jj-view.squashRevisionIntoParentKeepMessage',
+            'jj-view.squashRevisionIntoAncestorKeepMessage',
+        ]);
+
+        const noSquashContext = rootContext.createScoped({
+            scmResourceGroupState: 'jj.group.workingCopy jj.group.allowAbandon',
+        });
+        const groupsWithoutSquash = registry.getContextActions('scm/resourceGroup/context', noSquashContext);
+        const allWithoutSquash = groupsWithoutSquash.flatMap((g) => g.items.map((i) => i.command));
+        expect(allWithoutSquash).not.toContain('jj-view.squashRevisionIntoParentKeepMessage');
+        expect(allWithoutSquash).not.toContain('jj-view.squashRevisionIntoAncestorKeepMessage');
+    });
+
+    it('resolves webview/context keep-message squash actions under 4_changes when jj.canSquash is true', () => {
+        const registry = new MenuRegistry();
+        const rootContext = new ContextKeyService();
+
+        const squashableCommit = rootContext.createScoped({
+            webviewSection: 'commit',
+            'jj.canDuplicate': true,
+            'jj.canAbandon': true,
+            'jj.canAbsorb': true,
+            'jj.canSquash': true,
+        });
+        const groups = registry.getContextActions('webview/context', squashableCommit);
+        const changesGroup = groups.find((g) => g.groupName === '4_changes');
+        expect(changesGroup?.items.map((i) => i.command)).toEqual([
+            'jj-view.duplicate',
+            'jj-view.abandon',
+            'jj-view.absorb',
+            'jj-view.squashRevisionIntoParentKeepMessage',
+            'jj-view.squashRevisionIntoAncestorKeepMessage',
+        ]);
+
+        const nonSquashableCommit = rootContext.createScoped({
+            webviewSection: 'commit',
+            'jj.canSquash': false,
+        });
+        const hiddenGroups = registry.getContextActions('webview/context', nonSquashableCommit);
+        const hiddenCommands = hiddenGroups.flatMap((g) => g.items.map((i) => i.command));
+        expect(hiddenCommands).not.toContain('jj-view.squashRevisionIntoParentKeepMessage');
+        expect(hiddenCommands).not.toContain('jj-view.squashRevisionIntoAncestorKeepMessage');
     });
 
     it('resolves scm/resourceState/context actions toggling openFile and openChanges based on openDiffOnClick', () => {
@@ -232,6 +290,23 @@ describe('MenuRegistry & Icon Resolution', () => {
         expect(allCommands).toContain('jj-view.openFile');
         expect(allCommands).toContain('jj-view.restore');
         expect(allCommands).toContain('jj-view.squashFilesIntoParent');
+        expect(allCommands).not.toContain('jj-view.splitFilesBefore');
+        expect(allCommands).not.toContain('jj-view.splitFilesAfter');
+
+        const splitContext = rootContext.createScoped({
+            scmResourceState: 'jj.resource.allowOpen jj.resource.allowRestore jj.resource.allowSplit',
+        });
+        const splitInlineCommands = registry
+            .getInlineActions('scm/resourceState/context', splitContext)
+            .map((a) => a.command);
+        expect(splitInlineCommands).not.toContain('jj-view.splitFilesBefore');
+        expect(splitInlineCommands).not.toContain('jj-view.splitFilesAfter');
+
+        const splitContextCommands = registry
+            .getContextActions('scm/resourceState/context', splitContext)
+            .flatMap((g) => g.items.map((i) => i.command));
+        expect(splitContextCommands).toContain('jj-view.splitFilesBefore');
+        expect(splitContextCommands).toContain('jj-view.splitFilesAfter');
     });
 
     it('resolves view/title inline actions for log view including workspaceAdd', () => {
@@ -245,10 +320,148 @@ describe('MenuRegistry & Icon Resolution', () => {
         expect(commands).toContain('jj-view.graph.undo');
         expect(commands).toContain('jj-view.graph.redo');
         expect(commands).toContain('jj-view.graph.workspaceAdd');
+        expect(commands).toContain('jj-view.sync');
 
         const wsAction = actions.find((a) => a.command === 'jj-view.graph.workspaceAdd');
         expect(wsAction?.title).toBe('Add Workspace');
         expect(wsAction?.iconClass).toContain('jj-icon-workspace-add');
         expect(wsAction?.iconClass).toContain('codicon-new-collection');
+
+        const syncAction = actions.find((a) => a.command === 'jj-view.sync');
+        expect(syncAction?.title).toBe('Sync');
+        expect(syncAction?.iconClass).toBe('codicon codicon-sync');
+    });
+    it('resolves jj-view.simplifyParents in webview/context based on jj.canSimplifyParents', () => {
+        const registry = new MenuRegistry();
+        const cmd = registry.getCommand('jj-view.simplifyParents');
+        expect(cmd).toEqual({
+            command: 'jj-view.simplifyParents',
+            title: 'Simplify Parents',
+            category: 'JJ View',
+        });
+
+        const rootContext = new ContextKeyService();
+        const allowedContext = rootContext.createScoped({
+            webviewSection: 'commit',
+            'jj.canSimplifyParents': true,
+            'jj.canMerge': true,
+        });
+        const allowedGroups = registry.getContextActions('webview/context', allowedContext);
+        const rebaseGroup = allowedGroups.find((g) => g.groupName === '5_rebase');
+        expect(rebaseGroup?.items.map((i) => i.command)).toEqual(['jj-view.newMergeChange', 'jj-view.simplifyParents']);
+
+        const disallowedContext = rootContext.createScoped({
+            webviewSection: 'commit',
+            'jj.canSimplifyParents': false,
+        });
+        const disallowedCommands = registry
+            .getContextActions('webview/context', disallowedContext)
+            .flatMap((g) => g.items.map((i) => i.command));
+        expect(disallowedCommands).not.toContain('jj-view.simplifyParents');
+    });
+
+    it('resolves jj-view.restoreFileFrom in editor/title/context and editor/context for file scheme only', () => {
+        const registry = new MenuRegistry();
+        const rootContext = new ContextKeyService();
+
+        const cmd = registry.getCommand('jj-view.restoreFileFrom');
+        expect(cmd).toEqual({
+            command: 'jj-view.restoreFileFrom',
+            title: 'Restore File from Revision...',
+            category: 'JJ View',
+        });
+
+        const fileContext = rootContext.createScoped({ resourceScheme: 'file' });
+        const tabGroups = registry.getContextActions('editor/title/context', fileContext);
+        const tabJjGroup = tabGroups.find((g) => g.groupName === 'jj-view');
+        expect(tabJjGroup?.items.map((i) => i.command)).toEqual([
+            'jj-view.compareFileWith',
+            'jj-view.viewFileAtRevision',
+            'jj-view.restoreFileFrom',
+        ]);
+
+        const editorGroups = registry.getContextActions('editor/context', fileContext);
+        const editorJjGroup = editorGroups.find((g) => g.groupName === 'jj-view');
+        expect(editorJjGroup?.items.map((i) => i.command)).toEqual([
+            'jj-view.compareFileWith',
+            'jj-view.viewFileAtRevision',
+            'jj-view.restoreFileFrom',
+        ]);
+
+        const virtualContext = rootContext.createScoped({ resourceScheme: 'jj-view' });
+        const virtualTabCommands = registry
+            .getContextActions('editor/title/context', virtualContext)
+            .flatMap((g) => g.items.map((i) => i.command));
+        expect(virtualTabCommands).not.toContain('jj-view.restoreFileFrom');
+
+        const virtualEditorCommands = registry
+            .getContextActions('editor/context', virtualContext)
+            .flatMap((g) => g.items.map((i) => i.command));
+        expect(virtualEditorCommands).not.toContain('jj-view.restoreFileFrom');
+    });
+
+    it('resolves toggle diff editability commands for jj-view and jj-edit in editor/title, editor/title/context, and commandPalette', () => {
+        const registry = new MenuRegistry();
+        const rootContext = new ContextKeyService();
+
+        const viewContext = rootContext.createScoped({ resourceScheme: 'jj-view' });
+        const viewTitleActions = registry.getInlineActions('editor/title', viewContext);
+        expect(viewTitleActions.map((a) => a.command)).toEqual(['jj-view.enableDiffEditing', 'jj-view.openFile']);
+        const viewTabCtx = registry
+            .getContextActions('editor/title/context', viewContext)
+            .flatMap((g) => g.items.map((i) => i.command));
+        expect(viewTabCtx).toContain('jj-view.enableDiffEditing');
+        expect(viewTabCtx).not.toContain('jj-view.disableDiffEditing');
+        const viewPalette = registry.getMenuItems('commandPalette', viewContext).map((a) => a.command);
+        expect(viewPalette).toContain('jj-view.enableDiffEditing');
+        expect(viewPalette).not.toContain('jj-view.disableDiffEditing');
+
+        const editContext = rootContext.createScoped({ resourceScheme: 'jj-edit' });
+        const editTitleActions = registry.getInlineActions('editor/title', editContext);
+        expect(editTitleActions.map((a) => a.command)).toEqual(['jj-view.disableDiffEditing', 'jj-view.openFile']);
+        const editTabCtx = registry
+            .getContextActions('editor/title/context', editContext)
+            .flatMap((g) => g.items.map((i) => i.command));
+        expect(editTabCtx).toContain('jj-view.disableDiffEditing');
+        expect(editTabCtx).not.toContain('jj-view.enableDiffEditing');
+        const editPalette = registry.getMenuItems('commandPalette', editContext).map((a) => a.command);
+        expect(editPalette).toContain('jj-view.disableDiffEditing');
+        expect(editPalette).not.toContain('jj-view.enableDiffEditing');
+
+        const fileContext = rootContext.createScoped({ resourceScheme: 'file' });
+        expect(registry.getInlineActions('editor/title', fileContext)).toEqual([]);
+        const filePalette = registry.getMenuItems('commandPalette', fileContext).map((a) => a.command);
+        expect(filePalette).not.toContain('jj-view.enableDiffEditing');
+        expect(filePalette).not.toContain('jj-view.disableDiffEditing');
+    });
+
+    it('resolves jj-view.openFileOnRemote and jj-view.copyRemoteFileUrl across menus', () => {
+        const registry = new MenuRegistry();
+        const rootContext = new ContextKeyService();
+
+        const noRepoEditor = rootContext.createScoped({ resourceScheme: 'file' });
+        expect(
+            registry.getContextActions('editor/context', noRepoEditor).flatMap((g) => g.items.map((i) => i.command)),
+        ).not.toContain('jj-view.copyRemoteFileUrl');
+
+        for (const scheme of ['file', 'jj-view', 'jj-edit']) {
+            const ctx = rootContext.createScoped({ 'jj.hasRepository': true, resourceScheme: scheme });
+            const editorCmds = registry
+                .getContextActions('editor/context', ctx)
+                .flatMap((g) => g.items.map((i) => i.command));
+            expect(editorCmds).toContain('jj-view.openFileOnRemote');
+            expect(editorCmds).toContain('jj-view.copyRemoteFileUrl');
+
+            const paletteCmds = registry.getMenuItems('commandPalette', ctx).map((i) => i.command);
+            expect(paletteCmds).toContain('jj-view.openFileOnRemote');
+            expect(paletteCmds).toContain('jj-view.copyRemoteFileUrl');
+        }
+
+        const scmCtx = rootContext.createScoped({ scmResourceState: 'jj.resource.allowRestore jj.resource.allowOpen' });
+        const scmCmds = registry
+            .getContextActions('scm/resourceState/context', scmCtx)
+            .flatMap((g) => g.items.map((i) => i.command));
+        expect(scmCmds).toContain('jj-view.openFileOnRemote');
+        expect(scmCmds).toContain('jj-view.copyRemoteFileUrl');
     });
 });

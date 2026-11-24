@@ -18,6 +18,10 @@ import { logPerf } from './perf-logger';
 export const ROOT_ID = 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz';
 export const isMac = process.platform === 'darwin';
 
+const e2eIsolatedConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jj-view-e2e-config-'));
+process.env.XDG_CONFIG_HOME = path.join(e2eIsolatedConfigDir, 'xdg-config');
+process.env.APPDATA = path.join(e2eIsolatedConfigDir, 'appdata');
+
 interface WorkspaceConfig {
     folders?: Array<{ path?: string }>;
 }
@@ -298,7 +302,10 @@ export async function launchNewVSCode(
         }
     }
 
-    const env = { ...process.env, NODE_NO_WARNINGS: '1' } as { [key: string]: string };
+    const env = {
+        ...process.env,
+        NODE_NO_WARNINGS: '1',
+    } as { [key: string]: string };
     delete env.ELECTRON_RUN_AS_NODE;
     for (const key in extraEnv) {
         const val = extraEnv[key];
@@ -1029,7 +1036,9 @@ export async function dismissActiveUI(page: Page | undefined): Promise<boolean> 
                 .catch(() => {});
         }
 
-        const contextMenu = page.locator('.context-view.monaco-menu-container').filter({ visible: true });
+        const contextMenu = page
+            .locator('.context-view.monaco-menu-container:not(.chat-response-selection-menu)')
+            .filter({ visible: true });
         let menuIterations = 0;
         while ((await contextMenu.count()) > 0 && menuIterations < 5) {
             menuIterations++;
@@ -1110,10 +1119,10 @@ export class VSCodeFixtureImpl implements VSCodeFixture {
                 if (typeof targetPath === 'string') {
                     const isMatch =
                         focused &&
-                        (focused.rootUri.fsPath === vscode.Uri.file(targetPath).fsPath ||
+                        (api.repositoryManager.getRepositoryForUri(vscode.Uri.file(targetPath)) === focused ||
                             (targetPath.endsWith('.code-workspace') &&
                                 (vscode.workspace.workspaceFolders || []).some(
-                                    (f) => f.uri.fsPath === focused.rootUri.fsPath,
+                                    (f) => api.repositoryManager.getRepositoryForUri(f.uri) === focused,
                                 )));
                     if (isMatch) {
                         try {
@@ -1633,7 +1642,9 @@ export const test = baseTest.extend<
                                 } else if (
                                     file.isFile() &&
                                     file.name.endsWith('.log') &&
-                                    file.name.toLowerCase().includes('jujutsu')
+                                    (file.name.toLowerCase().includes('jujutsu') ||
+                                        file.name.toLowerCase().includes('jj view') ||
+                                        file.name.toLowerCase().includes('jj-view'))
                                 ) {
                                     results.push(fullPath);
                                 }

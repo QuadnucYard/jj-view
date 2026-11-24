@@ -84,6 +84,42 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
         enum: ['github', 'gitlab', 'gerrit'],
     },
     {
+        key: 'codeForge.adapterCommand',
+        title: 'Code Forge Adapter Command',
+        description:
+            'Path to an external CLI executable implementing the jj-view CodeForge adapter protocol (detect, statuses, upload, get-file-content, list-comments, reply-comment, resolve-comment).',
+        category: 'General',
+        type: 'string',
+        default: '',
+    },
+    {
+        key: 'codeForge.enableComments',
+        title: 'Code Forge Enable Comments',
+        description:
+            'Controls whether code forge review comments (GitHub, GitLab, Gerrit) are fetched and displayed in the editor and Comments panel.',
+        category: 'General',
+        type: 'boolean',
+        default: true,
+    },
+    {
+        key: 'codeForge.pollIntervalSeconds',
+        title: 'Code Forge Poll Interval Seconds',
+        description:
+            'How often (in seconds) to re-fetch pull request, merge request and review status from the code forge (GitHub, GitLab or Gerrit) while the window is focused. Set to 0 to disable background polling. Positive values below 10 are treated as 10.',
+        category: 'Performance',
+        type: 'number',
+        default: 60,
+    },
+    {
+        key: 'codeForge.minRefreshIntervalSeconds',
+        title: 'Code Forge Min Refresh Interval Seconds',
+        description:
+            "Minimum time (in seconds) between code forge status fetches that are prompted by local repository changes or the window regaining focus, such as file edits and jj operations. Changes that arrive inside the window are fetched once, when it ends. Raise this to reduce API usage, for example to stay under GitHub's rate limit. Background polling, uploads and manual refreshes are not throttled. 0 disables throttling.",
+        category: 'Performance',
+        type: 'number',
+        default: 0,
+    },
+    {
         key: 'gerrit.host',
         title: 'Gerrit Host',
         description:
@@ -126,6 +162,14 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
         category: 'General',
         type: 'string',
         default: '',
+    },
+    {
+        key: 'syncCommand',
+        title: 'Sync Command',
+        description: "Command to run for sync (prefixed with 'jj'). Defaults to 'git fetch'. Example: 'sync -a'.",
+        category: 'General',
+        type: 'string',
+        default: 'git fetch',
     },
     {
         key: 'minChangeIdLength',
@@ -251,6 +295,15 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
         title: 'Open Diff On Click',
         description:
             'Controls whether the diff editor should be opened when clicking a change. Otherwise the regular editor will be opened.',
+        category: 'Diff Viewer',
+        type: 'boolean',
+        default: true,
+    },
+    {
+        key: 'editableMutableDiffs',
+        title: 'Editable Mutable Diffs',
+        description:
+            'Open diffs for mutable non-working-copy commits as editable by default. When disabled, diffs open read-only and can be toggled to editable.',
         category: 'Diff Viewer',
         type: 'boolean',
         default: true,

@@ -37,9 +37,13 @@ const browserShimsVitePlugin: Plugin = {
 const htmlDevTransformPlugin: Plugin = {
     name: 'html-dev-transform',
     transformIndexHtml(html) {
+        const injectedConfig = `<script>window.__JJ_VIEW_CONFIG__ = { port: ${backendPort} };</script>`;
         return html
             .replace('<link rel="stylesheet" href="/dist/app.css">', '')
-            .replace('<script src="/dist/app.js"></script>', '<script type="module" src="/src/main.ts"></script>');
+            .replace(
+                '<script src="/dist/app.js"></script>',
+                `${injectedConfig}\n    <script type="module" src="/src/main.ts"></script>`,
+            );
     },
 };
 
@@ -117,11 +121,6 @@ export default defineConfig({
             allow: [rootDir],
         },
         proxy: {
-            '/ws/system': {
-                target: `http://127.0.0.1:${backendPort}`,
-                ws: true,
-                changeOrigin: true,
-            },
             '/api': {
                 target: `http://127.0.0.1:${backendPort}`,
                 changeOrigin: true,

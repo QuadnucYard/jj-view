@@ -128,6 +128,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             category: 'JJ View',
         },
         {
+            command: 'jj-view.restoreFileFrom',
+            title: 'Restore File from Revision...',
+            category: 'JJ View',
+        },
+        {
             command: 'jj-view.refresh',
             title: 'Refresh',
             category: 'JJ View',
@@ -146,8 +151,20 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(arrow-down)',
         },
         {
+            command: 'jj-view.squashRevisionIntoParentKeepMessage',
+            title: 'Squash Revision into Parent (Use Destination Message)',
+            category: 'JJ View',
+            icon: '$(arrow-down)',
+        },
+        {
             command: 'jj-view.squashRevisionIntoAncestor',
             title: 'Squash Revision into Ancestor...',
+            category: 'JJ View',
+            icon: '$(jj-icon-squash-into)',
+        },
+        {
+            command: 'jj-view.squashRevisionIntoAncestorKeepMessage',
+            title: 'Squash Revision into Ancestor (Use Destination Message)...',
             category: 'JJ View',
             icon: '$(jj-icon-squash-into)',
         },
@@ -156,6 +173,18 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             title: 'Open File in Working Copy',
             category: 'JJ View',
             icon: '$(go-to-file)',
+        },
+        {
+            command: 'jj-view.enableDiffEditing',
+            title: 'Edit Revision File',
+            category: 'JJ View',
+            icon: '$(edit)',
+        },
+        {
+            command: 'jj-view.disableDiffEditing',
+            title: 'Switch Revision File to Read-Only',
+            category: 'JJ View',
+            icon: '$(lock)',
         },
         {
             command: 'jj-view.openChanges',
@@ -182,6 +211,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(copy)',
         },
         {
+            command: 'jj-view.pickChange',
+            title: 'Pick Change',
+            category: 'JJ View',
+        },
+        {
             command: 'jj-view.undo',
             title: 'Undo',
             category: 'JJ View',
@@ -192,6 +226,18 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             title: 'Redo',
             category: 'JJ View',
             icon: '$(redo)',
+        },
+        {
+            command: 'jj-view.prev',
+            title: 'Previous Change',
+            category: 'JJ View',
+            icon: '$(arrow-down)',
+        },
+        {
+            command: 'jj-view.next',
+            title: 'Next Change',
+            category: 'JJ View',
+            icon: '$(arrow-up)',
         },
         {
             command: 'jj-view.duplicate',
@@ -248,6 +294,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(git-merge)',
         },
         {
+            command: 'jj-view.simplifyParents',
+            title: 'Simplify Parents',
+            category: 'JJ View',
+        },
+        {
             command: 'jj-view.showDetails',
             title: 'Show Details',
             category: 'JJ View',
@@ -288,6 +339,16 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             title: 'Create Tag...',
             category: 'JJ View',
             icon: '$(tag)',
+        },
+        {
+            command: 'jj-view.splitFilesBefore',
+            title: 'Split into New Change Before',
+            category: 'JJ View',
+        },
+        {
+            command: 'jj-view.splitFilesAfter',
+            title: 'Split into New Change After',
+            category: 'JJ View',
         },
         {
             command: 'jj-view.setBookmark',
@@ -338,6 +399,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(trash)',
         },
         {
+            command: 'jj-view.sync',
+            title: 'Sync',
+            category: 'JJ View',
+            icon: '$(sync)',
+        },
+        {
             command: 'jj-view.deleteBookmark',
             title: 'Delete Bookmark',
             category: 'JJ View',
@@ -354,6 +421,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             title: 'Show Multi-File Diff',
             category: 'JJ View',
             icon: '$(diff-multiple)',
+        },
+        {
+            command: 'jj-view.compareWithUploaded',
+            title: 'Compare with Uploaded Revision',
+            category: 'JJ View',
+            icon: '$(diff)',
         },
         {
             command: 'jj-view.workspaceAdd',
@@ -484,6 +557,12 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(key)',
         },
         {
+            command: 'jj-view.addSelectionToChat',
+            title: 'Add Selection to Chat',
+            category: 'JJ View',
+            icon: '$(comment-discussion)',
+        },
+        {
             command: 'jj-view.showComments',
             title: 'Show Comments',
             category: 'JJ View',
@@ -542,6 +621,18 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             command: 'workbench.action.closeAllEditors',
             title: 'Close All',
         },
+        {
+            command: 'jj-view.openFileOnRemote',
+            title: 'Open File on Remote',
+            category: 'JJ View',
+            icon: '$(link-external)',
+        },
+        {
+            command: 'jj-view.copyRemoteFileUrl',
+            title: 'Copy Remote File Link',
+            category: 'JJ View',
+            icon: '$(link)',
+        },
     ],
     menus: {
         commandPalette: [
@@ -578,8 +669,16 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 when: 'false',
             },
             {
+                command: 'jj-view.enableDiffEditing',
+                when: "resourceScheme == 'jj-view'",
+            },
+            {
+                command: 'jj-view.disableDiffEditing',
+                when: "resourceScheme == 'jj-edit'",
+            },
+            {
                 command: 'jj-view.uploadStack',
-                when: "!config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit'",
+                when: "!config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit' && jj.codeForgeUploadModel != 'revision'",
             },
             {
                 command: 'jj-view.killProcess',
@@ -646,11 +745,23 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 when: 'false',
             },
             {
+                command: 'jj-view.splitFilesBefore',
+                when: 'false',
+            },
+            {
+                command: 'jj-view.splitFilesAfter',
+                when: 'false',
+            },
+            {
                 command: 'jj-view.completeSquashRevision',
                 when: 'false',
             },
             {
                 command: 'jj-view.openMergeEditor',
+                when: 'false',
+            },
+            {
+                command: 'jj-view.pickChange',
                 when: 'false',
             },
             {
@@ -701,6 +812,18 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.toggleCommitAction.abandon.off',
                 when: 'false',
             },
+            {
+                command: 'jj-view.addSelectionToChat',
+                when: 'ag.isSidecar',
+            },
+            {
+                command: 'jj-view.openFileOnRemote',
+                when: "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')",
+            },
+            {
+                command: 'jj-view.copyRemoteFileUrl',
+                when: "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')",
+            },
         ],
         'view/title': [
             {
@@ -734,9 +857,14 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 when: 'view == jj-view.logView',
             },
             {
+                command: 'jj-view.sync',
+                group: 'navigation@11',
+                when: 'view == jj-view.logView',
+            },
+            {
                 command: 'jj-view.copyUnresolvedComments',
                 group: 'navigation',
-                when: 'view == workbench.panel.comments && jj.codeForgeActive',
+                when: 'view == workbench.panel.comments && jj.codeForgeActive && config.jj-view.codeForge.enableComments',
             },
         ],
         'scm/title': [
@@ -813,6 +941,16 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 group: 'inline@7',
                 when: 'scmResourceGroupState =~ /\\bjj\\.group\\.allowEdit\\b/',
             },
+            {
+                command: 'jj-view.squashRevisionIntoParentKeepMessage',
+                group: '1_modification@1',
+                when: 'scmResourceGroupState =~ /\\bjj\\.group\\.allowSquash\\b/',
+            },
+            {
+                command: 'jj-view.squashRevisionIntoAncestorKeepMessage',
+                group: '1_modification@2',
+                when: 'scmResourceGroupState =~ /\\bjj\\.group\\.allowSquash\\b/',
+            },
         ],
         'scm/resourceState/context': [
             {
@@ -849,6 +987,26 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.squashFilesIntoChild',
                 group: 'inline@5',
                 when: 'scmResourceState =~ /\\bjj\\.resource\\.allowSquashIntoChild\\b/',
+            },
+            {
+                command: 'jj-view.splitFilesBefore',
+                group: '1_modification@1',
+                when: 'scmResourceState =~ /\\bjj\\.resource\\.allowSplit\\b/',
+            },
+            {
+                command: 'jj-view.splitFilesAfter',
+                group: '1_modification@2',
+                when: 'scmResourceState =~ /\\bjj\\.resource\\.allowSplit\\b/',
+            },
+            {
+                command: 'jj-view.openFileOnRemote',
+                group: '7_remote@1',
+                when: 'scmResourceState =~ /\\bjj\\.resource\\./',
+            },
+            {
+                command: 'jj-view.copyRemoteFileUrl',
+                group: '7_remote@2',
+                when: 'scmResourceState =~ /\\bjj\\.resource\\./',
             },
         ],
         'webview/context': [
@@ -933,6 +1091,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 group: '1_diff@2',
             },
             {
+                command: 'jj-view.compareWithUploaded',
+                when: "webviewSection == 'commit' && jj.canCompareWithUploaded",
+                group: '1_diff@3',
+            },
+            {
                 command: 'jj-view.new',
                 when: "webviewSection == 'commit' && jj.canNewChild",
                 group: '2_edit@1',
@@ -968,13 +1131,23 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 group: '4_changes@3',
             },
             {
+                command: 'jj-view.squashRevisionIntoParentKeepMessage',
+                when: "webviewSection == 'commit' && jj.canSquash",
+                group: '4_changes@4',
+            },
+            {
+                command: 'jj-view.squashRevisionIntoAncestorKeepMessage',
+                when: "webviewSection == 'commit' && jj.canSquash",
+                group: '4_changes@5',
+            },
+            {
                 command: 'jj-view.upload',
                 when: "webviewSection == 'commit' && jj.canUpload",
                 group: '3_bookmark@2',
             },
             {
                 command: 'jj-view.uploadStack',
-                when: "webviewSection == 'commit' && jj.canUpload && !config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit'",
+                when: "webviewSection == 'commit' && jj.canUpload && !config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit' && jj.codeForgeUploadModel != 'revision'",
                 group: '3_bookmark@3',
             },
             {
@@ -991,6 +1164,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.createTag',
                 when: "webviewSection == 'commit'",
                 group: '3_bookmark@1.1',
+            },
+            {
+                command: 'jj-view.simplifyParents',
+                when: "webviewSection == 'commit' && jj.canSimplifyParents",
+                group: '5_rebase@3',
             },
             {
                 command: 'jj-view.setBookmark',
@@ -1088,6 +1266,28 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 group: '9_visibility_2_toggle@4',
             },
         ],
+        'editor/title': [
+            {
+                command: 'jj-view.completeSquashRevision',
+                group: 'navigation',
+                when: "resourceFilename == 'SQUASH_MSG'",
+            },
+            {
+                command: 'jj-view.enableDiffEditing',
+                group: 'navigation',
+                when: "resourceScheme == 'jj-view'",
+            },
+            {
+                command: 'jj-view.disableDiffEditing',
+                group: 'navigation',
+                when: "resourceScheme == 'jj-edit'",
+            },
+            {
+                command: 'jj-view.openFile',
+                group: 'navigation',
+                when: "resourceScheme == 'jj-view' || resourceScheme == 'jj-edit'",
+            },
+        ],
         'editor/title/context': [
             {
                 command: 'workbench.action.closeActiveEditor',
@@ -1111,6 +1311,16 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 when: "resourceScheme == 'file'",
             },
             {
+                command: 'jj-view.enableDiffEditing',
+                group: 'jj-view@1',
+                when: "resourceScheme == 'jj-view'",
+            },
+            {
+                command: 'jj-view.disableDiffEditing',
+                group: 'jj-view@1',
+                when: "resourceScheme == 'jj-edit'",
+            },
+            {
                 command: 'jj-view.openFile',
                 group: 'jj-view@2',
                 when: "resourceScheme == 'jj-view' || resourceScheme == 'jj-edit'",
@@ -1120,12 +1330,22 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 group: 'jj-view@3',
                 when: "resourceScheme == 'file'",
             },
+            {
+                command: 'jj-view.restoreFileFrom',
+                group: 'jj-view@4',
+                when: "resourceScheme == 'file'",
+            },
         ],
         'editor/context': [
             {
                 command: 'jj-view.squashSelectionIntoAncestor',
                 group: 'jj-view',
                 when: 'isInDiffEditor && jj.parentMutable',
+            },
+            {
+                command: 'jj-view.addSelectionToChat',
+                group: 'jj-view@0',
+                when: 'ag.isSidecar',
             },
             {
                 command: 'jj-view.squashSelectionIntoParent',
@@ -1141,6 +1361,21 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.viewFileAtRevision',
                 group: 'jj-view@3',
                 when: "resourceScheme == 'file'",
+            },
+            {
+                command: 'jj-view.restoreFileFrom',
+                group: 'jj-view@4',
+                when: "resourceScheme == 'file'",
+            },
+            {
+                command: 'jj-view.openFileOnRemote',
+                group: 'jj-view_remote@1',
+                when: "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')",
+            },
+            {
+                command: 'jj-view.copyRemoteFileUrl',
+                group: 'jj-view_remote@2',
+                when: "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')",
             },
         ],
     },

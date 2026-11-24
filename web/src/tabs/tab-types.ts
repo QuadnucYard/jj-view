@@ -8,6 +8,7 @@ import type { Uri } from '../../../src/core/uri-utils';
 
 export interface MultiDiffFileEntry {
     filename: string;
+    oldFilename?: string;
     originalContent?: string;
     modifiedContent?: string;
     fileStatus?: 'added' | 'deleted' | 'modified' | 'renamed' | 'copied';
@@ -26,6 +27,7 @@ export type TabViewData =
           resourceState?: JjResourceState;
           originalContent?: string;
           modifiedContent?: string;
+          loaded?: boolean;
       }
     | {
           type: 'multi-diff';
@@ -34,6 +36,7 @@ export type TabViewData =
       }
     | {
           type: 'commit-details';
+          repoRoot: Uri;
           changeId: string;
           title?: string;
       }
@@ -43,6 +46,29 @@ export type TabViewData =
           title: string;
           content?: string;
           resourceState?: JjResourceState;
+      }
+    | {
+          type: 'merge';
+          uri: Uri;
+          title: string;
+          baseContent: string;
+          leftContent: string;
+          rightContent: string;
+          resolvedContent?: string;
+          resourceState?: JjResourceState;
+          loaded?: boolean;
+      }
+    | {
+          /** The review comments for the CommentsManager's active change. One per app. */
+          type: 'comments';
+      }
+    | {
+          /** The diagnostic output channel log viewer. One per app. */
+          type: 'output';
+      }
+    | {
+          /** The live process and performance monitor view. One per app. */
+          type: 'process-monitor';
       };
 
 export interface TabEntry {
@@ -57,6 +83,10 @@ export interface TabEntry {
 
 export type TabReorderPosition = 'before' | 'after';
 
+export const COMMENTS_TAB_ID = 'comments';
+export const OUTPUT_TAB_ID = 'output';
+export const PROCESS_MONITOR_TAB_ID = 'process-monitor';
+
 export function getTabId(view: TabViewData): string {
     switch (view.type) {
         case 'diff': {
@@ -67,8 +97,16 @@ export function getTabId(view: TabViewData): string {
         case 'multi-diff':
             return `multi-diff:${view.title}`;
         case 'commit-details':
-            return `commit-details:${view.changeId}`;
+            return `commit-details:${view.repoRoot.toString()}:${view.changeId}`;
         case 'file':
             return `file:${view.uri.toString()}`;
+        case 'merge':
+            return `merge:${view.uri.toString()}`;
+        case 'comments':
+            return COMMENTS_TAB_ID;
+        case 'output':
+            return OUTPUT_TAB_ID;
+        case 'process-monitor':
+            return PROCESS_MONITOR_TAB_ID;
     }
 }

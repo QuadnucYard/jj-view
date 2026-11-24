@@ -10,10 +10,22 @@ import type { StatusBarService, StatusBarState } from './status-bar-service';
 interface Props {
     service: StatusBarService;
     notificationService?: NotificationService;
+    activeProcessCount?: number;
+    onOpenProcessMonitor?: () => void;
+    onOpenOutput?: () => void;
     onOpenSettings?: () => void;
+    onTriggerUpdate?: () => void;
 }
 
-let { service, notificationService, onOpenSettings }: Props = $props();
+let {
+    service,
+    notificationService,
+    activeProcessCount = 0,
+    onOpenProcessMonitor,
+    onOpenOutput,
+    onOpenSettings,
+    onTriggerUpdate,
+}: Props = $props();
 
 // svelte-ignore state_referenced_locally
 let state = $state<StatusBarState>(service.state);
@@ -52,6 +64,7 @@ const progress = $derived(state.progress);
 const statusMessage = $derived(state.statusMessage);
 const workingCopy = $derived(state.workingCopy);
 const connection = $derived(state.connection);
+const updateAvailable = $derived(state.updateAvailable);
 </script>
 
 <footer class="app-status-bar" data-testid="status-bar" role="status">
@@ -94,6 +107,33 @@ const connection = $derived(state.connection);
     </div>
 
     <div class="status-section status-right">
+        {#if updateAvailable}
+            <button
+                type="button"
+                class="status-item status-btn update-item"
+                class:updating={updateAvailable.updating}
+                data-testid="status-update-btn"
+                disabled={updateAvailable.updating}
+                aria-label={updateAvailable.updating
+                    ? `Updating to v${updateAvailable.latestVersion}...`
+                    : `Update to v${updateAvailable.latestVersion}`}
+                title={updateAvailable.updating
+                    ? `Downloading and installing JJ View v${updateAvailable.latestVersion}...`
+                    : `JJ View v${updateAvailable.latestVersion} available (current: v${updateAvailable.currentVersion}) — Click to update and restart`}
+                onclick={() => onTriggerUpdate?.()}
+            >
+                <i
+                    class="codicon {updateAvailable.updating ? 'codicon-sync codicon-modifier-spin' : 'codicon-cloud-download'}"
+                    aria-hidden="true"
+                ></i>
+                <span class="status-label">
+                    {updateAvailable.updating
+                        ? `Updating to v${updateAvailable.latestVersion}...`
+                        : `Update to v${updateAvailable.latestVersion}`}
+                </span>
+            </button>
+        {/if}
+
         <div
             class="status-item connection-item"
             data-testid="status-connection"
@@ -122,6 +162,41 @@ const connection = $derived(state.connection);
                 {#if notificationCount > 0}
                     <span class="notification-badge" data-testid="status-notification-badge">{notificationCount}</span>
                 {/if}
+            </button>
+        {/if}
+
+        {#if onOpenProcessMonitor}
+            <button
+                type="button"
+                class="status-item status-btn monitor-item"
+                class:active-processes={activeProcessCount > 0}
+                data-testid="status-process-monitor-btn"
+                aria-label="Process & Performance Monitor"
+                title={activeProcessCount > 0
+                    ? `${activeProcessCount} JJ process(es) running — Click to open Process & Performance Monitor`
+                    : 'Process & Performance Monitor'}
+                onclick={() => onOpenProcessMonitor()}
+            >
+                <i
+                    class="codicon {activeProcessCount > 0 ? 'codicon-sync codicon-modifier-spin' : 'codicon-pulse'}"
+                    aria-hidden="true"
+                ></i>
+                {#if activeProcessCount > 0}
+                    <span class="notification-badge" data-testid="status-process-count-badge">{activeProcessCount}</span>
+                {/if}
+            </button>
+        {/if}
+
+        {#if onOpenOutput}
+            <button
+                type="button"
+                class="status-item status-btn output-item"
+                data-testid="status-output-btn"
+                aria-label="Output Log"
+                title="Output Log"
+                onclick={() => onOpenOutput()}
+            >
+                <i class="codicon codicon-output" aria-hidden="true"></i>
             </button>
         {/if}
 
@@ -187,7 +262,10 @@ const connection = $derived(state.connection);
 
 .status-item:hover,
 .status-btn:hover {
-    background-color: var(--vscode-statusBarItem-hoverBackground, rgba(121, 121, 121, 0.2));
+    background-color: var(
+        --vscode-statusBarItem-hoverBackground,
+        color-mix(in srgb, var(--vscode-foreground) 12%, transparent)
+    );
     color: var(--vscode-foreground);
 }
 
@@ -200,11 +278,37 @@ const connection = $derived(state.connection);
 }
 
 .progress-item {
-    color: var(--vscode-charts-blue, #69b1ff);
+    color: var(--vscode-charts-blue, var(--vscode-focusBorder));
 }
 
-.progress-item i {
+.progress-item i,
+.monitor-item.active-processes i,
+.update-item.updating i {
     animation: codicon-spin 1.2s infinite linear;
+}
+
+.update-item {
+    color: var(--vscode-statusBarItem-prominentForeground, var(--vscode-button-foreground));
+    background-color: var(
+        --vscode-statusBarItem-prominentBackground,
+        color-mix(in srgb, var(--vscode-button-background, var(--vscode-focusBorder)) 85%, transparent)
+    );
+    font-weight: 600;
+    height: 18px;
+    padding: 0 8px;
+}
+
+.update-item:hover:not(:disabled) {
+    color: var(--vscode-statusBarItem-prominentForeground, var(--vscode-button-foreground));
+    background-color: var(
+        --vscode-statusBarItem-prominentHoverBackground,
+        var(--vscode-button-hoverBackground, var(--vscode-focusBorder))
+    );
+}
+
+.update-item:disabled {
+    opacity: 0.75;
+    cursor: default;
 }
 
 @keyframes codicon-spin {
@@ -218,15 +322,15 @@ const connection = $derived(state.connection);
 }
 
 .connection-item[data-status="connected"] i {
-    color: var(--vscode-charts-green, #60d199);
+    color: var(--vscode-charts-green, var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-foreground)));
 }
 
 .connection-item[data-status="disconnected"] i {
-    color: var(--vscode-charts-red, #ff6762);
+    color: var(--vscode-charts-red, var(--vscode-errorForeground, var(--vscode-foreground)));
 }
 
 .connection-item[data-status="connecting"] i {
-    color: var(--vscode-charts-yellow, #ffd452);
+    color: var(--vscode-charts-yellow, var(--vscode-editorWarning-foreground, var(--vscode-foreground)));
 }
 
 .notification-badge {
@@ -249,3 +353,4 @@ const connection = $derived(state.connection);
     outline-offset: -1px;
 }
 </style>
+

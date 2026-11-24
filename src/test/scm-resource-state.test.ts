@@ -23,7 +23,7 @@ describe('createJjResourceState', () => {
             expect(state.resourceUri).toEqual(resourceUri);
             expect(state.leftUri?.scheme).toBe('jj-view');
             expect(state.rightUri?.scheme).toBe('jj-edit');
-            expect(state.rightUri?.path).toBe('/file.txt');
+            expect(state.rightUri?.path).toBe(resourceUri.path);
             expect(state.command?.arguments).toEqual([{ resourceUri, rightUri: state.rightUri, revision: 'rev123' }]);
         });
 
@@ -34,10 +34,10 @@ describe('createJjResourceState', () => {
             };
             const state = createJjResourceState(entry, 'rev123', root);
 
-            expect(state.resourceUri.path).toBe('/file.txt');
+            expect(state.resourceUri.path).toBe('/root/file.txt');
             expect(state.revision).toBe('rev123');
-            expect(state.leftUri?.path).toBe('/file.txt');
-            expect(state.rightUri?.path).toBe('/file.txt');
+            expect(state.leftUri?.path).toBe('/root/file.txt');
+            expect(state.rightUri?.path).toBe('/root/file.txt');
         });
 
         it('uses oldPath as leftPath for renamed entries', () => {
@@ -48,8 +48,8 @@ describe('createJjResourceState', () => {
             };
             const state = createJjResourceState(entry, 'rev123', root);
 
-            expect(state.leftUri?.path).toBe('/old-file.txt');
-            expect(state.rightUri?.path).toBe('/new-file.txt');
+            expect(state.leftUri?.path).toBe('/root/old-file.txt');
+            expect(state.rightUri?.path).toBe('/root/new-file.txt');
         });
 
         it('uses oldPath as leftPath for copied entries', () => {
@@ -60,8 +60,8 @@ describe('createJjResourceState', () => {
             };
             const state = createJjResourceState(entry, 'rev123', root);
 
-            expect(state.leftUri?.path).toBe('/old-file.txt');
-            expect(state.rightUri?.path).toBe('/new-file.txt');
+            expect(state.leftUri?.path).toBe('/root/old-file.txt');
+            expect(state.rightUri?.path).toBe('/root/new-file.txt');
         });
 
         it('uses jj-edit scheme for editable non-working-copy rightUri', () => {
@@ -308,6 +308,49 @@ describe('createJjResourceState', () => {
                 const state = createJjResourceState(entry, 'rev123', root, { hasChild: false });
                 const flags = state.contextValue?.split(' ') || [];
                 expect(flags).toContain('jj.resource.allowSquashIntoChild');
+            });
+
+            it('preserves squashable actions on mutable ancestors when editable is false (read-only jj-view)', () => {
+                const state = createJjResourceState(entry, 'rev123', root, {
+                    editable: false,
+                    squashable: true,
+                    multipleAncestors: true,
+                });
+                expect(state.rightUri?.scheme).toBe('jj-view');
+                expect(state.resourceUri.scheme).toBe('jj-view');
+                const flags = state.contextValue?.split(' ') || [];
+                expect(flags).toContain('jj.resource.allowSquashIntoParent');
+                expect(flags).toContain('jj.resource.allowSquashIntoAncestor');
+                expect(flags).toContain('jj.resource.allowRestore');
+            });
+        });
+
+        describe('Split capability (allowSplit)', () => {
+            it('sets allowSplit for working copy (@) and matched workingCopyChangeId', () => {
+                const wcState = createJjResourceState(entry, '@', root);
+                expect(wcState.contextValue?.split(' ')).toContain('jj.resource.allowSplit');
+
+                const matchedState = createJjResourceState(entry, 'rev-wc', root, {
+                    workingCopyChangeId: 'rev-wc',
+                });
+                expect(matchedState.contextValue?.split(' ')).toContain('jj.resource.allowSplit');
+            });
+
+            it('sets allowSplit when mutableCommit or editable is true and omits when false', () => {
+                const mutableState = createJjResourceState(entry, 'rev123', root, { mutableCommit: true });
+                expect(mutableState.contextValue?.split(' ')).toContain('jj.resource.allowSplit');
+
+                const editableState = createJjResourceState(entry, 'rev123', root, { editable: true });
+                expect(editableState.contextValue?.split(' ')).toContain('jj.resource.allowSplit');
+
+                const immutableState = createJjResourceState(entry, 'rev123', root, {
+                    editable: true,
+                    mutableCommit: false,
+                });
+                expect(immutableState.contextValue?.split(' ')).not.toContain('jj.resource.allowSplit');
+
+                const defaultAncestorState = createJjResourceState(entry, 'rev123', root);
+                expect(defaultAncestorState.contextValue?.split(' ')).not.toContain('jj.resource.allowSplit');
             });
         });
     });

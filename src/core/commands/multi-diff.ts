@@ -8,6 +8,7 @@ import { showJjError } from '../host/ui-helpers';
 import { createDiffUris } from '../uri-utils';
 
 const SHORT_CHANGE_ID_LENGTH = 8;
+const MAX_TITLE_LENGTH = 100;
 
 export interface ShowMultiFileDiffPayload {
     revision?: string;
@@ -22,7 +23,8 @@ export async function showMultiFileDiffCommand(ctx: CommandContext, payload?: Sh
             // Resolve to concrete change ID so both diff sides use the jj-view content provider
             const [logEntry] = await jj.getLog({ revision, limit: 1, omitChanges: true });
             const changeId = logEntry?.change_id ?? revision;
-            const editable = logEntry ? !logEntry.is_immutable : false;
+            const editableMutableDiffs = ctx.host.config.get<boolean>('editableMutableDiffs', true) ?? true;
+            const editable = (logEntry ? !logEntry.is_immutable : false) && editableMutableDiffs;
             const description = logEntry?.description ?? (await jj.getDescription(changeId));
 
             const changes = await jj.getChanges(changeId);
@@ -35,16 +37,25 @@ export async function showMultiFileDiffCommand(ctx: CommandContext, payload?: Sh
             const diffOptions = {
                 editable,
                 workingCopyChangeId: logEntry?.is_current_working_copy ? changeId : undefined,
+                platform: jj.system.platform,
             };
 
             const resources = changes.map((entry) => {
                 const { leftUri, rightUri } = createDiffUris(entry, changeId, jj.workspaceRoot, diffOptions);
-                return { leftUri, rightUri, label: entry.path };
+                return {
+                    leftUri,
+                    rightUri,
+                    label: entry.path,
+                    ...(entry.oldPath ? { oldLabel: entry.oldPath } : {}),
+                    status: entry.status,
+                };
             });
 
             const firstLine = description.split('\n')[0].trim();
             const shortId = changeId.slice(0, SHORT_CHANGE_ID_LENGTH);
-            const title = firstLine ? `${shortId}: ${firstLine}` : `Changes in ${shortId}`;
+            const rawTitle = firstLine ? `${shortId}: ${firstLine}` : `Changes in ${shortId}`;
+            const title =
+                rawTitle.length > MAX_TITLE_LENGTH ? `${rawTitle.slice(0, MAX_TITLE_LENGTH - 3)}...` : rawTitle;
             await ctx.host.nav.openMultiDiff(title, resources);
         });
     } catch (err: unknown) {

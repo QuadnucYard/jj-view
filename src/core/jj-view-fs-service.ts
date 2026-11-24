@@ -7,19 +7,29 @@ import { AsyncCache } from '../utils/async-cache';
 import type { Disposable, Event } from './host/events';
 import type { JjRepository } from './jj-repository';
 import type { JjRepositoryManager } from './jj-repository-manager';
-import { decodeJjViewQuery, type FileStatLike, getFsPathFromUri, type Uri } from './uri-utils';
+import { stripLeadingSeparators } from './path-utils';
+import {
+    decodeJjViewQuery,
+    type FileStatLike,
+    getFsPathFromUri,
+    getRepoRelativePath,
+    type JjViewQuery,
+    type Uri,
+} from './uri-utils';
 import { VirtualFsUriTracker } from './virtual-fs-uri-tracker';
 
 export type { FileStatLike };
 
 const MAX_CACHE_ENTRIES = 100;
+const BINARY_UPLOADED_EXT_PATTERN =
+    /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|pdf|wasm|zip|tar|gz|tgz|bz2|7z|exe|bin|so|dylib|dll|woff2?|ttf|otf|eot|mp[34]|wav|ogg|flac|webm)$/i;
 
 export class JjViewFsService implements Disposable {
     private readonly _uriTracker: VirtualFsUriTracker;
     readonly onDidChangeFile: Event<Uri[]>;
 
     // Cache keyed by "base|filePath" → { left, right }
-    private readonly _diffCache = new AsyncCache<string, { left: string; right: string }>({
+    private readonly _diffCache = new AsyncCache<string, { left: Uint8Array; right: Uint8Array }>({
         maxEntries: MAX_CACHE_ENTRIES,
     });
     private _cacheGeneration = 0;
@@ -68,8 +78,8 @@ export class JjViewFsService implements Disposable {
         if (this._isDisposed) {
             return new Uint8Array();
         }
-        const filePath = getFsPathFromUri(uri);
         const repo = this._repositoryManager.getRepositoryForUri(uri);
+        const filePath = getFsPathFromUri(uri, repo?.jj.system.platform);
         if (!repo) {
             this._repositoryManager.outputChannel.info(
                 `[JjViewFsService] No Jujutsu repository resolved for URI: ${uri.toString()} (scheme: ${uri.scheme}, fsPath: ${filePath})`,
@@ -79,27 +89,102 @@ export class JjViewFsService implements Disposable {
         this._uriTracker.recordAccess(uri);
 
         const query = decodeJjViewQuery(uri);
+        if (query.mode === 'text') {
+            return new TextEncoder().encode(query.text);
+        }
+        const read = () => {
+            switch (query.mode) {
+                case 'revision':
+                    return this._readRevisionContent(repo, filePath, query.revision);
+                case 'uploaded':
+                    return this._readUploadedContent(repo, uri, filePath, query);
+                case 'diff':
+                    return this._readDiffContent(repo, filePath, query.base, query.side);
+            }
+        };
         for (let attempt = 0; attempt < 3; attempt++) {
             const generation = this._cacheGeneration;
             try {
-                const content =
-                    query.mode === 'revision'
-                        ? await this._readDiffContent(repo, filePath, query.revision, 'right')
-                        : await this._readDiffContent(repo, filePath, query.base, query.side);
+                const content = await read();
                 if (generation === this._cacheGeneration) {
                     return content;
                 }
             } catch (err: unknown) {
-                if (generation !== this._cacheGeneration) {
-                    continue;
+                if (generation === this._cacheGeneration) {
+                    throw err;
                 }
-                this._repositoryManager.outputChannel.debug(
-                    `[JjViewFsService] Failed to read URI ${uri.toString()}: ${String(err)}`,
-                );
-                throw err;
             }
         }
         throw new Error('Repository changed repeatedly while reading virtual file content');
+    }
+
+    private async _readRevisionContent(repo: JjRepository, filePath: string, revision: string): Promise<Uint8Array> {
+        if (!revision || revision === 'none' || /^0{7,64}$/.test(revision)) {
+            return new Uint8Array();
+        }
+        try {
+            return await repo.jj.getFileBinaryContent(filePath, revision);
+        } catch (error: unknown) {
+            if (await repo.jj.fileExistsAtRevision(filePath, revision)) {
+                throw error;
+            }
+            return new Uint8Array();
+        }
+    }
+
+    private async _readUploadedContent(
+        repo: JjRepository,
+        uri: Uri,
+        filePath: string,
+        query: Extract<JjViewQuery, { mode: 'uploaded' }>,
+    ): Promise<Uint8Array> {
+        try {
+            const platform = repo.jj.system.platform;
+            const relPath = stripLeadingSeparators(getRepoRelativePath(uri, repo.jj.workspaceRoot, platform), platform);
+
+            let deferredBlobContent: string | undefined;
+            if (query.blobSha && !BINARY_UPLOADED_EXT_PATTERN.test(relPath)) {
+                const blobContent = await repo.jj.getGitBlobContent(query.blobSha);
+                if (blobContent !== undefined) {
+                    if (!blobContent.includes('\uFFFD')) {
+                        return new TextEncoder().encode(blobContent);
+                    }
+                    deferredBlobContent = blobContent;
+                }
+            }
+
+            const rev = query.remoteRevision || query.commitId;
+            if (rev) {
+                try {
+                    return await repo.jj.getFileBinaryContent(filePath, rev);
+                } catch {
+                    // Fallback to Code Forge service if not found in local JJ/Git store
+                }
+            }
+
+            if (rev && (query.changeId || query.changeNumber !== undefined || query.blobSha)) {
+                const remoteContent = await repo.codeForge.getUploadedFileContent({
+                    changeId: query.changeId,
+                    changeNumber: query.changeNumber,
+                    revisionId: rev,
+                    filePath: relPath,
+                    blobSha: query.blobSha,
+                });
+                if (remoteContent !== undefined) {
+                    return remoteContent;
+                }
+            }
+
+            if (deferredBlobContent !== undefined) {
+                return new TextEncoder().encode(deferredBlobContent);
+            }
+            return new Uint8Array();
+        } catch (err: unknown) {
+            this._repositoryManager.outputChannel.debug(
+                `[JjViewFsService] Failed to read uploaded file ${filePath}: ${String(err)}`,
+            );
+            return new Uint8Array();
+        }
     }
 
     private async _readDiffContent(
@@ -109,8 +194,7 @@ export class JjViewFsService implements Disposable {
         side: 'left' | 'right',
     ): Promise<Uint8Array> {
         const cacheKey = `${base}|${filePath}`;
-        const content = await this._diffCache.getOrFetch(cacheKey, () => repo.jj.getDiffContent(base, filePath));
-        const text = side === 'left' ? content.left : content.right;
-        return new TextEncoder().encode(text);
+        const content = await this._diffCache.getOrFetch(cacheKey, () => repo.jj.getDiffBinaryContent(base, filePath));
+        return side === 'left' ? content.left : content.right;
     }
 }

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { JjStatusEntry } from '../jj-types';
 import type { Uri } from '../uri-utils';
 import type { Event } from './events';
 import type { HostSystem } from './host-system';
@@ -55,7 +56,7 @@ export interface HostUi {
 export interface HostConfig {
     get<T>(key: string): T | undefined;
     get<T>(key: string, defaultValue: T): T;
-    update?<T>(key: string, value: T): Promise<void>;
+    update?<T>(key: string, value: T, scope?: 'user' | 'workspace'): Promise<void>;
     readonly onDidChangeConfiguration?: Event<HostConfigurationChangeEvent>;
 }
 
@@ -65,13 +66,17 @@ export interface HostOpenOptions {
     sourceUri?: Uri;
 }
 
+export interface MultiDiffResource {
+    leftUri: Uri;
+    rightUri: Uri;
+    label: string;
+    oldLabel?: string;
+    status?: JjStatusEntry['status'];
+}
+
 export interface HostNavigation {
     openDiff(leftUri: Uri, rightUri: Uri, title: string, options?: HostOpenOptions): Promise<void>;
-    openMultiDiff(
-        title: string,
-        resources: { leftUri: Uri; rightUri: Uri; label: string }[],
-        options?: HostOpenOptions,
-    ): Promise<void>;
+    openMultiDiff(title: string, resources: MultiDiffResource[], options?: HostOpenOptions): Promise<void>;
     openMergeEditor(resourceUri: Uri): Promise<void>;
     openCommitDetails(
         repoRoot: Uri,
@@ -100,6 +105,7 @@ export interface HostDiffTab {
     readonly originalUri: Uri;
     readonly modifiedUri: Uri;
     readonly isDirty?: boolean;
+    readonly label?: string;
     close(): Promise<void>;
 }
 
@@ -154,6 +160,12 @@ export interface HostSecretsChangeEvent {
 
 export interface HostSecrets {
     get(key: string): Promise<string | undefined>;
+    /**
+     * Whether a value is stored under `key`. Prefer this over `get` when only
+     * existence matters, so the secret itself never has to leave the host
+     * (e.g. the daemon's credential store in standalone mode).
+     */
+    has(key: string): Promise<boolean>;
     store(key: string, value: string): Promise<void>;
     delete(key: string): Promise<void>;
     readonly onDidChange?: Event<HostSecretsChangeEvent>;
@@ -194,6 +206,45 @@ export interface HostViews {
     registerFileDecorationProvider(provider: unknown): HostDisposable;
 }
 
+/**
+ * Selects how the host authenticates an outbound request. The caller names a
+ * credential; it never handles the credential itself.
+ *
+ * - `git`: whatever git would send to the URL's host (git-remote-sso,
+ *   gitcookies, credential helpers). `gitDir` scopes repo-local git config.
+ * - `secret`: a Bearer token the host reads from {@link HostSecrets} under `key`.
+ * - `bearer`: a Bearer token already held by the caller (e.g. an OAuth session).
+ */
+export type HostHttpAuth =
+    | { readonly kind: 'git'; readonly gitDir?: string }
+    | { readonly kind: 'secret'; readonly key: string }
+    | { readonly kind: 'bearer'; readonly token: string };
+
+export interface HostHttpRequest {
+    readonly method?: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    /** Text body. HostHttp targets JSON APIs; binary payloads are not supported. */
+    readonly body?: string;
+    readonly auth?: HostHttpAuth;
+    readonly timeoutMs?: number;
+    readonly signal?: AbortSignal;
+}
+
+/**
+ * Outbound HTTP performed by the host process rather than the UI. In the web
+ * UI this routes through the daemon, which sidesteps CORS and keeps
+ * credentials out of the page; in VS Code it runs in the extension host.
+ */
+export interface HostHttp {
+    fetch(url: string, request?: HostHttpRequest): Promise<Response>;
+    /**
+     * Whether a `{ kind: 'git' }` request to `url` would carry a credential.
+     * Lets callers choose authenticated endpoints up front (e.g. Gerrit's
+     * `/a/` prefix) without ever seeing the credential.
+     */
+    hasGitCredentials(url: string, gitDir?: string): Promise<boolean>;
+}
+
 export interface HostEnvironment {
     readonly ui: HostUi;
     readonly nav: HostNavigation;
@@ -202,6 +253,7 @@ export interface HostEnvironment {
     readonly storage: HostStorage;
     readonly secrets: HostSecrets;
     readonly auth: HostAuth;
+    readonly http: HostHttp;
     readonly commands: HostCommands;
     readonly views: HostViews;
     readonly workspace: HostWorkspace;

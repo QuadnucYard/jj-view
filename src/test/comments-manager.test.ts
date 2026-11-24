@@ -34,6 +34,7 @@ class MockCommentsProvider implements CodeForgeProvider {
 
     public lastRequestedChangeId?: string;
     public commentThreadsWaiter?: CallbackWaiter<string>;
+    public customChangeInfo?: Partial<CodeForgeChangeInfo>;
 
     createCommentThreadsWaiter(): CallbackWaiter<string> {
         const waiter = new CallbackWaiter<string>();
@@ -54,6 +55,7 @@ class MockCommentsProvider implements CodeForgeProvider {
             submittable: true,
             unresolvedComments: 0,
             url: 'url',
+            ...this.customChangeInfo,
         };
     }
 
@@ -503,17 +505,37 @@ describe('CommentsManager Tests', () => {
                 provider: unknown,
                 revision: string,
                 logEntry?: unknown,
-            ) => Promise<CodeForgeChangeInfo | undefined>
+            ) => Promise<{ changeInfo: CodeForgeChangeInfo; jjChangeId: string } | undefined>
         >(commentsManager, 'resolveChangeInfo');
 
-        const changeInfo = await resolveFn.call(commentsManager, repo, provider, '@', {
+        const resolved = await resolveFn.call(commentsManager, repo, provider, '@', {
             change_id: 'change-no-bookmarks',
             description: 'Test commit',
             bookmarks: [],
         });
 
-        expect(changeInfo).toBeDefined();
-        expect(changeInfo?.id).toBe('change-no-bookmarks');
+        expect(resolved).toBeDefined();
+        expect(resolved?.changeInfo.id).toBe('change-no-bookmarks');
+        expect(resolved?.jjChangeId).toBe('change-no-bookmarks');
+    });
+
+    test('currentJjChangeId tracks the revision whose threads are loaded and clears with it', async () => {
+        const ids = await buildGraph(testRepo, [
+            { label: 'c1', description: 'Parent commit' },
+            { label: 'c2', parents: ['c1'], description: 'Working copy' },
+        ]);
+        provider.setThreads([{ id: 'thread-1', filePath: 'file.txt', line: 1, isResolved: false, comments: [] }]);
+
+        await commentsManager.showCommentsForChange(ids.c1.changeId);
+        expect(commentsManager.currentJjChangeId).toBe(ids.c1.changeId);
+        expect(commentsManager.currentChangeId).toBe(ids.c1.changeId);
+
+        // A revision without a forge change clears the active change entirely.
+        testRepo.describe('Working copy no-change');
+        await commentsManager.showCommentsForChange('@');
+        expect(commentsManager.currentJjChangeId).toBeUndefined();
+        expect(commentsManager.activeChange).toBeUndefined();
+        expect(commentsManager.threads).toHaveLength(0);
     });
 
     test('formatUnresolvedComments and copyUnresolvedComments format markdown correctly', async () => {
@@ -740,5 +762,163 @@ describe('CommentsManager Tests', () => {
         const pullSpy = vi.spyOn(commentsManager, 'pullCommentsAutomatically');
         provider.onDidUpdateEmitter.fire();
         expect(pullSpy).toHaveBeenCalled();
+    });
+
+    test('adjusts comment line numbers for local edits using commit-level diff hunks', async () => {
+        testRepo.writeFile('file.txt', 'line 1\nline 2\nline 3\nline 4\nline 5\n');
+        testRepo.describe('Initial snapshot');
+        const anchorCommitId = testRepo.getCommitId('@');
+
+        // Insert 2 lines at the top of file.txt locally
+        testRepo.writeFile('file.txt', 'header 1\nheader 2\nline 1\nline 2\nline 3\nline 4\nline 5\n');
+        testRepo.describe('Local edit with 2 inserted lines');
+
+        provider.setThreads([
+            {
+                id: 'thread-drift-commit',
+                filePath: 'file.txt',
+                line: 3,
+                isResolved: false,
+                comments: [
+                    {
+                        id: 'c1',
+                        author: { name: 'Reviewer' },
+                        body: 'Comment on line 3',
+                        createdAt: '2026-06-30T12:00:00Z',
+                    },
+                ],
+                metadata: {
+                    commitId: anchorCommitId,
+                    originalLine: 3,
+                },
+            },
+        ]);
+
+        await commentsManager.showCommentsForChange('@');
+
+        expect(commentsManager.threads).toHaveLength(1);
+        expect(commentsManager.threads[0].line).toBe(5);
+        expect(commentsManager.threads[0].metadata?.originalLine).toBe(3);
+    });
+
+    test('falls back to blob-level diff and portedLine when comment commit is not in local git store', async () => {
+        testRepo.writeFile('file.txt', 'line 1\nline 2\nline 3\nline 4\nline 5\n');
+        testRepo.describe('Uploaded patchset 2');
+        const ps2CommitId = testRepo.getCommitId('@');
+
+        // Local working copy inserts 3 lines before line 4
+        testRepo.writeFile('file.txt', 'line 1\nline 2\nline 3\ninserted A\ninserted B\ninserted C\nline 4\nline 5\n');
+        testRepo.describe('Local edits after patchset 2');
+
+        provider.customChangeInfo = {
+            currentRevision: 'deadbeef00000000000000000000000000000002',
+            contentSynced: false,
+            files: {
+                'file.txt': {
+                    status: 'M',
+                    newSha: `${ps2CommitId}:file.txt`,
+                },
+            },
+        };
+
+        provider.setThreads([
+            {
+                id: 'thread-drift-blob',
+                filePath: 'file.txt',
+                line: 2,
+                isResolved: false,
+                comments: [
+                    {
+                        id: 'c1',
+                        author: { name: 'Reviewer' },
+                        body: 'Comment originally on line 2 of PS1, ported to line 4 on PS2',
+                        createdAt: '2026-06-30T12:00:00Z',
+                    },
+                ],
+                metadata: {
+                    commitId: 'deadbeef00000000000000000000000000000001',
+                    originalLine: 2,
+                    portedLine: 4,
+                },
+            },
+        ]);
+
+        await commentsManager.showCommentsForChange('@');
+
+        expect(commentsManager.threads).toHaveLength(1);
+        // Ported to line 4 on PS2, then shifted by +3 local insertions -> line 7
+        expect(commentsManager.threads[0].line).toBe(7);
+        expect(commentsManager.threads[0].metadata?.originalLine).toBe(2);
+    });
+
+    test('does not fetch or display comments when codeForge.enableComments is false', async () => {
+        fakeHost.config.set('codeForge.enableComments', false);
+
+        const getThreadsSpy = vi.spyOn(provider, 'getCommentThreads');
+        provider.setThreads([
+            {
+                id: 'thread-disabled',
+                filePath: 'file.txt',
+                line: 10,
+                isResolved: false,
+                comments: [],
+            },
+        ]);
+
+        await commentsManager.showCommentsForChange('@');
+        expect(getThreadsSpy).not.toHaveBeenCalled();
+        expect(commentsManager.threads).toHaveLength(0);
+        expect(commentsProvider.getThreads().size).toBe(0);
+
+        await commentsManager.pullCommentsAutomatically();
+        expect(getThreadsSpy).not.toHaveBeenCalled();
+        expect(commentsManager.threads).toHaveLength(0);
+    });
+
+    test('clears loaded threads when codeForge.enableComments is disabled and reloads when re-enabled', async () => {
+        provider.setThreads([
+            {
+                id: 'thread-toggle',
+                filePath: 'file.txt',
+                line: 10,
+                isResolved: false,
+                comments: [
+                    {
+                        id: 'c1',
+                        author: { name: 'Reviewer' },
+                        body: 'Initial comment',
+                        createdAt: '2026-06-30T12:00:00Z',
+                    },
+                ],
+            },
+        ]);
+
+        await commentsManager.showCommentsForChange('@');
+        expect(commentsManager.threads).toHaveLength(1);
+        expect(commentsProvider.getThreads().size).toBe(1);
+
+        // Disable comments integration and verify synchronous listeners see activeChange already cleared
+        let activeChangeDuringClear: unknown = 'unset';
+        const sub = commentsManager.onDidChangeThreads((threads) => {
+            if (threads.length === 0) {
+                activeChangeDuringClear = commentsManager.activeChange;
+            }
+        });
+        fakeHost.config.set('codeForge.enableComments', false);
+        sub.dispose();
+        expect(activeChangeDuringClear).toBeUndefined();
+        expect(commentsManager.threads).toHaveLength(0);
+        expect(commentsManager.activeChange).toBeUndefined();
+        expect(commentsProvider.getThreads().size).toBe(0);
+
+        // Re-enable comments integration and wait for automatic reload
+        const pullWaiter = provider.createCommentThreadsWaiter();
+        fakeHost.config.set('codeForge.enableComments', true);
+        await pullWaiter.waitNext();
+
+        await vi.waitFor(() => {
+            expect(commentsManager.threads).toHaveLength(1);
+            expect(commentsProvider.getThreads().size).toBe(1);
+        });
     });
 });

@@ -117,6 +117,7 @@ suite('Log Webview Initialization Integration Test', () => {
             rootUri: Uri.file('/tmp/slow-repo'),
             isValid: async () => true,
             jj: testContext.repository.jj,
+            onDidStatusChange: () => ({ dispose: () => {} }),
             codeForge: createMock<CodeForgeService>({
                 onDidUpdate: () => ({ dispose: () => {} }),
                 onRequestRefresh: () => ({ dispose: () => {} }),
@@ -163,6 +164,7 @@ suite('Log Webview Initialization Integration Test', () => {
             rootUri: Uri.file('/tmp/reject-repo'),
             isValid: async () => true,
             jj: testContext.repository.jj,
+            onDidStatusChange: () => ({ dispose: () => {} }),
             codeForge: createMock<CodeForgeService>({
                 onDidUpdate: () => ({ dispose: () => {} }),
                 onRequestRefresh: () => ({ dispose: () => {} }),

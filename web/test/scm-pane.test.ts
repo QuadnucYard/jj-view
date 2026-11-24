@@ -17,6 +17,7 @@ import ScmInputBox from '../src/scm/ScmInputBox.svelte';
 import ScmPane from '../src/scm/ScmPane.svelte';
 import ScmResourceGroup from '../src/scm/ScmResourceGroup.svelte';
 import ScmResourceItem from '../src/scm/ScmResourceItem.svelte';
+import { formatRepositoryDisplayNames, hasOnlyEmptyWorkingCopy } from '../src/scm/scm-repo-types';
 
 function createMockLogEntry(overrides: Partial<JjLogEntry> = {}): JjLogEntry {
     return {
@@ -40,8 +41,74 @@ function createMockLogEntry(overrides: Partial<JjLogEntry> = {}): JjLogEntry {
     };
 }
 
+function createCleanSnapshot(overrides: Partial<ScmSnapshot> = {}): ScmSnapshot {
+    return {
+        currentEntry: createMockLogEntry({ changes: [], description: '' }),
+        workingCopyChanges: [],
+        workingCopyStatuses: new Map(),
+        workingCopyLabel: 'Working Copy - qpv',
+        workingCopyContextValue: 'jj.group.workingCopy',
+        conflictedPaths: [],
+        ancestors: [],
+        parentMutable: false,
+        hasChild: false,
+        description: '',
+        workingCopyCount: 0,
+        ...overrides,
+    };
+}
+
 describe('Web SCM Components (SSR & Rendering)', () => {
     const menuRegistry = new MenuRegistry();
+
+    describe('hasOnlyEmptyWorkingCopy', () => {
+        it('returns true when snapshot is undefined', () => {
+            expect(hasOnlyEmptyWorkingCopy(undefined)).toBe(true);
+        });
+
+        it('returns true for a clean working copy with no conflicts, no ancestors, and empty description', () => {
+            expect(hasOnlyEmptyWorkingCopy(createCleanSnapshot())).toBe(true);
+            expect(hasOnlyEmptyWorkingCopy(createCleanSnapshot({ description: '   \n  ' }))).toBe(true);
+        });
+
+        it('returns false when workingCopyChanges is non-empty', () => {
+            const snapshot = createCleanSnapshot({
+                workingCopyChanges: [{ path: 'file.txt', status: 'modified' }],
+            });
+            expect(hasOnlyEmptyWorkingCopy(snapshot)).toBe(false);
+        });
+
+        it('returns false when conflictedPaths is non-empty', () => {
+            const snapshot = createCleanSnapshot({
+                conflictedPaths: ['conflict.txt'],
+            });
+            expect(hasOnlyEmptyWorkingCopy(snapshot)).toBe(false);
+        });
+
+        it('returns false when ancestors is non-empty', () => {
+            const snapshot = createCleanSnapshot({
+                ancestors: [
+                    {
+                        entry: createMockLogEntry({ change_id: 'parent123' }),
+                        prefix: '@-1',
+                        isMutable: true,
+                        canSquash: false,
+                        changes: [],
+                        label: '@-1: parent',
+                        contextValue: 'jj.group.ancestor',
+                    },
+                ],
+            });
+            expect(hasOnlyEmptyWorkingCopy(snapshot)).toBe(false);
+        });
+
+        it('returns false when description is non-empty', () => {
+            const snapshot = createCleanSnapshot({
+                description: 'wip: uncommitted commit message',
+            });
+            expect(hasOnlyEmptyWorkingCopy(snapshot)).toBe(false);
+        });
+    });
 
     describe('ScmHeader', () => {
         it('renders source control title and dynamic action buttons', () => {
@@ -326,6 +393,157 @@ describe('Web SCM Components (SSR & Rendering)', () => {
             // Working Copy group badge should show 1 item (clean-file.ts)
             expect(html).toContain('clean-file.ts');
         });
+
+        it('disambiguates repository display names when basenames collide', () => {
+            const names = formatRepositoryDisplayNames([
+                '/work/chromium_base/src',
+                '/work/ssr-support/src',
+                '/work/jj-view',
+            ]);
+            expect(names.get('/work/chromium_base/src')).toEqual({ name: 'src', qualifier: 'chromium_base' });
+            expect(names.get('/work/ssr-support/src')).toEqual({ name: 'src', qualifier: 'ssr-support' });
+            expect(names.get('/work/jj-view')).toEqual({ name: 'jj-view' });
+        });
+
+        it('renders collapsible VS Code-style repository sections in multi-repo workspaces', () => {
+            const rootContext = new ContextKeyService();
+            const snapA: ScmSnapshot = {
+                currentEntry: createMockLogEntry({
+                    change_id: 'repoachange1',
+                    change_id_shortest: 'rpa',
+                    description: 'feat: repo A change',
+                    changes: [{ path: 'alpha.ts', status: 'modified' }],
+                }),
+                workingCopyChanges: [{ path: 'alpha.ts', status: 'modified' }],
+                workingCopyStatuses: new Map([['alpha.ts', { path: 'alpha.ts', status: 'modified' }]]),
+                workingCopyLabel: 'Working Copy - rpa',
+                workingCopyContextValue: 'jj.group.workingCopy',
+                conflictedPaths: [],
+                ancestors: [],
+                parentMutable: true,
+                hasChild: false,
+                description: 'feat: repo A change',
+                workingCopyCount: 1,
+            };
+            const snapB: ScmSnapshot = {
+                currentEntry: createMockLogEntry({
+                    change_id: 'repobchange2',
+                    change_id_shortest: 'rpb',
+                    description: 'fix: repo B change',
+                    changes: [{ path: 'beta.ts', status: 'added' }],
+                }),
+                workingCopyChanges: [{ path: 'beta.ts', status: 'added' }],
+                workingCopyStatuses: new Map([['beta.ts', { path: 'beta.ts', status: 'added' }]]),
+                workingCopyLabel: 'Working Copy - rpb',
+                workingCopyContextValue: 'jj.group.workingCopy',
+                conflictedPaths: [],
+                ancestors: [],
+                parentMutable: false,
+                hasChild: true,
+                description: 'fix: repo B change',
+                workingCopyCount: 1,
+            };
+
+            const result = render(ScmPane, {
+                props: {
+                    snapshot: snapA,
+                    workspaceRoot: '/work/chromium_base/src',
+                    focusedWorkspaceRoot: '/work/chromium_base/src',
+                    repositories: [
+                        {
+                            workspaceRoot: '/work/chromium_base/src',
+                            snapshot: snapA,
+                        },
+                        {
+                            workspaceRoot: '/work/ssr-support/src',
+                            snapshot: snapB,
+                        },
+                    ],
+                    menuRegistry,
+                    rootContext,
+                    openDiffOnClick: true,
+                    onOpenResource: () => {},
+                    onCommit: () => {},
+                    onSetDescription: () => {},
+                    onAction: () => {},
+                },
+            });
+            const html = result.body;
+
+            expect(html).toContain('scm-repository-section');
+            expect(html).toContain('chromium_base');
+            expect(html).toContain('ssr-support');
+            expect(html).toContain('scm-repository-focused-badge');
+            expect(html).toContain('scm-title-action-jj-view.focusRepository');
+            expect(html).toContain('feat: repo A change');
+            expect(html).toContain('fix: repo B change');
+            expect(html).toContain('alpha.ts');
+            expect(html).toContain('beta.ts');
+        });
+
+        it('renders empty-only repositories as collapsed and dirty repositories as expanded in multi-repo workspaces', () => {
+            const rootContext = new ContextKeyService();
+            const cleanSnap = createCleanSnapshot({
+                currentEntry: createMockLogEntry({
+                    change_id: 'cleanrepochange',
+                    change_id_shortest: 'cln',
+                    description: '',
+                    changes: [],
+                }),
+                workingCopyLabel: 'Working Copy - cln',
+            });
+            const dirtySnap: ScmSnapshot = {
+                ...createCleanSnapshot(),
+                currentEntry: createMockLogEntry({
+                    change_id: 'dirtyrepochange',
+                    change_id_shortest: 'drt',
+                    description: 'feat: dirty repo change',
+                    changes: [{ path: 'dirty.ts', status: 'modified' }],
+                }),
+                workingCopyChanges: [{ path: 'dirty.ts', status: 'modified' }],
+                workingCopyStatuses: new Map([['dirty.ts', { path: 'dirty.ts', status: 'modified' }]]),
+                workingCopyLabel: 'Working Copy - drt',
+                workingCopyCount: 1,
+            };
+
+            const result = render(ScmPane, {
+                props: {
+                    snapshot: cleanSnap,
+                    workspaceRoot: '/work/clean-repo',
+                    focusedWorkspaceRoot: '/work/clean-repo',
+                    repositories: [
+                        {
+                            workspaceRoot: '/work/clean-repo',
+                            snapshot: cleanSnap,
+                        },
+                        {
+                            workspaceRoot: '/work/dirty-repo',
+                            snapshot: dirtySnap,
+                        },
+                    ],
+                    menuRegistry,
+                    rootContext,
+                    openDiffOnClick: true,
+                    onOpenResource: () => {},
+                    onCommit: () => {},
+                    onSetDescription: () => {},
+                    onAction: () => {},
+                },
+            });
+            const html = result.body;
+
+            expect(html).toContain('clean-repo');
+            expect(html).toContain('dirty-repo');
+
+            // clean-repo is empty-only so it renders collapsed: aria-expanded="false" and its body/Working Copy group is omitted
+            expect(html).toContain('aria-expanded="false"');
+            expect(html).not.toContain('Working Copy - cln');
+
+            // dirty-repo has changes so it renders expanded: aria-expanded="true" and contains its Working Copy group & file
+            expect(html).toContain('aria-expanded="true"');
+            expect(html).toContain('Working Copy - drt');
+            expect(html).toContain('dirty.ts');
+        });
     });
 
     describe('AppLayout & SplitPane', () => {
@@ -346,7 +564,8 @@ describe('Web SCM Components (SSR & Rendering)', () => {
         it('renders SplitPane resizable container', () => {
             const result = render(SplitPane, {
                 props: {
-                    initialSize: 300,
+                    size: 300,
+                    onResize: () => {},
                 },
             });
             const html = result.body;

@@ -4,6 +4,7 @@
  */
 
 import type { CodeForgeAuthManager } from '../../../src/core/code-forge-auth';
+import { MANUAL_REFRESH_REASON } from '../../../src/core/code-forge-service';
 import { abandonCommand } from '../../../src/core/commands/abandon';
 import { abandonDescendantsCommand } from '../../../src/core/commands/abandon-descendants';
 import { absorbCommand } from '../../../src/core/commands/absorb';
@@ -26,6 +27,7 @@ import { commitCommand } from '../../../src/core/commands/commit';
 import { commitPromptCommand } from '../../../src/core/commands/commit-prompt';
 import { compareAllFilesWithRevisionCommand } from '../../../src/core/commands/compare-all-files-with-revision';
 import { compareFileWithRevisionCommand } from '../../../src/core/commands/compare-file-with-revision';
+import { compareWithUploadedCommand } from '../../../src/core/commands/compare-with-uploaded';
 import {
     copyNameCommand,
     copyWorkspacePathCommand,
@@ -45,12 +47,19 @@ import { showMultiFileDiffCommand } from '../../../src/core/commands/multi-diff'
 import { newCommand } from '../../../src/core/commands/new';
 import { newAfterCommand } from '../../../src/core/commands/new-after';
 import { newBeforeCommand } from '../../../src/core/commands/new-before';
+import { nextCommand } from '../../../src/core/commands/next';
 import { openChangesCommand, openFileCommand } from '../../../src/core/commands/open';
+import { pickChangeCommand } from '../../../src/core/commands/pick-change';
+import { prevCommand } from '../../../src/core/commands/prev';
 import { createPushRefPayload, pushRefCommand, pushRefToRemoteCommand } from '../../../src/core/commands/push-ref';
 import { rebaseOntoSelectedCommand } from '../../../src/core/commands/rebase';
 import { redoCommand } from '../../../src/core/commands/redo';
 import { refreshCommand } from '../../../src/core/commands/refresh';
+import { copyRemoteFileUrlCommand, openFileOnRemoteCommand } from '../../../src/core/commands/remote-file-url';
 import { restoreCommand } from '../../../src/core/commands/restore';
+import { restoreFileFromRevisionCommand } from '../../../src/core/commands/restore-file-from-revision';
+import { simplifyParentsCommand } from '../../../src/core/commands/simplify-parents';
+import { splitFilesAfterCommand, splitFilesBeforeCommand } from '../../../src/core/commands/split-files';
 import { squashDescendantsCommand } from '../../../src/core/commands/squash-descendants';
 import {
     squashFilesIntoAncestorCommand,
@@ -60,16 +69,20 @@ import {
 import {
     completeSquashRevisionCommand,
     squashRevisionIntoAncestorCommand,
+    squashRevisionIntoAncestorKeepMessageCommand,
     squashRevisionIntoParentCommand,
+    squashRevisionIntoParentKeepMessageCommand,
 } from '../../../src/core/commands/squash-revision';
 import {
     squashHunkIntoParentCommand,
     squashSelectionIntoAncestorCommand,
     squashSelectionIntoParentCommand,
 } from '../../../src/core/commands/squash-selection';
+import { syncCommand } from '../../../src/core/commands/sync';
 import { createTagCommand } from '../../../src/core/commands/tag-create';
 import { deleteTagCommand } from '../../../src/core/commands/tag-delete';
 import { createCreateTagPayload, createDeleteTagPayload } from '../../../src/core/commands/tag-payload';
+import { disableDiffEditingCommand, enableDiffEditingCommand } from '../../../src/core/commands/toggle-diff-editable';
 import { undoCommand } from '../../../src/core/commands/undo';
 import { uploadCommand } from '../../../src/core/commands/upload';
 import { uploadStackCommand } from '../../../src/core/commands/upload-stack';
@@ -84,6 +97,7 @@ import {
 import { workspaceRefreshCommand } from '../../../src/core/commands/workspace-refresh';
 import { workspaceUpdateStaleCommand } from '../../../src/core/commands/workspace-update-stale';
 import { createWorkspaceNamePayload } from '../../../src/core/commands/workspace-utils';
+import type { CommentsManager } from '../../../src/core/comments-manager';
 import type { LogViewController } from '../../../src/core/controllers/log-view-controller';
 import { BaseCommandContext, type CommandContext } from '../../../src/core/host/command-context';
 import {
@@ -94,6 +108,7 @@ import {
 import type { HostEnvironment } from '../../../src/core/host/host-environment';
 import { TOGGLEABLE_COMMIT_ACTIONS } from '../../../src/core/host/ipc/log-view-schemas';
 import { resolveRepository } from '../../../src/core/host/ui-helpers';
+import type { JjProcessTracker } from '../../../src/core/jj-process-tracker';
 import type { JjRepository } from '../../../src/core/jj-repository';
 import type { JjRepositoryManager } from '../../../src/core/jj-repository-manager';
 import type { ScmModel } from '../../../src/core/scm-model';
@@ -116,6 +131,7 @@ import {
 import { createCommitPayload, createCommitPromptPayload } from './payloads/commit.payload';
 import { createCompareAllFilesWithRevisionPayload } from './payloads/compare-all-files-with-revision.payload';
 import { createCompareFileWithRevisionPayload } from './payloads/compare-file-with-revision.payload';
+import { createCompareWithUploadedPayload } from './payloads/compare-with-uploaded.payload';
 import { createCompleteSquashRevisionPayload } from './payloads/complete-squash-revision.payload';
 import { createDescribePromptPayload, createSetDescriptionPayload } from './payloads/describe.payload';
 import { createShowDetailsPayload } from './payloads/details.payload';
@@ -129,8 +145,13 @@ import { createNewPayload } from './payloads/new.payload';
 import { createNewAfterPayload } from './payloads/new-after.payload';
 import { createNewBeforePayload } from './payloads/new-before.payload';
 import { createOpenChangesPayload, createOpenFilePayload } from './payloads/open.payload';
+import { createPickChangePayload } from './payloads/pick-change.payload';
 import { createRebaseOntoSelectedPayload } from './payloads/rebase.payload';
+import { createRemoteFileUrlPayload } from './payloads/remote-file-url.payload';
 import { createRestorePayload } from './payloads/restore.payload';
+import { createRestoreFileFromRevisionPayload } from './payloads/restore-file-from-revision.payload';
+import { createSimplifyParentsPayload } from './payloads/simplify-parents.payload';
+import { createSplitFilesPayload } from './payloads/split-files.payload';
 import {
     createSquashFilesIntoAncestorPayload,
     createSquashFilesIntoChildPayload,
@@ -144,6 +165,7 @@ import {
     createSquashHunkIntoParentPayload,
     createSquashSelectionIntoParentPayload,
 } from './payloads/squash-selection.payload';
+import { createToggleDiffEditablePayload } from './payloads/toggle-diff-editable.payload';
 import { createUploadPayload, createUploadStackPayload } from './payloads/upload.payload';
 import { createViewFileAtRevisionPayload } from './payloads/view-file-at-revision.payload';
 import {
@@ -158,47 +180,77 @@ export interface RegisterWebCommandsOptions {
     hostEnvironment: HostEnvironment;
     logger: LoggerChannel;
     scmModel: ScmModel;
+    getScmModel?: (repo: JjRepository) => ScmModel | undefined;
     logViewController?: LogViewController;
     authManager?: CodeForgeAuthManager;
+    commentsManager?: CommentsManager;
+    processTracker?: JjProcessTracker;
 }
 
 export function registerWebCommands(options: RegisterWebCommandsOptions): void {
-    const { repositoryManager, hostEnvironment, logger, scmModel, logViewController, authManager } = options;
+    const {
+        repositoryManager,
+        hostEnvironment,
+        logger,
+        scmModel,
+        getScmModel,
+        logViewController,
+        authManager,
+        commentsManager,
+        processTracker,
+    } = options;
+
     registerGraphToolbarCommands(hostEnvironment.commands, repositoryManager);
 
-    function getActiveRepo(): JjRepository | undefined {
-        return repositoryManager.focusedRepository;
+    function getActiveRepo(args?: unknown[]): JjRepository | undefined {
+        const resolved =
+            typeof repositoryManager.getRepositoryForUri === 'function'
+                ? resolveRepository(repositoryManager, { args, host: hostEnvironment })
+                : undefined;
+        return resolved ?? repositoryManager.focusedRepository ?? repositoryManager.repositories[0] ?? scmModel.repo;
+    }
+
+    function getScmForRepo(repo: JjRepository): ScmModel {
+        return getScmModel?.(repo) ?? scmModel;
     }
 
     function createCmdContext(repo: JjRepository): CommandContext {
-        return new BaseCommandContext(repo, hostEnvironment, logger);
+        return new BaseCommandContext(repo, hostEnvironment, logger, commentsManager);
     }
 
     function registerWithPayload<TPayload, TReturn = unknown>(
         commandId: string,
-        payloadCreator: (args: unknown[], hostEnvironment?: HostEnvironment, selectedCommitIds?: string[]) => TPayload,
+        payloadCreator: (
+            args: unknown[],
+            hostEnvironment?: HostEnvironment,
+            activeScmModel?: ScmModel,
+            selectedCommitIds?: string[],
+        ) => TPayload,
         handler: (ctx: CommandContext, payload: TPayload) => Promise<TReturn>,
+        commandOptions?: { refresh?: boolean },
     ): void {
         hostEnvironment.commands.registerCommand(commandId, async (...args: unknown[]) => {
             const scoped = extractGraphCommandScope(args);
             const repo = scoped.rootUri
                 ? getGraphCommandRepository(repositoryManager, scoped.rootUri)
-                : resolveRepository(repositoryManager, { args: scoped.args, activeUri: scmModel.repo.rootUri });
+                : getActiveRepo(scoped.args);
             if (!repo) {
                 logger.error(`[Command Error] No active repository for command: ${commandId}`);
                 await hostEnvironment.ui.showErrorMessage(`No active repository for command: ${commandId}`);
                 return;
             }
+            repositoryManager.setFocusedRepository?.(repo);
+            const activeScm = getScmForRepo(repo);
             const ctx = createCmdContext(repo);
             const selection =
                 scoped.rootUri && logViewController?.repository === repo
                     ? [...logViewController.selectedCommitIds]
-                    : scmModel.repo === repo
-                      ? scmModel.getSelectedCommitIds()
-                      : [];
-            const payload = payloadCreator(scoped.args, hostEnvironment, selection);
+                    : (activeScm.getSelectedCommitIds?.() ?? []);
+            const payload = payloadCreator(scoped.args, hostEnvironment, activeScm, selection);
             const result = await handler(ctx, payload);
-            await repo.refresh();
+            if (commandOptions?.refresh !== false) {
+                await repo.refresh();
+            }
             return result;
         });
     }
@@ -206,20 +258,24 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     function registerDirect<TReturn = unknown>(
         commandId: string,
         handler: (ctx: CommandContext, ...args: unknown[]) => Promise<TReturn>,
+        commandOptions?: { refresh?: boolean },
     ): void {
         hostEnvironment.commands.registerCommand(commandId, async (...args: unknown[]) => {
             const scoped = extractGraphCommandScope(args);
             const repo = scoped.rootUri
                 ? getGraphCommandRepository(repositoryManager, scoped.rootUri)
-                : resolveRepository(repositoryManager, { args: scoped.args, activeUri: scmModel.repo.rootUri });
+                : getActiveRepo(scoped.args);
             if (!repo) {
                 logger.error(`[Command Error] No active repository for command: ${commandId}`);
                 await hostEnvironment.ui.showErrorMessage(`No active repository for command: ${commandId}`);
                 return;
             }
+            repositoryManager.setFocusedRepository?.(repo);
             const ctx = createCmdContext(repo);
             const result = await handler(ctx, ...scoped.args);
-            await repo.refresh();
+            if (commandOptions?.refresh !== false) {
+                await repo.refresh();
+            }
             return result;
         });
     }
@@ -240,79 +296,95 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     registerWithPayload('jj-view.new', createNewPayload, newCommand);
     registerWithPayload(
         'jj-view.newMergeChange',
-        (args, _host, selection) =>
+        (args, _host, _scm, selection) =>
             createNewMergeChangePayload(extractRevisions(args).length ? args : (selection ?? [])),
         newMergeChangeCommand,
     );
     registerWithPayload(
         'jj-view.newBefore',
-        (args, _host, selection) => createNewBeforePayload(extractRevisions(args).length ? args : (selection ?? [])),
+        (args, _host, _scm, selection) =>
+            createNewBeforePayload(extractRevisions(args).length ? args : (selection ?? [])),
         newBeforeCommand,
     );
     registerWithPayload(
         'jj-view.newAfter',
-        (args, _host, selection) => createNewAfterPayload(extractRevisions(args).length ? args : (selection ?? [])),
+        (args, _host, _scm, selection) =>
+            createNewAfterPayload(extractRevisions(args).length ? args : (selection ?? [])),
         newAfterCommand,
     );
 
-    registerWithPayload('jj-view.commit', (args) => createCommitPayload(args, scmModel), commitCommand);
+    registerWithPayload(
+        'jj-view.commit',
+        (args, _host, activeScm) => createCommitPayload(args, activeScm ?? scmModel),
+        commitCommand,
+    );
 
     registerWithPayload(
         'jj-view.commitPrompt',
-        (args) => createCommitPromptPayload(args, scmModel),
+        (args, _host, activeScm) => createCommitPromptPayload(args, activeScm ?? scmModel),
         commitPromptCommand,
     );
 
     registerWithPayload(
         'jj-view.setDescription',
-        (args) => createSetDescriptionPayload(args, scmModel),
+        (args, _host, activeScm) => createSetDescriptionPayload(args, activeScm ?? scmModel),
         setDescriptionCommand,
     );
 
     registerWithPayload(
         'jj-view.describePrompt',
-        (args) => createDescribePromptPayload(args, scmModel),
+        (args, _host, activeScm) => createDescribePromptPayload(args, activeScm ?? scmModel),
         describePromptCommand,
     );
 
-    // 3. Status, Refresh, Undo, Redo
-    registerDirect('jj-view.refresh', refreshCommand);
+    // 3. Status, Refresh, Undo, Redo, Prev, Next
+    registerDirect('jj-view.refresh', refreshCommand, { refresh: false });
     registerDirect('jj-view.undo', undoCommand);
     registerDirect('jj-view.redo', redoCommand);
+    registerDirect('jj-view.prev', prevCommand);
+    registerDirect('jj-view.next', nextCommand);
 
     // 4. Working Copy File Operations
     registerWithPayload('jj-view.restore', createRestorePayload, restoreCommand);
     registerWithPayload('jj-view.discardChange', createDiscardChangePayload, discardChangeCommand);
     registerWithPayload('jj-view.openFile', createOpenFilePayload, openFileCommand);
+    registerWithPayload('jj-view.enableDiffEditing', createToggleDiffEditablePayload, enableDiffEditingCommand);
+    registerWithPayload('jj-view.disableDiffEditing', createToggleDiffEditablePayload, disableDiffEditingCommand);
     registerWithPayload('jj-view.openChanges', createOpenChangesPayload, openChangesCommand);
     registerWithPayload('jj-view.copyRelativePath', createCopyRelativePathPayload, copyRelativePathCommand);
     registerWithPayload('jj-view.copyName', createCopyBadgePayload, copyNameCommand);
     registerWithPayload('jj-view.copyWorkspacePath', createCopyBadgePayload, copyWorkspacePathCommand);
+    registerWithPayload('jj-view.pickChange', createPickChangePayload, pickChangeCommand, { refresh: false });
     registerWithPayload('vscode.diff', createOpenChangesPayload, openChangesCommand);
     registerWithPayload('jj-view.openMergeEditor', createOpenMergeEditorPayload, openMergeEditorCommand);
 
     // 5. Revision Manipulation
     registerWithPayload(
         'jj-view.abandon',
-        (args, _host, selection) => createAbandonPayload(args, selection),
+        (args, _host, _scm, selection) => createAbandonPayload(args, selection),
         abandonCommand,
     );
     registerWithPayload(
         'jj-view.abandonDescendants',
-        (args, _host, selection) => createAbandonPayload(args, selection),
+        (args, _host, _scm, selection) => createAbandonPayload(args, selection),
         abandonDescendantsCommand,
     );
     registerWithPayload(
         'jj-view.squashDescendants',
-        (args, _host, selection) => createAbandonPayload(args, selection),
+        (args, _host, _scm, selection) => createAbandonPayload(args, selection),
         squashDescendantsCommand,
     );
     registerWithPayload('jj-view.edit', createEditPayload, editCommand);
     registerWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand);
     registerWithPayload(
         'jj-view.rebaseOntoSelected',
-        (args, _host, selection) => createRebaseOntoSelectedPayload(args, selection),
+        (args, _host, _scm, selection) => createRebaseOntoSelectedPayload(args, selection),
         rebaseOntoSelectedCommand,
+    );
+    registerWithPayload(
+        'jj-view.simplifyParents',
+        (args, _host, _scm, selection) => createSimplifyParentsPayload(args, selection),
+        simplifyParentsCommand,
     );
     registerWithPayload('jj-view.absorb', createAbsorbPayload, absorbCommand);
 
@@ -323,9 +395,19 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         squashRevisionIntoParentCommand,
     );
     registerWithPayload(
+        'jj-view.squashRevisionIntoParentKeepMessage',
+        createSquashRevisionIntoParentPayload,
+        squashRevisionIntoParentKeepMessageCommand,
+    );
+    registerWithPayload(
         'jj-view.squashRevisionIntoAncestor',
         createSquashRevisionIntoAncestorPayload,
         squashRevisionIntoAncestorCommand,
+    );
+    registerWithPayload(
+        'jj-view.squashRevisionIntoAncestorKeepMessage',
+        createSquashRevisionIntoAncestorPayload,
+        squashRevisionIntoAncestorKeepMessageCommand,
     );
     registerWithPayload(
         'jj-view.completeSquashRevision',
@@ -343,6 +425,8 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         squashFilesIntoAncestorCommand,
     );
     registerWithPayload('jj-view.squashFilesIntoChild', createSquashFilesIntoChildPayload, squashFilesIntoChildCommand);
+    registerWithPayload('jj-view.splitFilesBefore', createSplitFilesPayload, splitFilesBeforeCommand);
+    registerWithPayload('jj-view.splitFilesAfter', createSplitFilesPayload, splitFilesAfterCommand);
     registerWithPayload(
         'jj-view.squashSelectionIntoParent',
         createSquashSelectionIntoParentPayload,
@@ -371,10 +455,12 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     registerWithPayload('jj-view.deleteTag', createDeleteTagPayload, deleteTagCommand);
     registerWithPayload('jj-view.upload', createUploadPayload, uploadCommand);
     registerWithPayload('jj-view.uploadStack', createUploadStackPayload, uploadStackCommand);
+    registerDirect('jj-view.sync', syncCommand);
 
     // 8. Details & Multi-Diff
     registerWithPayload('jj-view.showDetails', createShowDetailsPayload, showDetailsCommand);
     registerWithPayload('jj-view.showMultiFileDiff', createShowMultiFileDiffPayload, showMultiFileDiffCommand);
+    registerWithPayload('jj-view.compareWithUploaded', createCompareWithUploadedPayload, compareWithUploadedCommand);
     registerWithPayload(
         'jj-view.compareWithWorkingCopy',
         createCompareAllFilesWithRevisionPayload,
@@ -386,6 +472,17 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
         compareFileWithRevisionCommand,
     );
     registerWithPayload('jj-view.viewFileAtRevision', createViewFileAtRevisionPayload, viewFileAtRevisionCommand);
+    registerWithPayload(
+        'jj-view.restoreFileFrom',
+        createRestoreFileFromRevisionPayload,
+        restoreFileFromRevisionCommand,
+    );
+    registerWithPayload('jj-view.openFileOnRemote', createRemoteFileUrlPayload, openFileOnRemoteCommand, {
+        refresh: false,
+    });
+    registerWithPayload('jj-view.copyRemoteFileUrl', createRemoteFileUrlPayload, copyRemoteFileUrlCommand, {
+        refresh: false,
+    });
 
     // 9. Workspaces
     registerDirect('jj-view.workspaceAdd', workspaceAddCommand);
@@ -429,10 +526,24 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     hostEnvironment.commands.registerCommand('workbench.action.openSettings', async (settingId?: string) => {
         await hostEnvironment.nav.openSettings(settingId);
     });
+    hostEnvironment.commands.registerCommand('jj-view.checkForUpdates', async () => {
+        return hostEnvironment.system?.checkUpdate?.({ force: true });
+    });
+    hostEnvironment.commands.registerCommand('jj-view.installUpdate', async () => {
+        return hostEnvironment.system?.applyUpdate?.();
+    });
     hostEnvironment.commands.registerCommand('jj-view.showProcessMonitor', async () => {});
-    hostEnvironment.commands.registerCommand('jj-view.killProcess', async () => {});
-    hostEnvironment.commands.registerCommand('jj-view.killAllProcesses', async () => {});
-    hostEnvironment.commands.registerCommand('jj-view.clearProcessHistory', async () => {});
+    hostEnvironment.commands.registerCommand('jj-view.killProcess', async (opId?: unknown) => {
+        if (typeof opId === 'number') {
+            processTracker?.cancelProcess(opId);
+        }
+    });
+    hostEnvironment.commands.registerCommand('jj-view.killAllProcesses', async () => {
+        processTracker?.cancelAllProcesses();
+    });
+    hostEnvironment.commands.registerCommand('jj-view.clearProcessHistory', async () => {
+        processTracker?.clearHistory();
+    });
     hostEnvironment.commands.registerCommand('jj-view.manageAuth', async () => {
         const repo = getActiveRepo();
         const activeProvider = repo?.codeForge.activeProvider;
@@ -515,11 +626,14 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     }
 
     hostEnvironment.commands.registerCommand('jj-view.refreshGraph', async () => {
-        await logViewController?.refresh();
+        if (logViewController) {
+            await logViewController.refresh(MANUAL_REFRESH_REASON);
+            return;
+        }
         const repo = getActiveRepo();
-        await repo?.refresh();
+        await repo?.refresh({ reason: MANUAL_REFRESH_REASON });
     });
     hostEnvironment.commands.registerCommand('jj-view.refreshLog', async () => {
-        await logViewController?.refresh();
+        await logViewController?.refresh(MANUAL_REFRESH_REASON);
     });
 }

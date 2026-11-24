@@ -17,6 +17,7 @@ import {
     ROW_HEIGHT_NORMAL,
 } from '../layout-constants';
 import { computeCompactRowMaxX, computeGap, computeGraphAreaWidth, computeMaxShortestIdLength } from '../layout-utils';
+import { computeDescendantCounts } from '../utils/graph-descendants';
 import { hasImmutableSelection } from '../utils/selection-utils';
 import CommitNode from './CommitNode.svelte';
 import GraphRail from './GraphRail.svelte';
@@ -63,6 +64,7 @@ const GAP = $derived(computeGap(fontSize));
 const layout = $derived(computeGraphLayout(commits, theme));
 const workspacesByName = $derived(new Map(workspaces.map((workspace) => [workspace.name, workspace])));
 const displayRows = $derived(layout.rows || commits);
+const descendantCounts = $derived(computeDescendantCounts(commits));
 
 const compactPaddingMap = $derived.by(() => {
     if (graphLabelAlignment !== 'compact') {
@@ -172,6 +174,7 @@ const graphAreaWidth = $derived(computeGraphAreaWidth(layout.width, LANE_WIDTH, 
                         {graphShowCommitId}
                         {hiddenActions}
                         {dragManager}
+                        descendantCount={descendantCounts.get(row.change_id) ?? 0}
                     />
                 </div>
             {/if}
@@ -208,7 +211,7 @@ const graphAreaWidth = $derived(computeGraphAreaWidth(layout.width, LANE_WIDTH, 
     .commit-row-container {
         display: flex;
         white-space: nowrap;
-        overflow: hidden;
+        overflow: visible;
         align-items: flex-start;
     }
 </style>

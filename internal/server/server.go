@@ -6,54 +6,50 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"log"
 	"mime"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/brychanrobot/jj-view/internal/config"
 	"github.com/brychanrobot/jj-view/internal/fs"
+	"github.com/brychanrobot/jj-view/internal/gitcred"
 	"github.com/brychanrobot/jj-view/internal/process"
-	"github.com/brychanrobot/jj-view/internal/protocol"
 	"github.com/brychanrobot/jj-view/internal/secret"
 	"github.com/brychanrobot/jj-view/internal/state"
+	"github.com/brychanrobot/jj-view/internal/update"
 	"github.com/brychanrobot/jj-view/internal/watcher"
 	"github.com/brychanrobot/jj-view/web"
 )
 
-const (
-	maxWSReadLimit = 100 * 1024 * 1024 // 100 MB
-)
-
 // Config configures the server instance.
 type Config struct {
-	Host           string
-	Port           int
-	RepoRoot       string
-	SessionToken   string
-	SidecarToken   string
-	CSRFToken      string
-	Version        string
-	UserDataDir    string
-	UserConfigPath string
-	UserStatePath  string
-	UserSecretPath string
+	Host              string
+	Port              int
+	RepoRoot          string
+	SessionToken      string
+	SidecarToken      string
+	CSRFToken         string
+	Version           string
+	ReleaseAsset      string
+	ExecutablePath    string
+	ReleasesURL       string
+	OnReload          func() error
+	UserDataDir       string
+	UserConfigPath    string
+	UserStatePath     string
+	UserSecretPath    string
+	AllowedOrigins    []string
+	ExtraAllowedRoots []string
 }
 
 // Server provides HTTP and WebSocket services for the JJ View web UI.
@@ -65,14 +61,19 @@ type Server struct {
 	configStore  *config.Store
 	stateStore   *state.Store
 	secretStore  *secret.Store
+	gitCreds     *gitcred.Resolver
+	updater      *update.Updater
 	httpServer   *http.Server
 	listener     net.Listener
 	readyCh      chan struct{}
-	upgrader     websocket.Upgrader
-	allowedHosts map[string]bool
+	closed       bool
+	bgCtx        context.Context
+	bgCancel     context.CancelFunc
 	fileServer   http.Handler
+	assetVersion string
 	clientsMu    sync.Mutex
-	clients      map[*wsClient]bool
+	sseClients   map[string]*sseClient
+	wsClients    map[*wsConn]struct{}
 	mu           sync.RWMutex
 }
 
@@ -129,29 +130,34 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.UserSecretPath != "" {
 		extraRoots = append(extraRoots, filepath.Dir(cfg.UserSecretPath))
 	}
+	extraRoots = append(extraRoots, cfg.ExtraAllowedRoots...)
 
 	fsMgr, err := fs.NewSandboxManager(cfg.RepoRoot, extraRoots...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize sandbox: %w", err)
 	}
 
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+
 	s := &Server{
 		cfg:        cfg,
 		fsMgr:      fsMgr,
 		watcherHub: watcher.NewHub(),
 		readyCh:    make(chan struct{}),
-		clients:    make(map[*wsClient]bool),
-		allowedHosts: map[string]bool{
-			"api.github.com": true,
-			"github.com":     true,
-			"gitlab.com":     true,
-		},
-		fileServer: http.FileServer(http.FS(web.FS)),
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024 * 1024,
-			WriteBufferSize: 1024 * 1024,
-			CheckOrigin:     func(r *http.Request) bool { return true },
-		},
+		bgCtx:      bgCtx,
+		bgCancel:   bgCancel,
+		sseClients: make(map[string]*sseClient),
+		wsClients:  make(map[*wsConn]struct{}),
+		gitCreds:   gitcred.NewResolver(gitcred.Options{Logf: log.Printf}),
+		updater: update.NewUpdater(update.Options{
+			CurrentVersion: cfg.Version,
+			ReleaseAsset:   cfg.ReleaseAsset,
+			ExecutablePath: cfg.ExecutablePath,
+			ReleasesURL:    cfg.ReleasesURL,
+			OnReload:       cfg.OnReload,
+		}),
+		fileServer:   http.FileServer(http.FS(web.FS)),
+		assetVersion: computeAssetVersion(cfg.Version),
 	}
 
 	configStore, err := config.NewStore(config.Options{
@@ -163,6 +169,7 @@ func NewServer(cfg Config) (*Server, error) {
 		},
 	})
 	if err != nil {
+		bgCancel()
 		return nil, fmt.Errorf("failed to initialize config store: %w", err)
 	}
 	s.configStore = configStore
@@ -177,6 +184,7 @@ func NewServer(cfg Config) (*Server, error) {
 		},
 	})
 	if err != nil {
+		bgCancel()
 		return nil, fmt.Errorf("failed to initialize state store: %w", err)
 	}
 	s.stateStore = stateStore
@@ -191,10 +199,34 @@ func NewServer(cfg Config) (*Server, error) {
 		},
 	})
 	if err != nil {
+		bgCancel()
 		return nil, fmt.Errorf("failed to initialize secret store: %w", err)
 	}
 	s.secretStore = secretStore
 	s.procMgr = process.NewManager(filepath.Join(fsMgr.DaemonTempDir(), "scripts"))
+	s.procMgr.SetAllowedForgeCommand(func() string {
+		userCfg := s.configStore.GetAllScoped(string(config.ScopeUser))
+		if val, ok := userCfg["codeForge.adapterCommand"].(string); ok && strings.TrimSpace(val) != "" {
+			return strings.TrimSpace(val)
+		}
+		if val, ok := userCfg["jj-view.codeForge.adapterCommand"].(string); ok && strings.TrimSpace(val) != "" {
+			return strings.TrimSpace(val)
+		}
+		vscodeUserCfg := s.configStore.GetAllScoped(string(config.ScopeVscodeUser))
+		if val, ok := vscodeUserCfg["codeForge.adapterCommand"].(string); ok && strings.TrimSpace(val) != "" {
+			return strings.TrimSpace(val)
+		}
+		if val, ok := vscodeUserCfg["jj-view.codeForge.adapterCommand"].(string); ok && strings.TrimSpace(val) != "" {
+			return strings.TrimSpace(val)
+		}
+		return ""
+	})
+
+	s.restoreAllowedRootsFromState()
+	s.maybeWarmRepoRoot(cfg.RepoRoot)
+	for _, r := range cfg.ExtraAllowedRoots {
+		s.maybeWarmRepoRoot(r)
+	}
 
 	_ = mime.AddExtensionType(".woff2", "font/woff2")
 	_ = mime.AddExtensionType(".woff", "font/woff")
@@ -208,11 +240,62 @@ func NewServer(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// AddAllowedHost adds a trusted forge host to the proxy whitelist.
-func (s *Server) AddAllowedHost(host string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.allowedHosts[host] = true
+func (s *Server) maybeWarmRepoRoot(dir string) {
+	if dir == "" {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".jj")); err == nil {
+		s.fsMgr.WarmFileIndex(s.bgCtx, dir)
+		return
+	}
+}
+
+func (s *Server) restoreAllowedRootsFromState() {
+	if s.stateStore == nil {
+		return
+	}
+	allState := s.stateStore.GetAll()
+	seen := make(map[string]bool)
+	addCandidate := func(p string) {
+		if p == "" || !filepath.IsAbs(p) || seen[p] {
+			return
+		}
+		seen[p] = true
+		fi, err := os.Stat(filepath.Join(p, ".jj"))
+		if err != nil || !fi.IsDir() {
+			return
+		}
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			resolved = p
+		}
+		s.fsMgr.AddAllowedRoot(p)
+		if resolved != p {
+			s.fsMgr.AddAllowedRoot(resolved)
+		}
+		if s.configStore != nil {
+			s.configStore.WatchWorkspaceRoot(resolved)
+		}
+	}
+
+	for key, raw := range allState {
+		baseKey := strings.TrimPrefix(key, "jj-view.")
+		if strings.HasPrefix(baseKey, "discoveredRepoPaths") {
+			var entries []struct {
+				RootPath string `json:"rootPath"`
+			}
+			if err := json.Unmarshal(raw, &entries); err == nil {
+				for _, e := range entries {
+					addCandidate(e.RootPath)
+				}
+			}
+		} else if strings.HasPrefix(baseKey, "lastFocusedRepoPath") {
+			var rootPath string
+			if err := json.Unmarshal(raw, &rootPath); err == nil {
+				addCandidate(rootPath)
+			}
+		}
+	}
 }
 
 // Ready returns a channel that is closed when the server has bound its port.
@@ -220,11 +303,27 @@ func (s *Server) Ready() <-chan struct{} {
 	return s.readyCh
 }
 
+type onceCloseListener struct {
+	net.Listener
+	once     sync.Once
+	closeErr error
+}
+
+func (l *onceCloseListener) Close() error {
+	l.once.Do(func() {
+		l.closeErr = l.Listener.Close()
+	})
+	return l.closeErr
+}
+
 // Listen binds the TCP listener.
 func (s *Server) Listen() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.closed {
+		return http.ErrServerClosed
+	}
 	if s.listener != nil {
 		return nil
 	}
@@ -234,8 +333,8 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
-	s.listener = listener
 	s.cfg.Port = listener.Addr().(*net.TCPAddr).Port
+	s.listener = &onceCloseListener{Listener: listener}
 
 	close(s.readyCh)
 	return nil
@@ -249,18 +348,38 @@ func (s *Server) Start() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/preload.js", s.handlePreload)
+	mux.HandleFunc("/_sidecar/", s.handleSidecarProxy)
 	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/forge-proxy", s.handleForgeProxy)
-	mux.HandleFunc("/ws/system", s.handleWebSocket)
-	mux.HandleFunc("/api/ws", s.handleWebSocket)
+	mux.HandleFunc("/api/rpc", s.handleRPC)
+	mux.HandleFunc("/api/events", s.handleEvents)
+	mux.HandleFunc("/api/ws", s.handleWS)
 
-	s.httpServer = &http.Server{
+	httpSrv := &http.Server{
 		Handler:      mux,
 		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 0,
 	}
 
-	return s.httpServer.Serve(s.listener)
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return http.ErrServerClosed
+	}
+	s.httpServer = httpSrv
+	listener := s.listener
+	s.mu.Unlock()
+
+	err := httpSrv.Serve(listener)
+	if err != nil && errors.Is(err, net.ErrClosed) {
+		s.mu.RLock()
+		closed := s.closed
+		s.mu.RUnlock()
+		if closed {
+			return http.ErrServerClosed
+		}
+	}
+	return err
 }
 
 // Addr returns the server's listening address.
@@ -285,8 +404,30 @@ func (s *Server) SessionToken() string {
 	return s.cfg.SessionToken
 }
 
+// AllowedRoots returns the currently allowed sandbox root directories.
+func (s *Server) AllowedRoots() []string {
+	return s.fsMgr.AllowedRoots()
+}
+
 // Close gracefully stops the server and closes all active clients.
 func (s *Server) Close(ctx context.Context) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	httpSrv := s.httpServer
+	listener := s.listener
+	s.mu.Unlock()
+
+	if listener != nil {
+		_ = listener.Close()
+	}
+
+	if s.bgCancel != nil {
+		s.bgCancel()
+	}
 	s.watcherHub.Close()
 	if s.configStore != nil {
 		_ = s.configStore.Close()
@@ -299,888 +440,26 @@ func (s *Server) Close(ctx context.Context) error {
 	}
 
 	s.clientsMu.Lock()
-	for client := range s.clients {
+	for _, client := range s.sseClients {
 		client.close()
 	}
-	s.clients = make(map[*wsClient]bool)
+	s.sseClients = make(map[string]*sseClient)
+	wsClients := make([]*wsConn, 0, len(s.wsClients))
+	for ws := range s.wsClients {
+		wsClients = append(wsClients, ws)
+	}
+	s.wsClients = make(map[*wsConn]struct{})
 	s.clientsMu.Unlock()
 
-	if s.httpServer != nil {
-		return s.httpServer.Shutdown(ctx)
+	for _, ws := range wsClients {
+		ws.close()
+	}
+
+	if httpSrv != nil {
+		if err := httpSrv.Shutdown(ctx); err != nil {
+			_ = httpSrv.Close()
+			return err
+		}
 	}
 	return nil
-}
-
-func (s *Server) broadcastNotification(method string, params any) {
-	s.clientsMu.Lock()
-	clients := make([]*wsClient, 0, len(s.clients))
-	for client := range s.clients {
-		clients = append(clients, client)
-	}
-	s.clientsMu.Unlock()
-
-	notification := protocol.NewNotification(method, params)
-	for _, client := range clients {
-		_ = client.send(notification)
-	}
-}
-
-func (s *Server) broadcastConfigChange(key string, scope string) {
-	s.broadcastNotification("config/didChange", map[string]any{
-		"key":   key,
-		"scope": scope,
-	})
-}
-
-func (s *Server) authenticateRequest(r *http.Request) bool {
-	var token string
-	if sidecarHeader := r.Header.Get("X-Sidecar-Token"); sidecarHeader != "" {
-		token = strings.TrimSpace(sidecarHeader)
-	}
-	if token == "" {
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		}
-	}
-	if token == "" {
-		if qToken := r.URL.Query().Get("token"); qToken != "" {
-			token = qToken
-		} else if qSidecar := r.URL.Query().Get("sidecar_token"); qSidecar != "" {
-			token = qSidecar
-		}
-	}
-	if token == "" {
-		if cookie, err := r.Cookie("jj_view_token"); err == nil {
-			token = cookie.Value
-		}
-	}
-	if token == "" {
-		return false
-	}
-	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.SessionToken)) == 1 {
-		return true
-	}
-	if s.cfg.SidecarToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.SidecarToken)) == 1 {
-		return true
-	}
-	return false
-}
-
-func (s *Server) verifyCSRF(r *http.Request) bool {
-	if s.cfg.CSRFToken == "" {
-		return true
-	}
-	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
-		return true
-	}
-	csrf := r.Header.Get("X-CSRF-Token")
-	if csrf == "" {
-		csrf = r.Header.Get("X-Antigravity-CSRF-Token")
-	}
-	return subtle.ConstantTimeCompare([]byte(csrf), []byte(s.cfg.CSRFToken)) == 1
-}
-
-func (s *Server) isOriginAllowed(origin string) bool {
-	if origin == "" {
-		return true
-	}
-	if origin == "null" {
-		return s.cfg.SidecarToken != ""
-	}
-	parsedOrigin, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-	scheme := strings.ToLower(parsedOrigin.Scheme)
-	if scheme == "vscode-webview" || scheme == "antigravity-webview" || scheme == "antigravity" {
-		return true
-	}
-	if scheme != "http" && scheme != "https" {
-		return false
-	}
-	host := parsedOrigin.Hostname()
-	return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == s.cfg.Host
-}
-
-func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
-	origin := r.Header.Get("Origin")
-	if s.isOriginAllowed(origin) {
-		if origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Sidecar-Token, X-CSRF-Token, X-Antigravity-CSRF-Token, Cache-Control")
-	}
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	s.applyCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":  "ok",
-		"version": s.cfg.Version,
-		"repo":    s.cfg.RepoRoot,
-		"sidecar": s.cfg.SidecarToken != "",
-	})
-}
-
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	s.applyCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	cleanPath := path.Clean(r.URL.Path)
-
-	// If the path is not root or index.html, check if it's an existing static file in web.FS
-	if cleanPath != "/" && cleanPath != "/index.html" && cleanPath != "." {
-		trimmed := strings.TrimPrefix(cleanPath, "/")
-		if file, err := web.FS.Open(trimmed); err == nil {
-			stat, statErr := file.Stat()
-			_ = file.Close()
-			if statErr == nil && !stat.IsDir() {
-				s.fileServer.ServeHTTP(w, r)
-				return
-			}
-		}
-	}
-
-	// For root, /index.html, or client-side SPA routes (fallback to index.html):
-	// Authenticate to prevent local processes from scraping the session token
-	if !s.authenticateRequest(r) {
-		http.Error(w, "Unauthorized: missing or invalid session token", http.StatusUnauthorized)
-		return
-	}
-
-	content, err := web.FS.ReadFile("index.html")
-	if err != nil {
-		http.Error(w, "index.html not found", http.StatusInternalServerError)
-		return
-	}
-
-	configPayload := map[string]any{
-		"token":    s.cfg.SessionToken,
-		"port":     s.cfg.Port,
-		"repoRoot": s.cfg.RepoRoot,
-	}
-	if s.cfg.SidecarToken != "" {
-		configPayload["sidecarToken"] = s.cfg.SidecarToken
-	}
-	if s.cfg.CSRFToken != "" {
-		configPayload["csrfToken"] = s.cfg.CSRFToken
-	}
-	configJSON, _ := json.Marshal(configPayload)
-
-	injected := fmt.Sprintf("<script>window.__JJ_VIEW_CONFIG__ = %s;</script>\n</head>", string(configJSON))
-	html := strings.Replace(string(content), "</head>", injected, 1)
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "jj_view_token",
-		Value:    s.cfg.SessionToken,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_, _ = w.Write([]byte(html))
-}
-
-func (s *Server) handleForgeProxy(w http.ResponseWriter, r *http.Request) {
-	s.applyCORS(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if !s.verifyCSRF(r) {
-		http.Error(w, "Forbidden: invalid CSRF token", http.StatusForbidden)
-		return
-	}
-
-	// Authenticate proxy endpoint
-	if !s.authenticateRequest(r) {
-		http.Error(w, "Unauthorized: invalid session token", http.StatusUnauthorized)
-		return
-	}
-
-	rawTarget := r.URL.Query().Get("url")
-	if rawTarget == "" {
-		http.Error(w, "missing url query parameter", http.StatusBadRequest)
-		return
-	}
-
-	targetURL, err := url.Parse(rawTarget)
-	if err != nil || targetURL.Scheme != "https" {
-		http.Error(w, "target URL must be valid HTTPS", http.StatusBadRequest)
-		return
-	}
-
-	hostname := targetURL.Hostname()
-	s.mu.RLock()
-	allowed := s.allowedHosts[hostname]
-	s.mu.RUnlock()
-
-	if !allowed {
-		http.Error(w, fmt.Sprintf("target host %s not allowed by proxy whitelist", hostname), http.StatusForbidden)
-		return
-	}
-
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, rawTarget, r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	for _, h := range []string{"Authorization", "Accept", "Content-Type", "User-Agent"} {
-		if val := r.Header.Get(h); val != "" {
-			proxyReq.Header.Set(h, val)
-		}
-	}
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			if req.URL.Scheme != "https" {
-				return fmt.Errorf("insecure redirect scheme: %s", req.URL.Scheme)
-			}
-			s.mu.RLock()
-			isAllowed := s.allowedHosts[req.URL.Hostname()]
-			s.mu.RUnlock()
-			if !isAllowed {
-				return fmt.Errorf("redirect host %s not in allowed list", req.URL.Hostname())
-			}
-			return nil
-		},
-	}
-
-	resp, err := client.Do(proxyReq)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("proxy request failed: %v", err), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-}
-
-func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if !s.authenticateRequest(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Validate Origin to prevent Cross-Site WebSocket Hijacking (CSWSH)
-	origin := r.Header.Get("Origin")
-	if origin != "" && !s.isOriginAllowed(origin) {
-		http.Error(w, "forbidden origin", http.StatusForbidden)
-		return
-	}
-
-	conn, err := s.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-
-	// CRITICAL FIX: Clear http.Server Read/Write timeouts on the hijacked TCP connection!
-	_ = conn.UnderlyingConn().SetDeadline(time.Time{})
-	_ = conn.UnderlyingConn().SetReadDeadline(time.Time{})
-	_ = conn.UnderlyingConn().SetWriteDeadline(time.Time{})
-
-	conn.SetReadLimit(maxWSReadLimit)
-
-	client := newWsClient(conn, s)
-
-	s.clientsMu.Lock()
-	s.clients[client] = true
-	s.clientsMu.Unlock()
-
-	defer func() {
-		s.clientsMu.Lock()
-		delete(s.clients, client)
-		s.clientsMu.Unlock()
-		client.cleanup()
-		_ = conn.Close()
-	}()
-
-	client.serve()
-}
-
-type wsClient struct {
-	conn          *websocket.Conn
-	server        *Server
-	writeMu       sync.Mutex
-	reqMu         sync.Mutex
-	cancelFunc    map[string]context.CancelFunc
-	subsMu        sync.Mutex
-	subscriptions map[string]bool
-	closed        bool
-}
-
-func newWsClient(conn *websocket.Conn, s *Server) *wsClient {
-	return &wsClient{
-		conn:          conn,
-		server:        s,
-		cancelFunc:    make(map[string]context.CancelFunc),
-		subscriptions: make(map[string]bool),
-	}
-}
-
-func (c *wsClient) send(v any) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if c.closed {
-		return errors.New("connection closed")
-	}
-	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	return c.conn.WriteJSON(v)
-}
-
-func (c *wsClient) trackSubscription(subID string) {
-	c.subsMu.Lock()
-	if c.closed {
-		c.subsMu.Unlock()
-		c.server.watcherHub.Unwatch(subID)
-		return
-	}
-	c.subscriptions[subID] = true
-	c.subsMu.Unlock()
-}
-
-func (c *wsClient) untrackSubscription(subID string) {
-	c.subsMu.Lock()
-	defer c.subsMu.Unlock()
-	delete(c.subscriptions, subID)
-}
-
-func (c *wsClient) close() {
-	c.writeMu.Lock()
-	if !c.closed {
-		c.closed = true
-		_ = c.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-		_ = c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		_ = c.conn.Close()
-	}
-	c.writeMu.Unlock()
-}
-
-func (c *wsClient) cleanup() {
-	// Cancel all in-flight request contexts
-	c.reqMu.Lock()
-	for _, cancel := range c.cancelFunc {
-		cancel()
-	}
-	c.cancelFunc = make(map[string]context.CancelFunc)
-	c.reqMu.Unlock()
-
-	// Clean up all active watcher subscriptions to prevent inotify leaks
-	c.subsMu.Lock()
-	c.closed = true
-	for subID := range c.subscriptions {
-		c.server.watcherHub.Unwatch(subID)
-	}
-	c.subscriptions = make(map[string]bool)
-	c.subsMu.Unlock()
-}
-
-func (c *wsClient) serve() {
-	for {
-		var req protocol.Request
-		if err := c.conn.ReadJSON(&req); err != nil {
-			break
-		}
-
-		if req.JSONRPC != "2.0" {
-			if !req.IsNotification() {
-				_ = c.send(protocol.NewErrorResponse(req.ID, protocol.CodeInvalidRequest, "invalid jsonrpc version", nil))
-			}
-			continue
-		}
-
-		// Handle cancellation notification
-		if req.Method == "$/cancelRequest" {
-			var cancelParams struct {
-				ID any `json:"id"`
-			}
-			if err := json.Unmarshal(req.Params, &cancelParams); err == nil {
-				key := fmt.Sprintf("%v", cancelParams.ID)
-				c.reqMu.Lock()
-				cancel, ok := c.cancelFunc[key]
-				c.reqMu.Unlock()
-				if ok {
-					cancel()
-				}
-			}
-			continue
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		var cancelKey string
-		if req.ID != nil {
-			cancelKey = protocol.NormalizeID(req.ID)
-			c.reqMu.Lock()
-			c.cancelFunc[cancelKey] = cancel
-			c.reqMu.Unlock()
-		}
-
-		go c.handleRequest(&req, ctx, cancel, cancelKey)
-	}
-}
-
-func (c *wsClient) handleRequest(req *protocol.Request, ctx context.Context, cancel context.CancelFunc, cancelKey string) {
-	defer cancel()
-
-	if cancelKey != "" {
-		defer func() {
-			c.reqMu.Lock()
-			delete(c.cancelFunc, cancelKey)
-			c.reqMu.Unlock()
-		}()
-	}
-
-	res, rpcErr := c.dispatch(ctx, req)
-	if req.IsNotification() {
-		return
-	}
-
-	if rpcErr != nil {
-		_ = c.send(protocol.NewErrorResponse(req.ID, rpcErr.Code, rpcErr.Message, rpcErr.Data))
-		return
-	}
-
-	_ = c.send(protocol.NewSuccessResponse(req.ID, res))
-}
-
-func (c *wsClient) dispatch(ctx context.Context, req *protocol.Request) (any, *protocol.RPCError) {
-	switch req.Method {
-	case "system.info":
-		var plat string
-		switch runtime.GOOS {
-		case "windows":
-			plat = "win32"
-		case "darwin":
-			plat = "darwin"
-		default:
-			plat = "linux"
-		}
-		return map[string]any{
-			"platform": plat,
-			"version":  c.server.cfg.Version,
-			"repoRoot": c.server.cfg.RepoRoot,
-			"tempDir":  c.server.fsMgr.DaemonTempDir(),
-		}, nil
-
-	case "process.execFile":
-		var params process.ExecParams
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if params.Cwd == "" {
-			params.Cwd = c.server.cfg.RepoRoot
-		} else {
-			// Validate cwd inside sandbox
-			validatedCwd, err := c.server.fsMgr.ValidatePath(params.Cwd)
-			if err != nil {
-				return nil, &protocol.RPCError{Code: protocol.CodeSecurityError, Message: err.Error()}
-			}
-			params.Cwd = validatedCwd
-		}
-
-		res, err := c.server.procMgr.ExecFile(ctx, params)
-		if err != nil {
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return nil, &protocol.RPCError{Code: protocol.CodeRequestCancelled, Message: "request cancelled"}
-			}
-			var exitErr *process.ProcessExitError
-			if errors.As(err, &exitErr) {
-				return nil, &protocol.RPCError{
-					Code:    protocol.CodeProcessError,
-					Message: exitErr.Message,
-					Data: map[string]any{
-						"exitCode": exitErr.ExitCode,
-						"stdout":   exitErr.Stdout,
-						"stderr":   exitErr.Stderr,
-					},
-				}
-			}
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return res, nil
-
-	case "process.getHelperScriptPath":
-		var params struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		path, err := c.server.procMgr.GetHelperScriptPath(params.Name)
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]string{"path": path}, nil
-
-	case "fs.readFile":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		data, err := c.server.fsMgr.ReadFile(params.Path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, &protocol.RPCError{
-					Code:    protocol.CodeInternalError,
-					Message: fmt.Sprintf("ENOENT: no such file or directory: %s", params.Path),
-					Data:    map[string]any{"code": "ENOENT"},
-				}
-			}
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]string{"content": base64.StdEncoding.EncodeToString(data)}, nil
-
-	case "fs.writeFile":
-		var params struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		data, err := base64.StdEncoding.DecodeString(params.Content)
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: "content must be base64 encoded"}
-		}
-		if err := c.server.fsMgr.WriteFile(params.Path, data); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "fs.mkdir":
-		var params struct {
-			Path      string `json:"path"`
-			Recursive bool   `json:"recursive"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if err := c.server.fsMgr.Mkdir(params.Path, params.Recursive); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "fs.stat":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		st, err := c.server.fsMgr.Stat(params.Path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: "ENOENT: file not found"}
-			}
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return st, nil
-
-	case "fs.lstat":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		st, err := c.server.fsMgr.Lstat(params.Path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: "ENOENT: file not found"}
-			}
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return st, nil
-
-	case "fs.readdir":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		files, err := c.server.fsMgr.Readdir(params.Path)
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string][]string{"files": files}, nil
-
-	case "fs.exists":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		exists := c.server.fsMgr.Exists(params.Path)
-		return map[string]bool{"exists": exists}, nil
-
-	case "fs.realpath":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		resolved, err := c.server.fsMgr.Realpath(params.Path)
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]string{"resolvedPath": resolved}, nil
-
-	case "fs.mkdtemp":
-		var params struct {
-			Prefix string `json:"prefix"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		dir, err := c.server.fsMgr.Mkdtemp(params.Prefix)
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]string{"path": dir}, nil
-
-	case "fs.rm":
-		var params struct {
-			Path      string `json:"path"`
-			Recursive bool   `json:"recursive"`
-			Force     bool   `json:"force"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if err := c.server.fsMgr.Rm(params.Path, params.Recursive, params.Force); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "fs.findFiles":
-		var params struct {
-			BaseDir    string   `json:"baseDir"`
-			Pattern    string   `json:"pattern"`
-			MaxResults int      `json:"maxResults,omitempty"`
-			Excludes   []string `json:"excludes,omitempty"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		files, err := c.server.fsMgr.FindFiles(fs.FindFilesOptions{
-			BaseDir:    params.BaseDir,
-			Pattern:    params.Pattern,
-			MaxResults: params.MaxResults,
-			Excludes:   params.Excludes,
-		})
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string][]string{"files": files}, nil
-
-	case "watcher.watch":
-		var params struct {
-			DirPath string   `json:"dirPath"`
-			Ignore  []string `json:"ignore"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		validatedDir, err := c.server.fsMgr.ValidatePath(params.DirPath)
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeSecurityError, Message: err.Error()}
-		}
-		subID, err := c.server.watcherHub.Watch(validatedDir, watcher.WatchOptions{Ignore: params.Ignore}, func(reportedSubID string, events []watcher.FileEvent) {
-			_ = c.send(protocol.NewNotification("watcher.change", map[string]any{
-				"subscriptionId": reportedSubID,
-				"events":         events,
-			}))
-		})
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		c.trackSubscription(subID)
-		return map[string]string{"subscriptionId": subID}, nil
-
-	case "watcher.unwatch":
-		var params struct {
-			SubscriptionID string `json:"subscriptionId"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		c.untrackSubscription(params.SubscriptionID)
-		c.server.watcherHub.Unwatch(params.SubscriptionID)
-		return map[string]bool{"success": true}, nil
-
-	case "config.get":
-		var params struct {
-			Key   string `json:"key"`
-			Scope string `json:"scope,omitempty"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		val, ok := c.server.configStore.GetScoped(params.Scope, params.Key)
-		return map[string]any{"value": val, "found": ok}, nil
-
-	case "config.set":
-		var params struct {
-			Key   string `json:"key"`
-			Value any    `json:"value"`
-			Scope string `json:"scope,omitempty"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if err := c.server.configStore.SetScoped(params.Scope, params.Key, params.Value); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "config.getAll":
-		var params struct {
-			Scope string `json:"scope,omitempty"`
-		}
-		if len(req.Params) > 0 {
-			_ = json.Unmarshal(req.Params, &params)
-		}
-		return c.server.configStore.GetAllScoped(params.Scope), nil
-
-	case "state.get":
-		var params struct {
-			Key string `json:"key"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		val, ok := c.server.stateStore.Get(params.Key)
-		if !ok {
-			return map[string]any{"found": false}, nil
-		}
-		return map[string]any{"value": val, "found": true}, nil
-
-	case "state.set":
-		var params struct {
-			Key   string          `json:"key"`
-			Value json.RawMessage `json:"value"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if err := c.server.stateStore.Set(params.Key, params.Value); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "state.delete":
-		var params struct {
-			Key string `json:"key"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if err := c.server.stateStore.Delete(params.Key); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "state.getAll":
-		return c.server.stateStore.GetAll(), nil
-
-	case "secrets.get":
-		var params struct {
-			Key string `json:"key"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		val, ok := c.server.secretStore.Get(params.Key)
-		if !ok {
-			return map[string]any{"found": false}, nil
-		}
-		return map[string]any{"value": val, "found": true}, nil
-
-	case "secrets.store":
-		var params struct {
-			Key   string `json:"key"`
-			Value string `json:"value"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if err := c.server.secretStore.Store(params.Key, params.Value); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "secrets.delete":
-		var params struct {
-			Key string `json:"key"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if err := c.server.secretStore.Delete(params.Key); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInternalError, Message: err.Error()}
-		}
-		return map[string]bool{"success": true}, nil
-
-	case "workspace.addAllowedRoot":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		if params.Path == "" {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: "path is required"}
-		}
-		absPath, err := filepath.Abs(params.Path)
-		if err != nil {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: err.Error()}
-		}
-		fi, err := os.Stat(absPath)
-		if err != nil || !fi.IsDir() {
-			return nil, &protocol.RPCError{Code: protocol.CodeInvalidParams, Message: "path does not exist or is not a directory"}
-		}
-		resolvedPath, err := filepath.EvalSymlinks(absPath)
-		if err != nil {
-			resolvedPath = absPath
-		}
-		c.server.fsMgr.AddAllowedRoot(absPath)
-		if resolvedPath != absPath {
-			c.server.fsMgr.AddAllowedRoot(resolvedPath)
-		}
-		return map[string]any{"success": true, "path": resolvedPath}, nil
-
-	default:
-		return nil, &protocol.RPCError{
-			Code:    protocol.CodeMethodNotFound,
-			Message: fmt.Sprintf("method not found: %s", req.Method),
-		}
-	}
 }

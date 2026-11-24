@@ -3,7 +3,7 @@
     "publisher": "jj-view",
     "displayName": "JJ View",
     "description": "Integrates Jujutsu (jj) version control into VS Code.",
-    "version": "2.10.0",
+    "version": "3.1.0",
     "repository": {
         "type": "git",
         "url": "https://github.com/brychanrobot/jj-view"
@@ -29,6 +29,32 @@
                     "light": "#99999959",
                     "highContrast": "#99999999",
                     "highContrastLight": "#99999999"
+                }
+            }
+        ],
+        "resourceLabelFormatters": [
+            {
+                "scheme": "jj-view",
+                "formatting": {
+                    "label": "${path}",
+                    "separator": "/",
+                    "stripPathStartingSeparator": true
+                }
+            },
+            {
+                "scheme": "jj-edit",
+                "formatting": {
+                    "label": "${path}",
+                    "separator": "/",
+                    "stripPathStartingSeparator": true
+                }
+            },
+            {
+                "scheme": "jj-merge-output",
+                "formatting": {
+                    "label": "${path}",
+                    "separator": "/",
+                    "stripPathStartingSeparator": true
                 }
             }
         ],
@@ -113,6 +139,29 @@
                     ],
                     "description": "Force the active Code Forge provider to a specific service. If not set, it is auto-detected from git remotes."
                 },
+                "jj-view.codeForge.adapterCommand": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "application",
+                    "description": "Path to an external CLI executable implementing the jj-view CodeForge adapter protocol (detect, statuses, upload, get-file-content, list-comments, reply-comment, resolve-comment)."
+                },
+                "jj-view.codeForge.enableComments": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Controls whether code forge review comments (GitHub, GitLab, Gerrit) are fetched and displayed in the editor and Comments panel."
+                },
+                "jj-view.codeForge.pollIntervalSeconds": {
+                    "type": "number",
+                    "default": 60,
+                    "minimum": 0,
+                    "description": "How often (in seconds) to re-fetch pull request, merge request and review status from the code forge (GitHub, GitLab or Gerrit) while the window is focused. Set to 0 to disable background polling. Positive values below 10 are treated as 10."
+                },
+                "jj-view.codeForge.minRefreshIntervalSeconds": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Minimum time (in seconds) between code forge status fetches that are prompted by local repository changes or the window regaining focus, such as file edits and jj operations. Changes that arrive inside the window are fetched once, when it ends. Raise this to reduce API usage, for example to stay under GitHub's rate limit. Background polling, uploads and manual refreshes are not throttled. 0 disables throttling."
+                },
                 "jj-view.gerrit.host": {
                     "type": "string",
                     "description": "Gerrit host URL (e.g., https://gerrit-review.googlesource.com). If not set, extension attempts to detect it from .gitreview or git remotes."
@@ -133,6 +182,11 @@
                 "jj-view.uploadCommand": {
                     "type": "string",
                     "description": "Custom command to run for upload. Example: 'git push'. The command will be prefixed with 'jj' and suffixed with '-r <revision>' or repeated '-r'/'-c' arguments for stacked uploads."
+                },
+                "jj-view.syncCommand": {
+                    "type": "string",
+                    "default": "git fetch",
+                    "description": "Command to run for sync (prefixed with 'jj'). Defaults to 'git fetch'. Example: 'sync -a'."
                 },
                 "jj-view.minChangeIdLength": {
                     "type": "number",
@@ -223,6 +277,11 @@
                     "default": true,
                     "description": "Controls whether the diff editor should be opened when clicking a change. Otherwise the regular editor will be opened."
                 },
+                "jj-view.editableMutableDiffs": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Open diffs for mutable non-working-copy commits as editable by default. When disabled, diffs open read-only and can be toggled to editable."
+                },
                 "jj-view.autoRepositoryDetection": {
                     "type": [
                         "boolean",
@@ -287,6 +346,12 @@
                 "title": "Upload Stack",
                 "category": "JJ View",
                 "icon": "$(layers)"
+            },
+            {
+                "command": "jj-view.sync",
+                "title": "Sync",
+                "category": "JJ View",
+                "icon": "$(sync)"
             },
             {
                 "command": "jj-view.focusRepository",
@@ -360,6 +425,11 @@
                 "category": "JJ View"
             },
             {
+                "command": "jj-view.restoreFileFrom",
+                "title": "Restore File from Revision...",
+                "category": "JJ View"
+            },
+            {
                 "command": "jj-view.refresh",
                 "title": "Refresh",
                 "category": "JJ View",
@@ -384,8 +454,20 @@
                 "icon": "$(arrow-down)"
             },
             {
+                "command": "jj-view.squashRevisionIntoParentKeepMessage",
+                "title": "Squash Revision into Parent (Use Destination Message)",
+                "category": "JJ View",
+                "icon": "$(arrow-down)"
+            },
+            {
                 "command": "jj-view.squashRevisionIntoAncestor",
                 "title": "Squash Revision into Ancestor...",
+                "category": "JJ View",
+                "icon": "$(jj-icon-squash-into)"
+            },
+            {
+                "command": "jj-view.squashRevisionIntoAncestorKeepMessage",
+                "title": "Squash Revision into Ancestor (Use Destination Message)...",
                 "category": "JJ View",
                 "icon": "$(jj-icon-squash-into)"
             },
@@ -394,6 +476,18 @@
                 "title": "Open File in Working Copy",
                 "category": "JJ View",
                 "icon": "$(go-to-file)"
+            },
+            {
+                "command": "jj-view.enableDiffEditing",
+                "title": "Edit Revision File",
+                "category": "JJ View",
+                "icon": "$(edit)"
+            },
+            {
+                "command": "jj-view.disableDiffEditing",
+                "title": "Switch Revision File to Read-Only",
+                "category": "JJ View",
+                "icon": "$(lock)"
             },
             {
                 "command": "jj-view.openChanges",
@@ -420,6 +514,11 @@
                 "icon": "$(copy)"
             },
             {
+                "command": "jj-view.pickChange",
+                "title": "Pick Change",
+                "category": "JJ View"
+            },
+            {
                 "command": "jj-view.undo",
                 "title": "Undo",
                 "category": "JJ View",
@@ -430,6 +529,18 @@
                 "title": "Redo",
                 "category": "JJ View",
                 "icon": "$(redo)"
+            },
+            {
+                "command": "jj-view.prev",
+                "title": "Previous Change",
+                "category": "JJ View",
+                "icon": "$(arrow-down)"
+            },
+            {
+                "command": "jj-view.next",
+                "title": "Next Change",
+                "category": "JJ View",
+                "icon": "$(arrow-up)"
             },
             {
                 "command": "jj-view.duplicate",
@@ -498,6 +609,11 @@
                 "icon": "$(arrow-swap)"
             },
             {
+                "command": "jj-view.simplifyParents",
+                "title": "Simplify Parents",
+                "category": "JJ View"
+            },
+            {
                 "command": "jj-view.showDetails",
                 "title": "Show Details",
                 "category": "JJ View",
@@ -538,6 +654,16 @@
                 "title": "Create Tag...",
                 "category": "JJ View",
                 "icon": "$(tag)"
+            },
+            {
+                "command": "jj-view.splitFilesBefore",
+                "title": "Split into New Change Before",
+                "category": "JJ View"
+            },
+            {
+                "command": "jj-view.splitFilesAfter",
+                "title": "Split into New Change After",
+                "category": "JJ View"
             },
             {
                 "command": "jj-view.setBookmark",
@@ -592,6 +718,12 @@
                 "title": "Show Multi-File Diff",
                 "category": "JJ View",
                 "icon": "$(diff-multiple)"
+            },
+            {
+                "command": "jj-view.compareWithUploaded",
+                "title": "Compare with Uploaded Revision",
+                "category": "JJ View",
+                "icon": "$(diff)"
             },
             {
                 "command": "jj-view.workspaceAdd",
@@ -820,6 +952,18 @@
                 "title": "Add Workspace",
                 "category": "JJ View",
                 "icon": "$(jj-icon-workspace-add)"
+            },
+            {
+                "command": "jj-view.openFileOnRemote",
+                "title": "Open File on Remote",
+                "category": "JJ View",
+                "icon": "$(link-external)"
+            },
+            {
+                "command": "jj-view.copyRemoteFileUrl",
+                "title": "Copy Remote File Link",
+                "category": "JJ View",
+                "icon": "$(link)"
             }
         ],
         "keybindings": [
@@ -865,8 +1009,16 @@
                     "when": "false"
                 },
                 {
+                    "command": "jj-view.enableDiffEditing",
+                    "when": "resourceScheme == 'jj-view'"
+                },
+                {
+                    "command": "jj-view.disableDiffEditing",
+                    "when": "resourceScheme == 'jj-edit'"
+                },
+                {
                     "command": "jj-view.uploadStack",
-                    "when": "!config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit'"
+                    "when": "!config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit' && jj.codeForgeUploadModel != 'revision'"
                 },
                 {
                     "command": "jj-view.killProcess",
@@ -930,6 +1082,14 @@
                 },
                 {
                     "command": "jj-view.squashFilesIntoChild",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.splitFilesBefore",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.splitFilesAfter",
                     "when": "false"
                 },
                 {
@@ -1023,6 +1183,18 @@
                 {
                     "command": "jj-view.graph.workspaceAdd",
                     "when": "false"
+                },
+                {
+                    "command": "jj-view.pickChange",
+                    "when": "false"
+                },
+                {
+                    "command": "jj-view.openFileOnRemote",
+                    "when": "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')"
+                },
+                {
+                    "command": "jj-view.copyRemoteFileUrl",
+                    "when": "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')"
                 }
             ],
             "view/title": [
@@ -1057,9 +1229,14 @@
                     "when": "view == jj-view.logView"
                 },
                 {
+                    "command": "jj-view.sync",
+                    "group": "navigation@11",
+                    "when": "view == jj-view.logView"
+                },
+                {
                     "command": "jj-view.copyUnresolvedComments",
                     "group": "navigation",
-                    "when": "view == workbench.panel.comments && jj.codeForgeActive"
+                    "when": "view == workbench.panel.comments && jj.codeForgeActive && config.jj-view.codeForge.enableComments"
                 }
             ],
             "webview/context": [
@@ -1114,6 +1291,11 @@
                     "group": "1_diff@2"
                 },
                 {
+                    "command": "jj-view.compareWithUploaded",
+                    "when": "webviewSection == 'commit' && jj.canCompareWithUploaded",
+                    "group": "1_diff@3"
+                },
+                {
                     "command": "jj-view.new",
                     "when": "webviewSection == 'commit' && jj.canNewChild",
                     "group": "2_edit@1"
@@ -1164,13 +1346,23 @@
                     "group": "4_changes@5"
                 },
                 {
+                    "command": "jj-view.squashRevisionIntoParentKeepMessage",
+                    "when": "webviewSection == 'commit' && jj.canSquash",
+                    "group": "4_changes@4"
+                },
+                {
+                    "command": "jj-view.squashRevisionIntoAncestorKeepMessage",
+                    "when": "webviewSection == 'commit' && jj.canSquash",
+                    "group": "4_changes@5"
+                },
+                {
                     "command": "jj-view.upload",
                     "when": "webviewSection == 'commit' && jj.canUpload",
                     "group": "3_bookmark@2"
                 },
                 {
                     "command": "jj-view.uploadStack",
-                    "when": "webviewSection == 'commit' && jj.canUpload && !config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit'",
+                    "when": "webviewSection == 'commit' && jj.canUpload && !config.jj-view.alwaysUploadStack && jj.codeForgeProvider != 'gerrit' && jj.codeForgeUploadModel != 'revision'",
                     "group": "3_bookmark@3"
                 },
                 {
@@ -1187,6 +1379,11 @@
                     "command": "jj-view.createTag",
                     "when": "webviewSection == 'commit'",
                     "group": "3_bookmark@1.1"
+                },
+                {
+                    "command": "jj-view.simplifyParents",
+                    "when": "webviewSection == 'commit' && jj.canSimplifyParents",
+                    "group": "5_rebase@3"
                 },
                 {
                     "command": "jj-view.setBookmark",
@@ -1374,6 +1571,16 @@
                     "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowEdit\\b/"
                 },
                 {
+                    "command": "jj-view.squashRevisionIntoParentKeepMessage",
+                    "group": "1_modification@1",
+                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowSquash\\b/"
+                },
+                {
+                    "command": "jj-view.squashRevisionIntoAncestorKeepMessage",
+                    "group": "1_modification@2",
+                    "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowSquash\\b/"
+                },
+                {
                     "command": "jj-view.describe",
                     "group": "inline@8",
                     "when": "scmResourceGroupState =~ /\\bjj\\.group\\.allowDescribe\\b/"
@@ -1436,6 +1643,26 @@
                     "command": "jj-view.squashFilesIntoChild",
                     "group": "inline@5",
                     "when": "scmResourceState =~ /\\bjj\\.resource\\.allowSquashIntoChild\\b/"
+                },
+                {
+                    "command": "jj-view.splitFilesBefore",
+                    "group": "1_modification@1",
+                    "when": "scmResourceState =~ /\\bjj\\.resource\\.allowSplit\\b/"
+                },
+                {
+                    "command": "jj-view.splitFilesAfter",
+                    "group": "1_modification@2",
+                    "when": "scmResourceState =~ /\\bjj\\.resource\\.allowSplit\\b/"
+                },
+                {
+                    "command": "jj-view.openFileOnRemote",
+                    "group": "7_remote@1",
+                    "when": "scmResourceState =~ /\\bjj\\.resource\\./"
+                },
+                {
+                    "command": "jj-view.copyRemoteFileUrl",
+                    "group": "7_remote@2",
+                    "when": "scmResourceState =~ /\\bjj\\.resource\\./"
                 }
             ],
             "scm/change/title": [
@@ -1457,6 +1684,16 @@
                     "when": "resourceFilename == 'SQUASH_MSG'"
                 },
                 {
+                    "command": "jj-view.enableDiffEditing",
+                    "group": "navigation",
+                    "when": "resourceScheme == 'jj-view'"
+                },
+                {
+                    "command": "jj-view.disableDiffEditing",
+                    "group": "navigation",
+                    "when": "resourceScheme == 'jj-edit'"
+                },
+                {
                     "command": "jj-view.openFile",
                     "group": "navigation",
                     "when": "resourceScheme == 'jj-view' || resourceScheme == 'jj-edit'"
@@ -1469,6 +1706,16 @@
                     "when": "resourceScheme == 'file'"
                 },
                 {
+                    "command": "jj-view.enableDiffEditing",
+                    "group": "jj-view@1",
+                    "when": "resourceScheme == 'jj-view'"
+                },
+                {
+                    "command": "jj-view.disableDiffEditing",
+                    "group": "jj-view@1",
+                    "when": "resourceScheme == 'jj-edit'"
+                },
+                {
                     "command": "jj-view.openFile",
                     "group": "jj-view@2",
                     "when": "resourceScheme == 'jj-view' || resourceScheme == 'jj-edit'"
@@ -1476,6 +1723,11 @@
                 {
                     "command": "jj-view.viewFileAtRevision",
                     "group": "jj-view@3",
+                    "when": "resourceScheme == 'file'"
+                },
+                {
+                    "command": "jj-view.restoreFileFrom",
+                    "group": "jj-view@4",
                     "when": "resourceScheme == 'file'"
                 }
             ],
@@ -1499,6 +1751,21 @@
                     "command": "jj-view.viewFileAtRevision",
                     "group": "jj-view",
                     "when": "resourceScheme == 'file'"
+                },
+                {
+                    "command": "jj-view.restoreFileFrom",
+                    "group": "jj-view",
+                    "when": "resourceScheme == 'file'"
+                },
+                {
+                    "command": "jj-view.openFileOnRemote",
+                    "group": "jj-view_remote@1",
+                    "when": "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')"
+                },
+                {
+                    "command": "jj-view.copyRemoteFileUrl",
+                    "group": "jj-view_remote@2",
+                    "when": "jj.hasRepository && (resourceScheme == 'file' || resourceScheme == 'jj-view' || resourceScheme == 'jj-edit')"
                 }
             ],
             "explorer/context": [
@@ -1511,6 +1778,21 @@
                     "command": "jj-view.viewFileAtRevision",
                     "group": "jj-view",
                     "when": "resourceScheme == 'file'"
+                },
+                {
+                    "command": "jj-view.restoreFileFrom",
+                    "group": "jj-view",
+                    "when": "resourceScheme == 'file' && !explorerResourceIsFolder"
+                },
+                {
+                    "command": "jj-view.openFileOnRemote",
+                    "group": "jj-view_remote@1",
+                    "when": "jj.hasRepository && !explorerResourceIsFolder && resourceScheme == 'file'"
+                },
+                {
+                    "command": "jj-view.copyRemoteFileUrl",
+                    "group": "jj-view_remote@2",
+                    "when": "jj.hasRepository && !explorerResourceIsFolder && resourceScheme == 'file'"
                 }
             ],
             "comments/commentThread/context": [
@@ -1576,12 +1858,12 @@
     "scripts": {
         "setup-jj": "node tooling/jj/setup.ts",
         "setup:sidecar": "node tooling/setup-sidecar.ts",
-        "prepare": "pnpm build:themes && pnpm build:icons",
+        "prepare": "pnpm build:themes && pnpm build:icons && node tooling/generate-version.ts",
         "vscode:prepublish": "pnpm prepare && pnpm check-types && pnpm lint && node esbuild.js --production",
         "build": "pnpm prepare && pnpm check-types && pnpm lint && node esbuild.js",
         "build:web": "node esbuild.js --web",
         "build:web:prod": "node esbuild.js --web --production",
-        "build:server": "go build -o dist/bin/ ./cmd/jj-view",
+        "build:server": "node tooling/generate-version.ts && go build -o dist/bin/ ./cmd/jj-view",
         "build:server:all": "node tooling/build-web-binaries.ts",
         "build:all": "pnpm build:web:prod && pnpm build:server",
         "dev": "pnpm dev:web",
@@ -1602,8 +1884,8 @@
         "check-types": "tsc --noEmit && tsc -p web/tsconfig.json --noEmit",
         "lint": "biome check . && node tooling/lint-core-isolation.ts && node tooling/lint-fs-path-assertions.ts",
         "fix-lint": "biome check --write . && node tooling/lint-core-isolation.ts && node tooling/lint-fs-path-assertions.ts",
-        "check-license": "go run github.com/google/addlicense@v1.1.1 -check -s=only -ignore='**/node_modules/**' -ignore='node_modules/**' -ignore='web/node_modules/**' -ignore='dist/**' -ignore='web/dist/**' -ignore='out/**' -ignore='coverage/**' -ignore='.vscode-test/**' -ignore='.jj/**' -ignore='media/custom-icons/**' -ignore='pnpm-lock.yaml' -ignore='playwright-report/**' -ignore='test-results/**' **",
-        "fix-license": "go run github.com/google/addlicense@v1.1.1 -s=only -ignore='**/node_modules/**' -ignore='node_modules/**' -ignore='web/node_modules/**' -ignore='dist/**' -ignore='web/dist/**' -ignore='out/**' -ignore='coverage/**' -ignore='.vscode-test/**' -ignore='.jj/**' -ignore='media/custom-icons/**' -ignore='pnpm-lock.yaml' -ignore='playwright-report/**' -ignore='test-results/**' **",
+        "check-license": "go run github.com/google/addlicense@v1.1.1 -check -s=only -ignore='**/node_modules/**' -ignore='node_modules/**' -ignore='web/node_modules/**' -ignore='dist/**' -ignore='web/dist/**' -ignore='out/**' -ignore='coverage/**' -ignore='.vscode-test/**' -ignore='.jj/**' -ignore='media/custom-icons/**' -ignore='pnpm-lock.yaml' -ignore='playwright-report/**' -ignore='test-results/**' -ignore='test-artifacts/**' **",
+        "fix-license": "go run github.com/google/addlicense@v1.1.1 -s=only -ignore='**/node_modules/**' -ignore='node_modules/**' -ignore='web/node_modules/**' -ignore='dist/**' -ignore='web/dist/**' -ignore='out/**' -ignore='coverage/**' -ignore='.vscode-test/**' -ignore='.jj/**' -ignore='media/custom-icons/**' -ignore='pnpm-lock.yaml' -ignore='playwright-report/**' -ignore='test-results/**' -ignore='test-artifacts/**' **",
         "format": "biome format --write .",
         "check-format": "biome format .",
         "test": "npm-run-all -p --print-label test:unit test:integration:all",
@@ -1620,7 +1902,7 @@
     },
     "devDependencies": {
         "@biomejs/biome": "^2.4.12",
-        "@playwright/test": "^1.58.0",
+        "@playwright/test": "^1.64.1",
         "@sveltejs/vite-plugin-svelte": "^7.3.0",
         "@types/adm-zip": "^0.5.8",
         "@types/mocha": "^10.0.10",
@@ -1636,10 +1918,11 @@
         "esbuild": "^0.27.1",
         "esbuild-svelte": "^0.9.5",
         "handlebars": "^4.7.9",
+        "happy-dom": "^21.0.4",
         "jsonc-parser": "^3.3.1",
         "npm-run-all": "^4.1.5",
         "ovsx": "^0.10.8",
-        "playwright": "^1.58.0",
+        "playwright": "^1.64.1",
         "rimraf": "^6.1.2",
         "sinon": "^21.0.1",
         "svelte-check": "^4.7.6",

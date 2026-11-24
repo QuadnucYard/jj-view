@@ -558,5 +558,369 @@ describe('Gerrit Sync Verification', () => {
             const infoWithoutCommitId = provider.getCachedChangeInfo(changeId, 'desc');
             expect(infoWithoutCommitId?.contentSynced).toBeUndefined();
         });
+
+        test('does not mark immutable commits as needing upload or propagate dirty state to clean descendants', () => {
+            const immutableParent = createMock<JjLogEntry>({
+                commit_id: 'main-sha',
+                change_id: 'IMAIN',
+                is_immutable: true,
+                parents: [],
+            });
+            const cleanChild = createMock<JjLogEntry>({
+                commit_id: 'child-local',
+                change_id: 'ICHILD',
+                is_immutable: false,
+                parents: [{ commit_id: 'main-sha', change_id: 'IMAIN', is_immutable: true }],
+            });
+
+            // Suppose IMAIN matches an open cherry-pick CL on another branch in Gerrit with a different revision
+            const mainCherryPickCl: CodeForgeChangeInfo = {
+                id: 'IMAIN',
+                number: 100,
+                displayLabel: 'CL/100',
+                providerName: 'Gerrit',
+                status: 'NEW',
+                currentRevision: 'cherry-pick-sha',
+                contentSynced: false,
+                synced: false,
+                url: '',
+                unresolvedComments: 0,
+                submittable: false,
+            };
+            const childCl: CodeForgeChangeInfo = {
+                id: 'ICHILD',
+                number: 101,
+                displayLabel: 'CL/101',
+                providerName: 'Gerrit',
+                status: 'NEW',
+                currentRevision: 'child-remote-sha',
+                contentSynced: true,
+                remoteParents: ['main-sha'],
+                url: '',
+                unresolvedComments: 0,
+                submittable: false,
+            };
+
+            vi.spyOn(provider, 'getCachedChangeInfo').mockImplementation((changeId?: string) => {
+                if (changeId === 'IMAIN') {
+                    return mainCherryPickCl;
+                }
+                if (changeId === 'ICHILD') {
+                    return childCl;
+                }
+                return undefined;
+            });
+
+            service.populateCodeForgeInfo([cleanChild, immutableParent]);
+
+            expect(immutableParent.codeForgeNeedsUpload).toBeUndefined();
+            expect(cleanChild.codeForgeChange?.parentSynced).toBe(true);
+            expect(cleanChild.codeForgeChange?.synced).toBe(true);
+            expect(cleanChild.codeForgeNeedsUpload).toBe(false);
+        });
+
+        test('marks multi-commit Gerrit stack as clean when contentSynced is true and Gerrit revisions differ from local commit IDs', () => {
+            // Simulates a stack uploaded with `jj gerrit upload`, where Gerrit's patchset SHA
+            // differs from the local jj commit_id (due to synthesized Change-Id trailer) and
+            // GerritProvider.getCachedChangeInfo returns contentSynced=true with synced=undefined.
+            const c1 = createMock<JjLogEntry>({
+                commit_id: 'c1-local',
+                change_id: 'IC1',
+                is_immutable: false,
+                parents: [{ commit_id: 'trunk-sha', change_id: 'ITRUNK', is_immutable: true }],
+            });
+            const c2 = createMock<JjLogEntry>({
+                commit_id: 'c2-local',
+                change_id: 'IC2',
+                is_immutable: false,
+                parents: [{ commit_id: 'c1-local', change_id: 'IC1', is_immutable: false }],
+            });
+            const c3 = createMock<JjLogEntry>({
+                commit_id: 'c3-local',
+                change_id: 'IC3',
+                is_immutable: false,
+                parents: [{ commit_id: 'c2-local', change_id: 'IC2', is_immutable: false }],
+            });
+
+            vi.spyOn(provider, 'getCachedChangeInfo').mockImplementation((changeId?: string) => {
+                if (changeId === 'IC1') {
+                    return {
+                        id: 'IC1',
+                        number: 1,
+                        displayLabel: 'CL/1',
+                        providerName: 'Gerrit',
+                        status: 'NEW',
+                        currentRevision: 'c1-gerrit-sha',
+                        remoteParents: ['trunk-sha'],
+                        contentSynced: true,
+                        url: '',
+                        unresolvedComments: 0,
+                        submittable: false,
+                    };
+                }
+                if (changeId === 'IC2') {
+                    return {
+                        id: 'IC2',
+                        number: 2,
+                        displayLabel: 'CL/2',
+                        providerName: 'Gerrit',
+                        status: 'NEW',
+                        currentRevision: 'c2-gerrit-sha',
+                        remoteParents: ['c1-gerrit-sha'],
+                        contentSynced: true,
+                        url: '',
+                        unresolvedComments: 0,
+                        submittable: false,
+                    };
+                }
+                if (changeId === 'IC3') {
+                    return {
+                        id: 'IC3',
+                        number: 3,
+                        displayLabel: 'CL/3',
+                        providerName: 'Gerrit',
+                        status: 'NEW',
+                        currentRevision: 'c3-gerrit-sha',
+                        remoteParents: ['c2-gerrit-sha'],
+                        contentSynced: true,
+                        url: '',
+                        unresolvedComments: 0,
+                        submittable: false,
+                    };
+                }
+                return undefined;
+            });
+
+            // Pass commits in top-down order (matching `jj log` output)
+            service.populateCodeForgeInfo([c3, c2, c1]);
+
+            for (const c of [c1, c2, c3]) {
+                expect(c.codeForgeChange?.contentSynced).toBe(true);
+                expect(c.codeForgeChange?.parentSynced).toBe(true);
+                expect(c.codeForgeChange?.synced).toBe(true);
+                expect(c.codeForgeNeedsUpload).toBe(false);
+            }
+        });
+
+        test('propagates parentSynced=false up a Gerrit stack when base commit is rebased onto a new trunk', () => {
+            const c1 = createMock<JjLogEntry>({
+                commit_id: 'c1-rebased-local',
+                change_id: 'IC1',
+                is_immutable: false,
+                parents: [{ commit_id: 'new-trunk-sha', change_id: 'ITRUNK', is_immutable: true }],
+            });
+            const c2 = createMock<JjLogEntry>({
+                commit_id: 'c2-rebased-local',
+                change_id: 'IC2',
+                is_immutable: false,
+                parents: [{ commit_id: 'c1-rebased-local', change_id: 'IC1', is_immutable: false }],
+            });
+
+            vi.spyOn(provider, 'getCachedChangeInfo').mockImplementation((changeId?: string) => {
+                if (changeId === 'IC1') {
+                    return {
+                        id: 'IC1',
+                        number: 1,
+                        displayLabel: 'CL/1',
+                        providerName: 'Gerrit',
+                        status: 'NEW',
+                        currentRevision: 'c1-old-gerrit-sha',
+                        remoteParents: ['old-trunk-sha'],
+                        contentSynced: true,
+                        url: '',
+                        unresolvedComments: 0,
+                        submittable: false,
+                    };
+                }
+                if (changeId === 'IC2') {
+                    return {
+                        id: 'IC2',
+                        number: 2,
+                        displayLabel: 'CL/2',
+                        providerName: 'Gerrit',
+                        status: 'NEW',
+                        currentRevision: 'c2-old-gerrit-sha',
+                        remoteParents: ['c1-old-gerrit-sha'],
+                        contentSynced: true,
+                        url: '',
+                        unresolvedComments: 0,
+                        submittable: false,
+                    };
+                }
+                return undefined;
+            });
+
+            service.populateCodeForgeInfo([c2, c1]);
+
+            expect(c1.codeForgeChange?.parentSynced).toBe(false);
+            expect(c1.codeForgeChange?.synced).toBe(false);
+            expect(c1.codeForgeNeedsUpload).toBe(true);
+
+            expect(c2.codeForgeChange?.parentSynced).toBe(false);
+            expect(c2.codeForgeChange?.synced).toBe(false);
+            expect(c2.codeForgeNeedsUpload).toBe(true);
+        });
+    });
+
+    test('sets synced=true in non-colocated JJ repository (--no-colocate)', async () => {
+        const nonColocatedRepo = new TestRepo();
+        try {
+            nonColocatedRepo.init({ colocate: false });
+            nonColocatedRepo.writeFile('hello.txt', 'non-colocated content');
+            const desc = 'Change-Id: I7777777777777777777777777777777777777777';
+            nonColocatedRepo.describe(desc);
+
+            const nonColocatedJj = new JjService(nonColocatedRepo.path, NO_OP_LOGGER);
+            const commitId = nonColocatedRepo.getCommitId('@');
+            const blobHashes = await nonColocatedJj.getGitBlobHashes(commitId, ['hello.txt']);
+            const realHash = blobHashes.get('hello.txt');
+            expect(realHash).toBeDefined();
+
+            mockGerritResponse(
+                'I7777777777777777777777777777777777777777',
+                'remote-sha',
+                {
+                    'hello.txt': { status: 'A', new_sha: realHash },
+                },
+                '',
+            );
+
+            const nonColocatedRegistry = new CodeForgeRegistry();
+            const nonColocatedProvider = new GerritProvider(NO_OP_LOGGER, host);
+            nonColocatedRegistry.register({ id: 'gerrit', create: () => nonColocatedProvider });
+            const nonColocatedService = new CodeForgeService(
+                nonColocatedRepo.path,
+                nonColocatedJj,
+                nonColocatedRegistry,
+                host,
+                NO_OP_LOGGER,
+            );
+            try {
+                await nonColocatedService.awaitReady();
+                await nonColocatedService.ensureFreshStatuses([{ commitId, description: desc, parents: [] }]);
+                const result = nonColocatedProvider.getCachedChangeInfo(undefined, desc, undefined, commitId);
+                expect(result?.contentSynced).toBe(true);
+            } finally {
+                nonColocatedService.dispose();
+            }
+        } finally {
+            await nonColocatedRepo.dispose();
+        }
+    });
+
+    test('sets contentSynced=false when a file is deleted locally but not on Gerrit', async () => {
+        repo.writeFile('keep.txt', 'keep');
+        repo.writeFile('delete-me.txt', 'to be deleted');
+        const desc = 'Change-Id: I8888888888888888888888888888888888888888';
+        repo.new(undefined, desc);
+        repo.writeFile('keep.txt', 'keep modified');
+        repo.deleteFile('delete-me.txt');
+
+        const commitId = repo.getCommitId('@');
+        const blobHashes = await jjService.getGitBlobHashes(commitId, ['keep.txt']);
+        const keepHash = blobHashes.get('keep.txt');
+
+        // Gerrit only has keep.txt modified, not delete-me.txt deleted
+        mockGerritResponse(
+            'I8888888888888888888888888888888888888888',
+            'remote-sha',
+            {
+                'keep.txt': { status: 'M', new_sha: keepHash },
+            },
+            '',
+        );
+
+        service = initService();
+        await service.awaitReady();
+
+        await service.ensureFreshStatuses([{ commitId, description: desc, parents: [] }]);
+        const result = provider.getCachedChangeInfo(undefined, desc, undefined, commitId);
+        expect(result?.contentSynced).toBe(false);
+    });
+
+    test('sets contentSynced=true when a file is renamed on both sides and content matches', async () => {
+        repo.writeFile('old-name.txt', 'renamed file content line 1\nline 2\nline 3\n');
+        const desc = 'Change-Id: Iaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+        repo.new(undefined, desc);
+        repo.deleteFile('old-name.txt');
+        repo.writeFile('new-name.txt', 'renamed file content line 1\nline 2\nline 3\n');
+
+        const commitId = repo.getCommitId('@');
+        const blobHashes = await jjService.getGitBlobHashes(commitId, ['new-name.txt']);
+        const newHash = blobHashes.get('new-name.txt');
+
+        const revisions: Record<string, GerritRevision> = {
+            'remote-sha': {
+                files: {
+                    'new-name.txt': { status: 'R', old_path: 'old-name.txt', new_sha: newHash },
+                },
+                commit: { message: `\n\n${desc}` },
+            },
+        };
+        fakeGerritServer.addChange({
+            change_id: 'Iaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            _number: 10,
+            status: 'NEW',
+            current_revision: 'remote-sha',
+            revisions,
+        });
+
+        service = initService();
+        await service.awaitReady();
+
+        await service.ensureFreshStatuses([{ commitId, description: desc, parents: [] }]);
+        const result = provider.getCachedChangeInfo(undefined, desc, undefined, commitId);
+        expect(result?.contentSynced).toBe(true);
+    });
+
+    test('sets contentSynced=false when local description is empty but Gerrit has a non-empty description', async () => {
+        repo.writeFile('hello.txt', 'hello world');
+        const commitId = repo.getCommitId('@');
+        const changeId = 'Ibbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+        const blobHashes = await jjService.getGitBlobHashes(commitId, ['hello.txt']);
+        const realHash = blobHashes.get('hello.txt');
+
+        mockGerritResponse(
+            changeId,
+            'remote-sha',
+            {
+                'hello.txt': { status: 'A', new_sha: realHash },
+            },
+            'Non-empty remote description',
+        );
+
+        service = initService();
+        await service.awaitReady();
+
+        await service.ensureFreshStatuses([{ commitId, changeId, description: '', parents: [] }]);
+        const result = provider.getCachedChangeInfo(changeId, '', undefined, commitId);
+        expect(result?.contentSynced).toBe(false);
+    });
+
+    test('resolves and strips Link: <host>/id/I<40-hex> trailers during sync check', async () => {
+        repo.writeFile('hello.txt', 'hello world');
+        const changeId = 'Icccccccccccccccccccccccccccccccccccccccc';
+        const desc = `My feature\n\nLink: ${fakeGerritServer.url}/id/${changeId}`;
+        repo.describe(desc);
+
+        const commitId = repo.getCommitId('@');
+        const blobHashes = await jjService.getGitBlobHashes(commitId, ['hello.txt']);
+        const realHash = blobHashes.get('hello.txt');
+
+        mockGerritResponse(
+            changeId,
+            'remote-sha',
+            {
+                'hello.txt': { status: 'A', new_sha: realHash },
+            },
+            'My feature',
+        );
+
+        service = initService();
+        await service.awaitReady();
+
+        await service.ensureFreshStatuses([{ commitId, description: desc, parents: [] }]);
+        const result = provider.getCachedChangeInfo(undefined, desc, undefined, commitId);
+        expect(result?.contentSynced).toBe(true);
     });
 });

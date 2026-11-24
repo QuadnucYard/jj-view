@@ -78,7 +78,7 @@ for (const scheme of ['file', 'jj-edit']) {
                 };
                 const save = async (source: string, format: boolean) => {
                     const fs = repository.jj.system.fs;
-                    const readTextFile = fs.readTextFile.bind(fs);
+                    const readBinaryFile = fs.readBinaryFile.bind(fs);
                     const writeTextFile = fs.writeTextFile.bind(fs);
                     let release = () => {};
                     let entered = () => {};
@@ -93,8 +93,8 @@ for (const scheme of ['file', 'jj-edit']) {
                         if (scheme === 'jj-edit') {
                             // Hold an old filesystem read until the save reaches the writer.
                             // This is the interval where the queued editor content must win.
-                            fs.readTextFile = async (path) => {
-                                const content = await readTextFile(path);
+                            fs.readBinaryFile = async (path) => {
+                                const content = await readBinaryFile(path);
                                 if (path.replace(/\\/g, '/').endsWith('/right/save-source.txt')) {
                                     // Refresh reads can arrive first; hold every matching read.
                                     entered();
@@ -128,7 +128,7 @@ for (const scheme of ['file', 'jj-edit']) {
                         }
                     } finally {
                         release();
-                        fs.readTextFile = readTextFile;
+                        fs.readBinaryFile = readBinaryFile;
                         fs.writeTextFile = writeTextFile;
                         await backgroundRead;
                     }

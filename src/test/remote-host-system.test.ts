@@ -6,35 +6,29 @@
 import { describe, expect, it } from 'vitest';
 import { ProcessExitError, type TrackableProcess } from '../core/host/host-system';
 import {
+    type EventSourceLike,
     HostSystemError,
     RemoteHostSystem,
     RPC_CODE_INTERNAL_ERROR,
     RPC_CODE_PROCESS_ERROR,
-    type WebSocketLike,
 } from '../core/host/remote-host-system';
+import { type WebSocketLike, WsTransportError } from '../core/host/ws-rpc-channel';
 
-class FakeCloseEvent extends Event {
-    readonly code: number;
-    readonly reason: string;
-    readonly wasClean: boolean;
-
-    constructor(type: string, init?: { code?: number; reason?: string; wasClean?: boolean }) {
-        super(type);
-        this.code = init?.code ?? 1000;
-        this.reason = init?.reason ?? '';
-        this.wasClean = init?.wasClean ?? true;
-    }
-}
-
-class FakeWebSocket implements WebSocketLike {
-    public readyState: number = 0; // 0 = CONNECTING
+class FakeDaemonTransport implements EventSourceLike {
+    public readyState: number = 0; // 0 = CONNECTING, 1 = OPEN, 2 = CLOSED
     public sentMessages: string[] = [];
+    public readonly fetchBodies: string[] = [];
+    public readonly fetchUrls: string[] = [];
     public onopen: ((ev: Event) => void) | null = null;
     public onmessage: ((ev: MessageEvent) => void) | null = null;
     public onerror: ((ev: Event) => void) | null = null;
-    public onclose: ((ev: CloseEvent) => void) | null = null;
 
     private readonly _messageHandlers: Array<(msg: Record<string, unknown>) => void> = [];
+    private readonly _pendingRpc = new Map<number | string, (resp: Response) => void>();
+
+    constructor() {
+        this.fetch = this.fetch.bind(this);
+    }
 
     send(data: string): void {
         this.sentMessages.push(data);
@@ -46,11 +40,13 @@ class FakeWebSocket implements WebSocketLike {
         });
     }
 
-    close(code: number = 1000, reason: string = ''): void {
-        this.readyState = 3; // CLOSED
-        if (this.onclose) {
-            const CloseEventCtor = typeof CloseEvent !== 'undefined' ? CloseEvent : FakeCloseEvent;
-            this.onclose(new CloseEventCtor('close', { code, reason }));
+    close(_code?: number, _reason?: string): void {
+        if (this.readyState === 2) {
+            return;
+        }
+        this.readyState = 2; // CLOSED
+        if (this.onerror) {
+            this.onerror(new Event('error'));
         }
     }
 
@@ -62,6 +58,20 @@ class FakeWebSocket implements WebSocketLike {
     }
 
     simulateMessage(data: unknown): void {
+        if (typeof data === 'object' && data !== null && 'id' in data) {
+            const id = (data as { id: number | string }).id;
+            const resolver = this._pendingRpc.get(id);
+            if (resolver) {
+                this._pendingRpc.delete(id);
+                resolver(
+                    new Response(JSON.stringify(data), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    }),
+                );
+                return;
+            }
+        }
         if (this.onmessage) {
             this.onmessage(new MessageEvent('message', { data: JSON.stringify(data) }));
         }
@@ -70,6 +80,54 @@ class FakeWebSocket implements WebSocketLike {
     onClientRequest(handler: (msg: Record<string, unknown>) => void): void {
         this._messageHandlers.push(handler);
     }
+
+    async fetch(_input: string | URL | Request, init?: RequestInit): Promise<Response> {
+        const urlStr = typeof _input === 'string' ? _input : _input.toString();
+        this.fetchUrls.push(urlStr);
+        const bodyStr = typeof init?.body === 'string' ? init.body : '';
+        this.fetchBodies.push(bodyStr);
+        let parsed: Record<string, unknown> = {};
+        try {
+            parsed = JSON.parse(bodyStr) as Record<string, unknown>;
+        } catch {
+            return new Response('Invalid JSON', { status: 400 });
+        }
+
+        const id = parsed.id as number | string | undefined;
+
+        if (id === undefined) {
+            queueMicrotask(() => {
+                for (const handler of [...this._messageHandlers]) {
+                    handler(parsed);
+                }
+            });
+            return new Response(null, { status: 204 });
+        }
+
+        return new Promise<Response>((resolve, reject) => {
+            const onAbort = () => {
+                this._pendingRpc.delete(id);
+                reject(new Error('Request aborted'));
+            };
+
+            if (init?.signal?.aborted) {
+                onAbort();
+                return;
+            }
+            init?.signal?.addEventListener('abort', onAbort, { once: true });
+
+            this._pendingRpc.set(id, (resp) => {
+                init?.signal?.removeEventListener('abort', onAbort);
+                resolve(resp);
+            });
+
+            queueMicrotask(() => {
+                for (const handler of [...this._messageHandlers]) {
+                    handler(parsed);
+                }
+            });
+        });
+    }
 }
 
 function setupRemoteHost(options?: {
@@ -77,13 +135,16 @@ function setupRemoteHost(options?: {
     tempDir?: string;
     repoRoot?: string;
     version?: string;
-}): { host: RemoteHostSystem; fakeWs: FakeWebSocket } {
-    const fakeWs: FakeWebSocket = new FakeWebSocket();
+}): { host: RemoteHostSystem; fakeWs: FakeDaemonTransport } {
+    const fakeWs = new FakeDaemonTransport();
 
     const host = new RemoteHostSystem({
-        url: 'ws://127.0.0.1:8080/ws/system?token=test-token',
-        webSocketFactory: () => fakeWs,
+        url: 'http://127.0.0.1:8080?token=test-token',
+        clientId: 'mock-client-id',
+        eventSourceFactory: () => fakeWs,
+        fetch: fakeWs.fetch,
         reconnect: false,
+        useWebSocket: false,
     });
 
     fakeWs.onClientRequest((msg) => {
@@ -122,9 +183,10 @@ describe('RemoteHostSystem Unit Tests', () => {
             expect(host.tempDir).toBe('/tmp/private-jj-daemon');
             expect(host.repoRoot).toBe('/workspace/project');
             expect(host.version).toBe('2.5.0');
+            expect(fakeWs.fetchUrls[0]).toContain('/api/rpc?rid=1&token=test-token');
 
             host.dispose();
-            expect(fakeWs.readyState).toBe(3);
+            expect(fakeWs.readyState).toBe(2);
         });
 
         it('resolves wss protocol and host in https browser environment', async () => {
@@ -148,16 +210,21 @@ describe('RemoteHostSystem Unit Tests', () => {
                 });
 
                 let connectedUrl = '';
-                const fakeWs = new FakeWebSocket();
+                const fakeWs = new FakeDaemonTransport();
                 const host = new RemoteHostSystem({
-                    webSocketFactory: (url) => {
+                    clientId: 'test-client-id',
+                    eventSourceFactory: (url: string) => {
                         connectedUrl = url;
                         return fakeWs;
                     },
+                    fetch: fakeWs.fetch,
                     reconnect: false,
+                    useWebSocket: false,
                 });
 
-                expect(connectedUrl).toBe('wss://code.example.com:8443/ws/system?token=browser-token');
+                expect(connectedUrl).toBe(
+                    'https://code.example.com:8443/api/events?clientId=test-client-id&token=browser-token',
+                );
                 host.dispose();
             } finally {
                 Object.defineProperty(globalThis, 'window', {
@@ -187,16 +254,21 @@ describe('RemoteHostSystem Unit Tests', () => {
                 });
 
                 let connectedUrl = '';
-                const fakeWs = new FakeWebSocket();
+                const fakeWs = new FakeDaemonTransport();
                 const host = new RemoteHostSystem({
-                    webSocketFactory: (url) => {
+                    clientId: 'test-client-id',
+                    eventSourceFactory: (url: string) => {
                         connectedUrl = url;
                         return fakeWs;
                     },
+                    fetch: fakeWs.fetch,
                     reconnect: false,
+                    useWebSocket: false,
                 });
 
-                expect(connectedUrl).toBe('ws://127.0.0.1:5173/ws/system?token=vite-dev-token');
+                expect(connectedUrl).toBe(
+                    'http://127.0.0.1:5173/api/events?clientId=test-client-id&token=vite-dev-token',
+                );
                 host.dispose();
             } finally {
                 Object.defineProperty(globalThis, 'window', {
@@ -374,6 +446,7 @@ describe('RemoteHostSystem Unit Tests', () => {
             const cancelMsg = await cancelPromise;
             expect(cancelMsg.method).toBe('$/cancelRequest');
             expect(cancelMsg.params).toBeDefined();
+            expect(fakeWs.fetchUrls).toContain('http://127.0.0.1:8080/api/rpc?token=test-token');
 
             host.dispose();
         });
@@ -435,11 +508,11 @@ describe('RemoteHostSystem Unit Tests', () => {
                         result: { success: true },
                     });
                 }
-                if (msg.method === 'fs.readFile') {
+                if (msg.method === 'fs.readFiles') {
                     fakeWs.simulateMessage({
                         jsonrpc: '2.0',
                         id: msg.id,
-                        result: { content: storedBase64 },
+                        result: { files: [{ content: storedBase64 }] },
                     });
                 }
             });
@@ -468,8 +541,12 @@ describe('RemoteHostSystem Unit Tests', () => {
                     }
                     fakeWs.simulateMessage({ jsonrpc: '2.0', id: msg.id, result: { success: true } });
                 }
-                if (msg.method === 'fs.readFile') {
-                    fakeWs.simulateMessage({ jsonrpc: '2.0', id: msg.id, result: { content: storedBase64 } });
+                if (msg.method === 'fs.readFiles') {
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        result: { files: [{ content: storedBase64 }] },
+                    });
                 }
             });
 
@@ -507,11 +584,11 @@ describe('RemoteHostSystem Unit Tests', () => {
                         result: { success: true },
                     });
                 }
-                if (msg.method === 'fs.readFile') {
+                if (msg.method === 'fs.readFiles') {
                     fakeWs.simulateMessage({
                         jsonrpc: '2.0',
                         id: msg.id,
-                        result: { content: storedBase64 },
+                        result: { files: [{ content: storedBase64 }] },
                     });
                 }
             });
@@ -523,19 +600,19 @@ describe('RemoteHostSystem Unit Tests', () => {
             host.dispose();
         });
 
-        it('maps missing file error to HostSystemError with code ENOENT', async () => {
+        it('maps per-entry ENOENT error to HostSystemError with code ENOENT', async () => {
             const { host, fakeWs } = setupRemoteHost();
             await host.ready;
 
             fakeWs.onClientRequest((msg) => {
-                if (msg.method === 'fs.readFile') {
+                if (msg.method === 'fs.readFiles') {
                     fakeWs.simulateMessage({
                         jsonrpc: '2.0',
                         id: msg.id,
-                        error: {
-                            code: RPC_CODE_INTERNAL_ERROR,
-                            message: 'ENOENT: no such file or directory: /mock/repo/missing.txt',
-                            data: { code: 'ENOENT' },
+                        result: {
+                            files: [
+                                { error: { code: 'ENOENT', message: 'open /mock/repo/missing.txt: no such file' } },
+                            ],
                         },
                     });
                 }
@@ -554,6 +631,210 @@ describe('RemoteHostSystem Unit Tests', () => {
             host.dispose();
         });
 
+        it('coalesces reads issued in the same microtask into one fs.readFiles RPC with per-entry results', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            const requestedBatches: string[][] = [];
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method !== 'fs.readFiles') {
+                    return;
+                }
+                const paths = (msg.params as { paths: string[] }).paths;
+                requestedBatches.push(paths);
+                fakeWs.simulateMessage({
+                    jsonrpc: '2.0',
+                    id: msg.id,
+                    result: {
+                        files: paths.map((p) => {
+                            if (p.endsWith('missing.txt')) {
+                                return { error: { code: 'ENOENT', message: `missing: ${p}` } };
+                            }
+                            if (p.endsWith('denied.txt')) {
+                                return { error: { message: `access denied: ${p}` } };
+                            }
+                            return { content: Buffer.from(`content of ${p}`, 'utf8').toString('base64') };
+                        }),
+                    },
+                });
+            });
+
+            // Three independent callers, same tick, mixed single/batch/binary APIs.
+            const results = await Promise.allSettled([
+                host.fs.readTextFile('/mock/repo/a.txt'),
+                host.fs.readTextFile('/mock/repo/missing.txt'),
+                host.fs.readBinaryFile('/mock/repo/denied.txt'),
+                host.fs.readTextFiles(['/mock/repo/b.txt', '/mock/repo/missing.txt']),
+            ]);
+
+            expect(requestedBatches).toEqual([
+                [
+                    '/mock/repo/a.txt',
+                    '/mock/repo/missing.txt',
+                    '/mock/repo/denied.txt',
+                    '/mock/repo/b.txt',
+                    '/mock/repo/missing.txt',
+                ],
+            ]);
+
+            expect(results[0]).toEqual({ status: 'fulfilled', value: 'content of /mock/repo/a.txt' });
+            expect(results[1].status).toBe('rejected');
+            if (results[1].status === 'rejected') {
+                expect(results[1].reason).toBeInstanceOf(HostSystemError);
+                expect((results[1].reason as HostSystemError).code).toBe('ENOENT');
+            }
+            expect(results[2].status).toBe('rejected');
+            if (results[2].status === 'rejected') {
+                expect(results[2].reason).not.toBeInstanceOf(HostSystemError);
+                expect((results[2].reason as Error).message).toContain('access denied');
+            }
+            expect(results[3]).toEqual({ status: 'fulfilled', value: ['content of /mock/repo/b.txt', null] });
+
+            host.dispose();
+        });
+
+        it('does not coalesce reads issued in different microtasks', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            const requestedBatches: string[][] = [];
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method !== 'fs.readFiles') {
+                    return;
+                }
+                const paths = (msg.params as { paths: string[] }).paths;
+                requestedBatches.push(paths);
+                fakeWs.simulateMessage({
+                    jsonrpc: '2.0',
+                    id: msg.id,
+                    result: { files: paths.map(() => ({ content: '' })) },
+                });
+            });
+
+            await host.fs.readTextFile('/mock/repo/first.txt');
+            await host.fs.readTextFile('/mock/repo/second.txt');
+
+            expect(requestedBatches).toEqual([['/mock/repo/first.txt'], ['/mock/repo/second.txt']]);
+            host.dispose();
+        });
+
+        it('rejects every coalesced read when the batch RPC itself fails', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method === 'fs.readFiles') {
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        error: { code: RPC_CODE_INTERNAL_ERROR, message: 'daemon exploded' },
+                    });
+                }
+            });
+
+            const results = await Promise.allSettled([
+                host.fs.readTextFile('/mock/repo/a.txt'),
+                host.fs.readTextFile('/mock/repo/b.txt'),
+            ]);
+            for (const r of results) {
+                expect(r.status).toBe('rejected');
+                if (r.status === 'rejected') {
+                    expect((r.reason as Error).message).toBe('daemon exploded');
+                }
+            }
+            host.dispose();
+        });
+
+        it('readTextFiles rethrows non-ENOENT per-entry errors', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method === 'fs.readFiles') {
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        result: {
+                            files: [{ content: '' }, { error: { code: 'EACCES', message: 'permission denied' } }],
+                        },
+                    });
+                }
+            });
+
+            await expect(host.fs.readTextFiles(['/mock/repo/ok.txt', '/mock/repo/locked.txt'])).rejects.toThrow(
+                'permission denied',
+            );
+            host.dispose();
+        });
+    });
+
+    describe('Scratch Directory Execution', () => {
+        it('sends one process.execFileInScratchDir request and maps the result', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            let received: unknown;
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method === 'process.execFileInScratchDir') {
+                    received = msg.params;
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        result: {
+                            scratchDir: '/tmp/daemon/jj-bulk-diff-abc',
+                            stdout: '',
+                            stderr: 'aborted by tool',
+                            exitCode: 1,
+                            markerPresent: true,
+                        },
+                    });
+                }
+            });
+
+            let spawned = false;
+            const res = await host.process.execFileInScratchDir({
+                file: 'jj',
+                args: ['diffedit', '--tool', 'x', '{{scratchDir}}/left', '{{helperScript}}'],
+                scratchPrefix: 'jj-bulk-diff-',
+                subdirs: ['left', 'right'],
+                helperScript: 'batch-diff',
+                completionMarker: 'right/.complete',
+                options: {
+                    cwd: '/workspace/project',
+                    env: { JJ_VIEW_EXTENSION: '1' },
+                    onSpawn: () => {
+                        spawned = true;
+                    },
+                },
+            });
+
+            expect(spawned).toBe(true);
+            expect(received).toEqual({
+                file: 'jj',
+                args: ['diffedit', '--tool', 'x', '{{scratchDir}}/left', '{{helperScript}}'],
+                scratchPrefix: 'jj-bulk-diff-',
+                subdirs: ['left', 'right'],
+                helperScript: 'batch-diff',
+                completionMarker: 'right/.complete',
+                cwd: '/workspace/project',
+                env: { JJ_VIEW_EXTENSION: '1' },
+                timeout: undefined,
+                maxBuffer: undefined,
+            });
+            // Non-zero exit is data, not an exception, so the caller can consult markerPresent.
+            expect(res).toEqual({
+                scratchDir: '/tmp/daemon/jj-bulk-diff-abc',
+                stdout: '',
+                stderr: 'aborted by tool',
+                exitCode: 1,
+                markerPresent: true,
+            });
+
+            host.dispose();
+        });
+    });
+
+    describe('Filesystem Metadata Operations (HostFs)', () => {
         it('handles stat and lstat queries', async () => {
             const { host, fakeWs } = setupRemoteHost();
             await host.ready;
@@ -637,6 +918,8 @@ describe('RemoteHostSystem Unit Tests', () => {
 
             const real = await host.fs.realpath('/mock/repo/symlink');
             expect(real).toBe('/real/path');
+            const realCached = await host.fs.realpath('/mock/repo/symlink');
+            expect(realCached).toBe('/real/path');
 
             const temp = await host.fs.mkdtemp('test-prefix-');
             expect(temp).toBe('/tmp/temp-dir-123');
@@ -645,6 +928,157 @@ describe('RemoteHostSystem Unit Tests', () => {
             await host.fs.unlink('/mock/repo/a.txt');
 
             host.dispose();
+        });
+
+        it('deduplicates concurrent realpath calls, evicts failed lookups, and enforces LRU capacity (2048)', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            let failNext = true;
+            let realpathRpcCount = 0;
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method !== 'fs.realpath') {
+                    return;
+                }
+                realpathRpcCount++;
+                const targetPath =
+                    typeof msg.params === 'object' &&
+                    msg.params !== null &&
+                    'path' in msg.params &&
+                    typeof msg.params.path === 'string'
+                        ? msg.params.path
+                        : '';
+                if (targetPath === '/mock/flaky' && failNext) {
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        error: { code: RPC_CODE_INTERNAL_ERROR, message: 'transient ENOENT' },
+                    });
+                    return;
+                }
+                fakeWs.simulateMessage({
+                    jsonrpc: '2.0',
+                    id: msg.id,
+                    result: { resolvedPath: `/resolved${targetPath}` },
+                });
+            });
+
+            // 1. Concurrent failure shares 1 RPC, rejects for all callers, and evicts so retry succeeds
+            const flakyResults = await Promise.allSettled([
+                host.fs.realpath('/mock/flaky'),
+                host.fs.realpath('/mock/flaky'),
+            ]);
+            expect(flakyResults.every((r) => r.status === 'rejected')).toBe(true);
+            expect(realpathRpcCount).toBe(1);
+
+            failNext = false;
+            expect(await host.fs.realpath('/mock/flaky')).toBe('/resolved/mock/flaky');
+            expect(realpathRpcCount).toBe(2);
+
+            // 2. Fill remaining LRU capacity (2047 more -> total 2048 entries: /mock/flaky + /p/0..2046)
+            realpathRpcCount = 0;
+            const BATCH = 64;
+            for (let start = 0; start < 2047; start += BATCH) {
+                const batch: Promise<string>[] = [];
+                for (let i = start; i < Math.min(start + BATCH, 2047); i++) {
+                    batch.push(host.fs.realpath(`/p/${i}`));
+                }
+                await Promise.all(batch);
+            }
+            expect(realpathRpcCount).toBe(2047);
+
+            // Touch /mock/flaky so /p/0 becomes the least-recently-used entry
+            expect(await host.fs.realpath('/mock/flaky')).toBe('/resolved/mock/flaky');
+            expect(realpathRpcCount).toBe(2047);
+
+            // Insert /p/2047 -> evicts /p/0
+            expect(await host.fs.realpath('/p/2047')).toBe('/resolved/p/2047');
+            expect(realpathRpcCount).toBe(2048);
+
+            // /mock/flaky and /p/1 remain cached (0 new RPCs)
+            expect(await host.fs.realpath('/mock/flaky')).toBe('/resolved/mock/flaky');
+            expect(await host.fs.realpath('/p/1')).toBe('/resolved/p/1');
+            expect(realpathRpcCount).toBe(2048);
+
+            // /p/0 was evicted and triggers a fresh RPC
+            expect(await host.fs.realpath('/p/0')).toBe('/resolved/p/0');
+            expect(realpathRpcCount).toBe(2049);
+
+            host.dispose();
+        });
+
+        it('guards error eviction by promise identity and clears realpath cache on dispose()', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            let raceCalls = 0;
+            let firstRaceMsgId: unknown;
+            let rpcCount = 0;
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method !== 'fs.realpath') {
+                    return;
+                }
+                rpcCount++;
+                const targetPath =
+                    typeof msg.params === 'object' &&
+                    msg.params !== null &&
+                    'path' in msg.params &&
+                    typeof msg.params.path === 'string'
+                        ? msg.params.path
+                        : '';
+                if (targetPath === '/mock/race') {
+                    raceCalls++;
+                    if (raceCalls === 1) {
+                        firstRaceMsgId = msg.id;
+                        return;
+                    }
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        result: { resolvedPath: '/resolved/new-race' },
+                    });
+                    return;
+                }
+                fakeWs.simulateMessage({
+                    jsonrpc: '2.0',
+                    id: msg.id,
+                    result: { resolvedPath: `/resolved${targetPath}` },
+                });
+            });
+
+            const staleFailurePromise = host.fs.realpath('/mock/race');
+            // Wait for RPC #1 dispatch before evicting /mock/race from LRU
+            await Promise.resolve();
+            await Promise.resolve();
+
+            const BATCH = 64;
+            for (let start = 0; start < 2048; start += BATCH) {
+                const batch: Promise<string>[] = [];
+                for (let i = start; i < Math.min(start + BATCH, 2048); i++) {
+                    batch.push(host.fs.realpath(`/evict-race/${i}`));
+                }
+                await Promise.all(batch);
+            }
+
+            // Re-request /mock/race -> succeeds with '/resolved/new-race'
+            expect(await host.fs.realpath('/mock/race')).toBe('/resolved/new-race');
+            const callsBeforeStaleReject = rpcCount;
+
+            // Now reject the superseded first RPC
+            fakeWs.simulateMessage({
+                jsonrpc: '2.0',
+                id: firstRaceMsgId,
+                error: { code: RPC_CODE_INTERNAL_ERROR, message: 'stale failure' },
+            });
+            await expect(staleFailurePromise).rejects.toThrow('stale failure');
+
+            // Newer /mock/race cache entry must remain intact (0 new RPCs)
+            expect(await host.fs.realpath('/mock/race')).toBe('/resolved/new-race');
+            expect(rpcCount).toBe(callsBeforeStaleReject);
+
+            // dispose() clears _realpathCache so subsequent calls do not return stale cached values
+            host.dispose();
+            await expect(host.fs.realpath('/mock/race')).rejects.toThrow('RemoteHostSystem is disposed');
         });
     });
 
@@ -697,14 +1131,14 @@ describe('RemoteHostSystem Unit Tests', () => {
         });
 
         it('unregisters updated subscriptionId on unsubscribe after reconnection', async () => {
-            let currentWs = new FakeWebSocket();
+            let currentWs = new FakeDaemonTransport();
             let subIdCounter = 0;
             const unwatchCalls: string[] = [];
 
             const host = new RemoteHostSystem({
-                url: 'ws://127.0.0.1:8080/ws/system?token=test-token',
-                webSocketFactory: () => {
-                    const ws = new FakeWebSocket();
+                url: 'http://127.0.0.1:8080?token=test-token',
+                eventSourceFactory: () => {
+                    const ws = new FakeDaemonTransport();
                     currentWs = ws;
                     ws.onClientRequest((msg) => {
                         if (msg.method === 'system.info') {
@@ -736,6 +1170,7 @@ describe('RemoteHostSystem Unit Tests', () => {
                     });
                     return ws;
                 },
+                fetch: (input, init) => currentWs.fetch(input, init),
                 reconnect: true,
                 reconnectDelayMs: 20,
             });
@@ -834,8 +1269,12 @@ describe('RemoteHostSystem Unit Tests', () => {
                     }
                     fakeWs.simulateMessage({ jsonrpc: '2.0', id: msg.id, result: { success: true } });
                 }
-                if (msg.method === 'fs.readFile') {
-                    fakeWs.simulateMessage({ jsonrpc: '2.0', id: msg.id, result: { content: storedBase64 } });
+                if (msg.method === 'fs.readFiles') {
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        result: { files: [{ content: storedBase64 }] },
+                    });
                 }
             });
 
@@ -847,12 +1286,14 @@ describe('RemoteHostSystem Unit Tests', () => {
         });
 
         it('times out requests when daemon does not respond', async () => {
-            const fakeWs: FakeWebSocket = new FakeWebSocket();
+            const fakeWs = new FakeDaemonTransport();
             const host = new RemoteHostSystem({
-                url: 'ws://127.0.0.1:8080/ws/system?token=test-token',
-                webSocketFactory: () => fakeWs,
+                url: 'http://127.0.0.1:8080?token=test-token',
+                eventSourceFactory: () => fakeWs,
+                fetch: fakeWs.fetch,
                 requestTimeoutMs: 50,
                 reconnect: false,
+                useWebSocket: false,
             });
 
             fakeWs.onClientRequest((msg) => {
@@ -882,13 +1323,52 @@ describe('RemoteHostSystem Unit Tests', () => {
             host.dispose();
         });
 
-        it('rejects ready promise when webSocketFactory throws synchronously', async () => {
+        it('honors per-process options.timeout in execFile instead of default requestTimeoutMs', async () => {
+            const fakeWs = new FakeDaemonTransport();
             const host = new RemoteHostSystem({
-                url: 'ws://invalid-url',
-                webSocketFactory: () => {
+                url: 'http://127.0.0.1:8080?token=test-token',
+                eventSourceFactory: () => fakeWs,
+                fetch: fakeWs.fetch,
+                requestTimeoutMs: 30,
+                reconnect: false,
+                useWebSocket: false,
+            });
+
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method === 'system.info') {
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        result: { platform: 'linux', version: '1.0.0', repoRoot: '/mock/repo' },
+                    });
+                } else if (msg.method === 'process.execFile') {
+                    // Respond after 60ms (longer than requestTimeoutMs=30ms, within options.timeout=200ms)
+                    setTimeout(() => {
+                        fakeWs.simulateMessage({
+                            jsonrpc: '2.0',
+                            id: msg.id,
+                            result: { stdout: 'uploaded\n', stderr: '', exitCode: 0 },
+                        });
+                    }, 60);
+                }
+            });
+            fakeWs.open();
+            await host.ready;
+
+            const result = await host.process.execFile('jj', ['upload'], { timeout: 200 });
+            expect(result.stdout).toBe('uploaded\n');
+
+            host.dispose();
+        });
+
+        it('rejects ready promise when eventSourceFactory throws synchronously', async () => {
+            const host = new RemoteHostSystem({
+                url: 'http://invalid-url',
+                eventSourceFactory: () => {
                     throw new Error('CSP blocked');
                 },
                 reconnect: false,
+                useWebSocket: false,
             });
 
             await expect(host.ready).rejects.toThrow('CSP blocked');
@@ -896,11 +1376,13 @@ describe('RemoteHostSystem Unit Tests', () => {
         });
 
         it('rejects ready promise when reconnection fails and stops', async () => {
-            const fakeWs = new FakeWebSocket();
+            const fakeWs = new FakeDaemonTransport();
             const host = new RemoteHostSystem({
-                url: 'ws://127.0.0.1:8080/ws/system?token=test-token',
-                webSocketFactory: () => fakeWs,
+                url: 'http://127.0.0.1:8080?token=test-token',
+                eventSourceFactory: () => fakeWs,
+                fetch: fakeWs.fetch,
                 reconnect: false,
+                useWebSocket: false,
             });
 
             fakeWs.open();
@@ -918,14 +1400,14 @@ describe('RemoteHostSystem Unit Tests', () => {
         });
 
         it('re-subscribes active file watchers on reconnection', async () => {
-            let currentWs = new FakeWebSocket();
+            let currentWs = new FakeDaemonTransport();
             let connectionCount = 0;
 
             const host = new RemoteHostSystem({
-                url: 'ws://127.0.0.1:8080/ws/system?token=test-token',
-                webSocketFactory: () => {
+                url: 'http://127.0.0.1:8080?token=test-token',
+                eventSourceFactory: () => {
                     connectionCount++;
-                    const ws = new FakeWebSocket();
+                    const ws = new FakeDaemonTransport();
                     currentWs = ws;
                     ws.onClientRequest((msg) => {
                         if (msg.method === 'system.info') {
@@ -938,6 +1420,7 @@ describe('RemoteHostSystem Unit Tests', () => {
                     });
                     return ws;
                 },
+                fetch: (input, init) => currentWs.fetch(input, init),
                 reconnect: true,
                 reconnectDelayMs: 20,
             });
@@ -998,9 +1481,290 @@ describe('RemoteHostSystem Unit Tests', () => {
 
             await expect(pendingPromise).rejects.toThrow('RemoteHostSystem is disposed');
             expect(host.isConnected).toBe(false);
-            expect(fakeWs.readyState).toBe(3); // CLOSED
+            expect(fakeWs.readyState).toBe(2); // CLOSED
 
             await expect(host.fs.exists('/mock/repo/after.txt')).rejects.toThrow('RemoteHostSystem is disposed');
         });
+
+        it('restores token from sessionStorage and persists token to sessionStorage', async () => {
+            const mockStorage = new Map<string, string>();
+            const fakeSessionStorage = {
+                getItem: (k: string) => mockStorage.get(k) ?? null,
+                setItem: (k: string, v: string) => mockStorage.set(k, v),
+                removeItem: (k: string) => mockStorage.delete(k),
+                clear: () => mockStorage.clear(),
+                length: 0,
+                key: () => null,
+            };
+
+            const origWindow = globalThis.window;
+            let capturedUrl = '';
+
+            try {
+                // Pre-populate sessionStorage
+                mockStorage.set('jj_view_token', 'stored-token-123');
+
+                (globalThis as unknown as { window: unknown }).window = {
+                    location: {
+                        host: '127.0.0.1:5173',
+                        protocol: 'http:',
+                        search: '',
+                    },
+                    sessionStorage: fakeSessionStorage,
+                };
+
+                const fakeWs = new FakeDaemonTransport();
+                const host1 = new RemoteHostSystem({
+                    clientId: 'test-client-id',
+                    eventSourceFactory: (u: string) => {
+                        capturedUrl = u;
+                        return fakeWs;
+                    },
+                    fetch: fakeWs.fetch,
+                    reconnect: false,
+                    useWebSocket: false,
+                });
+
+                expect(capturedUrl).toContain('token=stored-token-123');
+                host1.dispose();
+
+                // Test persistence: query token gets stored
+                mockStorage.clear();
+                (globalThis as unknown as { window: unknown }).window = {
+                    location: {
+                        host: '127.0.0.1:5173',
+                        protocol: 'http:',
+                        search: '?token=query-token-456',
+                    },
+                    sessionStorage: fakeSessionStorage,
+                };
+
+                const fakeWs2 = new FakeDaemonTransport();
+                const host2 = new RemoteHostSystem({
+                    clientId: 'test-client-id',
+                    eventSourceFactory: (u: string) => {
+                        capturedUrl = u;
+                        return fakeWs2;
+                    },
+                    fetch: fakeWs2.fetch,
+                    reconnect: false,
+                    useWebSocket: false,
+                });
+
+                expect(capturedUrl).toContain('token=query-token-456');
+                expect(mockStorage.get('jj_view_token')).toBe('query-token-456');
+                host2.dispose();
+            } finally {
+                (globalThis as unknown as { window: unknown }).window = origWindow;
+            }
+        });
+
+        it('sends workspace.addAllowedRoot RPC when addAllowedRoot is called', async () => {
+            const { host, fakeWs } = setupRemoteHost();
+            await host.ready;
+
+            let capturedPath: unknown;
+            fakeWs.onClientRequest((msg) => {
+                if (msg.method === 'workspace.addAllowedRoot') {
+                    capturedPath = (msg.params as { path?: string }).path;
+                    fakeWs.simulateMessage({
+                        jsonrpc: '2.0',
+                        id: msg.id,
+                        result: { success: true },
+                    });
+                }
+            });
+
+            await host.addAllowedRoot('/enclosing/repo/root');
+            expect(capturedPath).toBe('/enclosing/repo/root');
+            host.dispose();
+        });
+    });
+});
+
+class FakeRpcSocket implements WebSocketLike {
+    public readyState = 0;
+    public readonly sent: string[] = [];
+    public onopen: ((ev: Event) => void) | null = null;
+    public onmessage: ((ev: MessageEvent) => void) | null = null;
+    public onclose: ((ev: CloseEvent) => void) | null = null;
+    public onerror: ((ev: Event) => void) | null = null;
+
+    send(data: string): void {
+        this.sent.push(data);
+    }
+
+    close(code?: number, reason?: string): void {
+        this.serverClose(code ?? 1005, reason ?? '');
+    }
+
+    open(): void {
+        this.readyState = 1;
+        this.onopen?.(new Event('open'));
+    }
+
+    reply(id: unknown, result: unknown): void {
+        this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id, result }) }));
+    }
+
+    serverClose(code: number, reason: string): void {
+        if (this.readyState === 3) {
+            return;
+        }
+        this.readyState = 3;
+        this.onclose?.(Object.assign(new Event('close'), { code, reason, wasClean: true }) as CloseEvent);
+    }
+
+    sentFrames(): Array<Record<string, unknown>> {
+        return this.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
+    }
+}
+
+interface SocketHostSetup {
+    host: RemoteHostSystem;
+    daemon: FakeDaemonTransport;
+    socket: FakeRpcSocket;
+    readonly wsUrl: string;
+}
+
+/** request() awaits `ready` before writing the frame; let pending microtasks run. */
+async function settle(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function setupHostWithSocket(): SocketHostSetup {
+    const daemon = new FakeDaemonTransport();
+    const socket = new FakeRpcSocket();
+    let wsUrl = '';
+    const host = new RemoteHostSystem({
+        url: 'http://127.0.0.1:8080?token=test-token',
+        clientId: 'mock-client-id',
+        eventSourceFactory: () => daemon,
+        fetch: daemon.fetch,
+        webSocketFactory: (url) => {
+            wsUrl = url;
+            return socket;
+        },
+        reconnect: false,
+    });
+    daemon.onClientRequest((msg) => {
+        if (msg.method === 'system.info') {
+            daemon.simulateMessage({
+                jsonrpc: '2.0',
+                id: msg.id,
+                result: { platform: 'linux', version: '1.0.0', repoRoot: '/mock/repo', tempDir: '/tmp' },
+            });
+        }
+    });
+    daemon.open();
+    return {
+        host,
+        daemon,
+        socket,
+        get wsUrl() {
+            return wsUrl;
+        },
+    };
+}
+
+describe('RemoteHostSystem WebSocket routing', () => {
+    it('opens the socket only after system.info succeeds over HTTP, with clientId and token', async () => {
+        const setup = setupHostWithSocket();
+        expect(setup.wsUrl).toBe('');
+        await setup.host.ready;
+        const url = new URL(setup.wsUrl);
+        expect(url.protocol).toBe('ws:');
+        expect(url.pathname).toBe('/api/ws');
+        expect(url.searchParams.get('clientId')).toBe('mock-client-id');
+        expect(url.searchParams.get('token')).toBe('test-token');
+        setup.host.dispose();
+    });
+
+    it('falls back to HTTP while the socket is not open', async () => {
+        const { host, daemon, socket } = setupHostWithSocket();
+        await host.ready;
+        daemon.onClientRequest((msg) => {
+            if (msg.method === 'fs.exists') {
+                daemon.simulateMessage({ jsonrpc: '2.0', id: msg.id, result: { exists: true } });
+            }
+        });
+        const before = daemon.fetchBodies.length;
+        await expect(host.fs.exists('/mock/repo/x')).resolves.toBe(true);
+        expect(socket.sent).toHaveLength(0);
+        expect(daemon.fetchBodies.length).toBe(before + 1);
+        host.dispose();
+    });
+
+    it('routes requests and notifications over the socket once it is open', async () => {
+        const { host, daemon, socket } = setupHostWithSocket();
+        await host.ready;
+        socket.open();
+
+        const httpBefore = daemon.fetchBodies.length;
+        const pending = host.fs.exists('/mock/repo/x');
+        await settle();
+        const [req] = socket.sentFrames();
+        expect(req?.method).toBe('fs.exists');
+        socket.reply(req?.id, { exists: true });
+        await expect(pending).resolves.toBe(true);
+        expect(daemon.fetchBodies.length).toBe(httpBefore);
+
+        host.notify('watcher.unwatch', { subscriptionId: 's1' });
+        expect(socket.sentFrames().at(-1)).toMatchObject({ method: 'watcher.unwatch' });
+        expect(daemon.fetchBodies.length).toBe(httpBefore);
+        host.dispose();
+    });
+
+    it('sends $/cancelRequest over the socket when a socket-routed request is aborted', async () => {
+        const { host, socket } = setupHostWithSocket();
+        await host.ready;
+        socket.open();
+
+        const controller = new AbortController();
+        const pending = host.request('process.execFile', { file: 'jj', args: ['log'] }, controller.signal);
+        await settle();
+        const [req] = socket.sentFrames();
+        expect(req?.method).toBe('process.execFile');
+        controller.abort(new Error('user cancelled'));
+        await expect(pending).rejects.toThrow('Request aborted');
+        expect(socket.sentFrames().at(-1)).toMatchObject({ method: '$/cancelRequest', params: { id: req?.id } });
+        host.dispose();
+    });
+
+    it('fails in-flight socket requests on close and uses HTTP for the next request', async () => {
+        const { host, daemon, socket } = setupHostWithSocket();
+        await host.ready;
+        socket.open();
+
+        const pending = host.fs.exists('/mock/repo/x');
+        await settle();
+        expect(socket.sentFrames()).toHaveLength(1);
+        socket.serverClose(1006, 'network');
+        await expect(pending).rejects.toBeInstanceOf(WsTransportError);
+
+        daemon.onClientRequest((msg) => {
+            if (msg.method === 'fs.exists') {
+                daemon.simulateMessage({ jsonrpc: '2.0', id: msg.id, result: { exists: false } });
+            }
+        });
+        const httpBefore = daemon.fetchBodies.length;
+        await expect(host.fs.exists('/mock/repo/y')).resolves.toBe(false);
+        expect(daemon.fetchBodies.length).toBe(httpBefore + 1);
+        host.dispose();
+    });
+
+    it('delivers notifications received on the socket to the same listeners as SSE', async () => {
+        const { host, socket } = setupHostWithSocket();
+        await host.ready;
+        socket.open();
+        const seen: string[] = [];
+        host.onStateDidChange((key) => seen.push(key));
+        socket.onmessage?.(
+            new MessageEvent('message', {
+                data: JSON.stringify({ jsonrpc: '2.0', method: 'state/didChange', params: { key: 'k' } }),
+            }),
+        );
+        expect(seen).toEqual(['k']);
+        host.dispose();
     });
 });

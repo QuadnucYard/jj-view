@@ -206,6 +206,119 @@ describe('CommitDetailsApp SSR Rendering', () => {
             /<span class="file-dir[^"]*">src\/core\/webview\/<\/span>(?:<!--.*?-->)*<span class="file-name/,
         );
         expect(html).not.toContain('src/core/webview/</span> ');
+        expect(html).toContain('data-file-path="src/core/webview/CommitDetails.svelte"');
+        expect(html).toContain('data-file-path="root-file.txt"');
+        expect(html).not.toContain('commit-details-file-context-menu');
+    });
+
+    it('successfully server-renders code forge sync banner, description modified badge, and modified file badges', () => {
+        const initialCommit: CommitDetailsPayload = {
+            changeId: 'krsyowswxmxnqznrtlpuyutskyzrpunp',
+            commitId: 'abcdef1234567890abcdef1234567890abcdef12',
+            description: 'feat: local description with changes',
+            files: [
+                {
+                    path: 'src/index.ts',
+                    status: 'modified',
+                },
+            ],
+            isLoadingFiles: false,
+            isImmutable: false,
+            codeForgeChange: {
+                id: 'I12345',
+                number: 999,
+                displayLabel: 'CL/999',
+                providerName: 'Gerrit',
+                status: 'NEW',
+                submittable: false,
+                url: 'https://example.com/999',
+                unresolvedComments: 0,
+                currentRevision: 'uploaded-rev-123',
+                synced: false,
+                contentSynced: false,
+            },
+            codeForgeNeedsUpload: true,
+            descriptionModifiedFromRemote: true,
+            unuploadedFilePaths: ['src/index.ts'],
+        };
+
+        const result = render(CommitDetailsApp, { props: { initialCommit } });
+        const html = result.body;
+
+        expect(html).toContain('code-forge-banner');
+        expect(html).toContain('Local changes differ from CL/999');
+        expect(html).toContain('Modified since upload');
+        expect(html).toContain('status-unuploaded');
+        expect(html).toContain('>unuploaded<');
+        expect(html).toContain('Compare with Uploaded');
+    });
+
+    it('hides banner Compare button when only parent revision differs', () => {
+        const initialCommit: CommitDetailsPayload = {
+            changeId: 'krsyowswxmxnqznrtlpuyutskyzrpunp',
+            commitId: 'abcdef1234567890abcdef1234567890abcdef12',
+            description: 'feat: clean rebase',
+            files: [{ path: 'src/index.ts', status: 'modified' }],
+            isLoadingFiles: false,
+            isImmutable: false,
+            codeForgeChange: {
+                id: 'I12345',
+                number: 999,
+                displayLabel: 'CL/999',
+                providerName: 'Gerrit',
+                status: 'NEW',
+                submittable: false,
+                url: 'https://example.com/999',
+                unresolvedComments: 0,
+                currentRevision: 'uploaded-rev-123',
+                synced: false,
+                contentSynced: true,
+                parentSynced: false,
+            },
+            codeForgeNeedsUpload: true,
+            descriptionModifiedFromRemote: false,
+            unuploadedFilePaths: [],
+        };
+
+        const result = render(CommitDetailsApp, { props: { initialCommit } });
+        const html = result.body;
+
+        expect(html).toContain('Parent differs from CL/999');
+        expect(html).not.toContain('banner-action-button');
+    });
+
+    it('hides unuploaded badges and Modified since upload button when change status is MERGED', () => {
+        const initialCommit: CommitDetailsPayload = {
+            changeId: 'krsyowswxmxnqznrtlpuyutskyzrpunp',
+            commitId: 'abcdef1234567890abcdef1234567890abcdef12',
+            description: 'feat: merged change',
+            files: [{ path: 'src/index.ts', status: 'modified' }],
+            isLoadingFiles: false,
+            isImmutable: false,
+            codeForgeChange: {
+                id: 'I12345',
+                number: 999,
+                displayLabel: 'CL/999',
+                providerName: 'Gerrit',
+                status: 'MERGED',
+                submittable: false,
+                url: 'https://example.com/999',
+                unresolvedComments: 0,
+                currentRevision: 'uploaded-rev-123',
+                synced: true,
+                contentSynced: false,
+            },
+            codeForgeNeedsUpload: false,
+            descriptionModifiedFromRemote: true,
+            unuploadedFilePaths: ['src/index.ts'],
+        };
+
+        const result = render(CommitDetailsApp, { props: { initialCommit } });
+        const html = result.body;
+
+        expect(html).not.toContain('status-unuploaded');
+        expect(html).not.toContain('Modified since upload');
+        expect(html).not.toContain('Compare with Uploaded');
     });
 
     it.each([

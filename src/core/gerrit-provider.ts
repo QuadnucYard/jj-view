@@ -7,10 +7,10 @@ import { z } from 'zod';
 import { chunkArray } from '../utils/array-utils';
 import { AsyncCache } from '../utils/async-cache';
 import { Duration } from '../utils/duration';
-import { fetchWithTimeout } from '../utils/fetch-utils';
-import { getGerritAuthHeader, resolveGitRoot } from '../utils/gerrit-credential-utils';
+import { toError } from '../utils/error-utils';
 import { detectGerritHost } from '../utils/gerrit-host-detection';
 import { resolveGerritChangeKey, stripGerritTrailers } from '../utils/gerrit-utils';
+import { resolveGitRoot } from '../utils/git-repo-utils';
 import { convertJjChangeIdToHex } from '../utils/jj-utils';
 import { LruCache } from '../utils/lru-cache';
 import type { LoggerChannel } from '../utils/output-channel';
@@ -19,8 +19,13 @@ import type {
     CodeForgeComment,
     CodeForgeCommentThread,
     CodeForgeProvider,
+    CommentRange,
+    CommentSide,
     GitRemote,
+    UploadedFileRequest,
+    UploadedRevisionDetails,
 } from './code-forge-provider';
+import { decodeBase64ToUint8Array, verifyLocalContentSync } from './code-forge-sync-utils';
 import { type Event, EventEmitter } from './host/events';
 import type { HostEnvironment } from './host/host-environment';
 import type { JjService } from './jj-service';
@@ -29,6 +34,7 @@ import type { CodeForgeChangeInfo, JjStatusEntry } from './jj-types';
 export const GerritFileSchema = z.object({
     status: z.string().optional(),
     new_sha: z.string().optional(),
+    old_path: z.string().optional(),
 });
 export type GerritFile = z.infer<typeof GerritFileSchema>;
 
@@ -79,17 +85,24 @@ interface GerritCommentGql {
     unresolved?: boolean;
     in_reply_to?: string;
     patch_set?: number;
+    commit_id?: string;
+    side?: CommentSide;
+    range?: CommentRange;
 }
 
 export type GerritCommentWithDraftStatus = GerritCommentGql & {
     isDraft?: boolean;
 };
 
-interface FetchGerritOptions extends RequestInit {
-    timeoutMs?: number;
+interface FetchGerritOptions {
+    readonly method?: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly body?: string;
+    readonly signal?: AbortSignal;
+    readonly timeoutMs?: number;
 }
 
-const AUTH_HEADER_TTL = Duration.minutes(5);
+const AUTH_CHECK_TTL = Duration.minutes(5);
 const COMMENTS_CACHE_TTL = Duration.seconds(30);
 const MAX_COMMENTS_CACHE_ENTRIES = 150;
 
@@ -135,6 +148,7 @@ export class GerritProvider implements CodeForgeProvider {
     public readonly id = 'gerrit';
     public readonly displayName = 'Gerrit';
     public readonly changeTerm = 'CL' as const;
+    public readonly uploadModel = 'revision' as const;
     public readonly priority = 100;
 
     private cache = new LruCache<string, CodeForgeChangeInfo>({ maxEntries: 1000 });
@@ -149,12 +163,20 @@ export class GerritProvider implements CodeForgeProvider {
         maxEntries: MAX_COMMENTS_CACHE_ENTRIES,
         keepStaleOnError: true,
     });
+    private uploadedFileContentCache = new AsyncCache<string, Uint8Array | undefined>({
+        ttl: Duration.minutes(10),
+        maxEntries: 200,
+        keepStaleOnError: true,
+    });
     private gerritHost: string | undefined;
     private repoRoot: string | undefined;
     private gitRoot: string | null = null;
-    private authHeader: { name: string; value: string } | undefined;
+    /** Whether the host can authenticate requests to {@link gerritHost}; drives the `/a/` prefix. */
+    private credentialAvailable = false;
     private authChecked = false;
     private lastAuthTime = 0;
+    /** In-flight credential check, shared by concurrent requests so the host resolves credentials once. */
+    private authCheck: Promise<boolean> | undefined;
 
     private _onDidUpdate = new EventEmitter<void>();
     public readonly onDidUpdate: Event<void> = this._onDidUpdate.event;
@@ -166,7 +188,7 @@ export class GerritProvider implements CodeForgeProvider {
 
     public async detect(repoRoot: string, remotes: GitRemote[]): Promise<boolean> {
         const binaryPath = this.host.config.get<string>('binaryPath', 'jj') || 'jj';
-        const gitRoot = await resolveGitRoot(repoRoot, binaryPath);
+        const gitRoot = this.host.system ? await resolveGitRoot(this.host.system, repoRoot, binaryPath) : null;
 
         if (this.repoRoot !== repoRoot) {
             this.clearCache();
@@ -202,7 +224,7 @@ export class GerritProvider implements CodeForgeProvider {
 
     private async probeGerritHost(host: string): Promise<boolean> {
         try {
-            const response = await fetchWithTimeout(`${host}/config/server/version`, 3000);
+            const response = await this.host.http.fetch(`${host}/config/server/version`, { timeoutMs: 3000 });
             return response.ok;
         } catch (e) {
             this.outputChannel?.error(`[GerritProvider] Probe error for host ${host}: ${e}`);
@@ -210,54 +232,72 @@ export class GerritProvider implements CodeForgeProvider {
         }
     }
 
-    private async getAuthHeader(): Promise<{ name: string; value: string } | undefined> {
+    /**
+     * Whether the host holds a git credential for the Gerrit host. The
+     * credential itself stays in the host; this only decides whether to use
+     * Gerrit's authenticated `/a/` endpoints.
+     */
+    private async canAuthenticate(): Promise<boolean> {
         if (!this.gerritHost || !this.repoRoot) {
-            return undefined;
+            return false;
         }
         const now = Date.now();
-        if (this.authChecked && now - this.lastAuthTime < AUTH_HEADER_TTL.toMilliseconds()) {
-            return this.authHeader;
+        if (this.authChecked && now - this.lastAuthTime < AUTH_CHECK_TTL.toMilliseconds()) {
+            return this.credentialAvailable;
         }
+        if (this.authCheck) {
+            return this.authCheck;
+        }
+        this.authCheck = this.checkCredentials(this.gerritHost).finally(() => {
+            this.authCheck = undefined;
+        });
+        return this.authCheck;
+    }
+
+    private async checkCredentials(gerritHost: string): Promise<boolean> {
         const start = performance.now();
-        this.authChecked = true;
-        this.lastAuthTime = now;
-        this.authHeader = await getGerritAuthHeader(this.gerritHost, this.gitRoot, this.outputChannel);
+        let available = false;
+        try {
+            available = await this.host.http.hasGitCredentials(gerritHost, this.gitRoot ?? undefined);
+        } catch (error: unknown) {
+            this.outputChannel?.warn(`[GerritProvider] Credential check failed: ${toError(error).message}`);
+        }
         const duration = performance.now() - start;
         this.outputChannel?.info(`[timing] [Gerrit] auth resolution took ${duration.toFixed(0)}ms`);
-        return this.authHeader;
+        this.credentialAvailable = available;
+        this.authChecked = true;
+        this.lastAuthTime = Date.now();
+        return available;
     }
 
     private async fetchGerrit(url: string, options?: FetchGerritOptions): Promise<Response> {
-        const auth = await this.getAuthHeader();
+        const authenticated = await this.canAuthenticate();
         let finalUrl = url;
-        const headers = new Headers(options?.headers);
 
-        if (auth) {
-            headers.set(auth.name, auth.value);
+        if (authenticated) {
             // Rewrite /changes/ to /a/changes/ to force Gerrit to authenticate
-            try {
-                const parsedUrl = new URL(url);
-                if (parsedUrl.pathname.startsWith('/changes/') && !parsedUrl.pathname.startsWith('/a/')) {
-                    parsedUrl.pathname = `/a${parsedUrl.pathname}`;
-                    finalUrl = parsedUrl.toString();
-                }
-            } catch {
-                // Handle relative URL (e.g. '/changes/...')
-                if (url.startsWith('/changes/') && !url.startsWith('/a/')) {
-                    finalUrl = `/a${url}`;
-                }
+            const parsedUrl = new URL(url);
+            if (parsedUrl.pathname.startsWith('/changes/') && !parsedUrl.pathname.startsWith('/a/')) {
+                parsedUrl.pathname = `/a${parsedUrl.pathname}`;
+                finalUrl = parsedUrl.toString();
             }
         }
 
-        const timeout = options?.timeoutMs ?? 15000;
-        this.outputChannel?.debug(`[GerritProvider] fetchGerrit: ${finalUrl} (auth: ${!!auth})`);
-        const response = await fetchWithTimeout(finalUrl, timeout, { ...options, headers });
+        this.outputChannel?.debug(`[GerritProvider] fetchGerrit: ${finalUrl} (auth: ${authenticated})`);
+        const response = await this.host.http.fetch(finalUrl, {
+            method: options?.method,
+            headers: options?.headers,
+            body: options?.body,
+            signal: options?.signal,
+            timeoutMs: options?.timeoutMs ?? 15000,
+            auth: { kind: 'git', gitDir: this.gitRoot ?? undefined },
+        });
 
         if (response.status === 401 || response.status === 403) {
             this.outputChannel?.warn(
-                `[GerritProvider] Request to ${finalUrl} failed with status ${response.status}. Invalidating cached auth header.`,
+                `[GerritProvider] Request to ${finalUrl} failed with status ${response.status}. Re-checking credentials on next request.`,
             );
-            this.authHeader = undefined;
+            this.credentialAvailable = false;
             this.authChecked = false;
             this.lastAuthTime = 0;
         }
@@ -536,7 +576,8 @@ export class GerritProvider implements CodeForgeProvider {
             number,
             { draftComments: number; draftResponses: number; addressedThreads: number; hasDraftResponses: boolean }
         >();
-        const newChanges = Array.from(uniqueChanges.values()).filter((c) => c.status === 'NEW');
+        const commentsEnabled = this.host.config.get<boolean>('codeForge.enableComments', true) ?? true;
+        const newChanges = commentsEnabled ? Array.from(uniqueChanges.values()).filter((c) => c.status === 'NEW') : [];
         const DRAFT_FETCH_CONCURRENCY = 4;
         let cursor = 0;
         const worker = async () => {
@@ -571,10 +612,10 @@ export class GerritProvider implements CodeForgeProvider {
                     info.addressedThreads = metrics.addressedThreads;
                     info.hasDraftResponses = metrics.hasDraftResponses;
                 }
-                if (!results.has(change.change_id)) {
+                if (this.shouldPreferChange(results.get(change.change_id), info)) {
                     results.set(change.change_id, info);
                 }
-                if (!results.has(String(change._number))) {
+                if (this.shouldPreferChange(results.get(String(change._number)), info)) {
                     results.set(String(change._number), info);
                 }
 
@@ -586,7 +627,7 @@ export class GerritProvider implements CodeForgeProvider {
                         key === String(change._number) ||
                         (lowerKey.length >= 6 && lowerChangeId.startsWith(lowerKey))
                     ) {
-                        if (!results.has(key)) {
+                        if (this.shouldPreferChange(results.get(key), info)) {
                             results.set(key, info);
                         }
                     }
@@ -622,6 +663,22 @@ export class GerritProvider implements CodeForgeProvider {
         return results;
     }
 
+    private shouldPreferChange(existing: CodeForgeChangeInfo | undefined, candidate: CodeForgeChangeInfo): boolean {
+        if (!existing) {
+            return true;
+        }
+        const priority = (status: CodeForgeChangeInfo['status']): number => {
+            if (status === 'NEW') {
+                return 3;
+            }
+            if (status === 'MERGED') {
+                return 2;
+            }
+            return 1;
+        };
+        return priority(candidate.status) > priority(existing.status);
+    }
+
     private parseBatchResponse(text: string): GerritChange[][] {
         const jsonStr = text.replace(/^\)]}'\r?\n/, '');
         let parsed: unknown;
@@ -652,7 +709,7 @@ export class GerritProvider implements CodeForgeProvider {
 
     private parseGerritChange(change: GerritChange): CodeForgeChangeInfo | undefined {
         const currentRev = change.current_revision;
-        let files: Record<string, { newSha?: string; status?: string }> | undefined;
+        let files: Record<string, { newSha?: string; status?: string; oldPath?: string }> | undefined;
         let remoteDescription: string | undefined;
 
         const rev = currentRev && change.revisions ? change.revisions[currentRev] : undefined;
@@ -663,11 +720,15 @@ export class GerritProvider implements CodeForgeProvider {
                 files = Object.entries(rev.files).reduce(
                     (acc, [path, fileInfo]) => {
                         if (!path.startsWith('/')) {
-                            acc[path] = { newSha: fileInfo.new_sha, status: fileInfo.status };
+                            acc[path] = {
+                                newSha: fileInfo.new_sha,
+                                status: fileInfo.status,
+                                oldPath: fileInfo.old_path,
+                            };
                         }
                         return acc;
                     },
-                    {} as Record<string, { newSha?: string; status?: string }>,
+                    {} as Record<string, { newSha?: string; status?: string; oldPath?: string }>,
                 );
             }
         }
@@ -710,66 +771,38 @@ export class GerritProvider implements CodeForgeProvider {
         }
 
         if (
-            info.remoteDescription &&
-            description &&
+            info.remoteDescription !== undefined &&
+            description !== undefined &&
             stripGerritTrailers(description) !== stripGerritTrailers(info.remoteDescription)
         ) {
             this.setContentSyncCache(syncCacheKey, false);
             return 'checked';
         }
 
-        const gerritFiles = info.files;
-        let getChangesMs = 0;
-        let blobHashesMs = 0;
-        let gerritFileCount = 0;
         const syncStart = performance.now();
 
         try {
-            let localChanges = changes;
-            if (!localChanges) {
-                const changesStart = performance.now();
-                localChanges = await jj.getChanges(commitId);
-                getChangesMs = performance.now() - changesStart;
+            const verified = await verifyLocalContentSync({
+                commitId,
+                description,
+                info,
+                jj,
+                changes,
+                normalizeDescription: stripGerritTrailers,
+            });
+            if (verified !== undefined) {
+                this.setContentSyncCache(syncCacheKey, verified);
             }
-            const localPaths = new Set(localChanges.filter((c) => c.status !== 'deleted').map((c) => c.path));
-
-            const gerritPaths = Object.keys(gerritFiles).filter((p) => gerritFiles[p].status !== 'D');
-            gerritFileCount = gerritPaths.length;
-            const gerritPathSet = new Set(gerritPaths);
-
-            if (localPaths.difference(gerritPathSet).size > 0 || gerritPathSet.difference(localPaths).size > 0) {
-                this.setContentSyncCache(syncCacheKey, false);
-                return 'checked';
-            }
-
-            if (gerritPaths.length > 0) {
-                const hashesStart = performance.now();
-                const localHashes = await jj.getGitBlobHashes(commitId, gerritPaths);
-                blobHashesMs = performance.now() - hashesStart;
-
-                for (const file of gerritPaths) {
-                    const gerritFile = gerritFiles[file];
-                    const localSha = localHashes.get(file);
-
-                    if (!localSha || localSha !== gerritFile.newSha) {
-                        this.setContentSyncCache(syncCacheKey, false);
-                        return 'checked';
-                    }
-                }
-            }
-
-            this.setContentSyncCache(syncCacheKey, true);
             return 'checked';
         } catch (e) {
             this.outputChannel?.error(`[GerritProvider] Content sync verification failed for ${commitId}: ${e}`);
             return 'checked';
         } finally {
             const totalMs = performance.now() - syncStart;
-            if (getChangesMs > 0 || blobHashesMs > 0) {
-                this.outputChannel?.info(
-                    `[timing] [Gerrit] local diff/hashes for ${commitId.slice(0, 8)} took ${totalMs.toFixed(0)}ms (${getChangesMs.toFixed(0)}ms diff, ${blobHashesMs.toFixed(0)}ms ls-tree, ${gerritFileCount} files)`,
-                );
-            }
+            const fileCount = Object.keys(info.files).filter((p) => info.files?.[p]?.status !== 'D').length;
+            this.outputChannel?.info(
+                `[timing] [Gerrit] local diff/hashes for ${commitId.slice(0, 8)} took ${totalMs.toFixed(0)}ms (${fileCount} files)`,
+            );
         }
     }
 
@@ -945,6 +978,9 @@ export class GerritProvider implements CodeForgeProvider {
     }
 
     public async getCommentThreads(changeId: string, signal?: AbortSignal): Promise<CodeForgeCommentThread[]> {
+        if ((this.host.config.get<boolean>('codeForge.enableComments', true) ?? true) === false) {
+            return [];
+        }
         const changeInfo = Array.from(this.cache.values()).find((info) => info.id === changeId);
         if (!changeInfo) {
             return [];
@@ -955,6 +991,30 @@ export class GerritProvider implements CodeForgeProvider {
 
         const commentsMap = await this.fetchMergedCommentsAndDrafts(changeInfo.number, signal);
         const threads: CodeForgeCommentThread[] = [];
+
+        let needsPortedComments = false;
+        for (const commentsList of Object.values(commentsMap)) {
+            const commentIds = new Set(commentsList.map((c) => c.id));
+            for (const c of commentsList) {
+                if (
+                    (!c.in_reply_to || !commentIds.has(c.in_reply_to)) &&
+                    c.line &&
+                    c.commit_id &&
+                    changeInfo.currentRevision &&
+                    c.commit_id !== changeInfo.currentRevision
+                ) {
+                    needsPortedComments = true;
+                    break;
+                }
+            }
+            if (needsPortedComments) {
+                break;
+            }
+        }
+
+        const portedLinesById = needsPortedComments
+            ? await this.fetchPortedCommentLines(changeInfo.number, signal)
+            : undefined;
 
         for (const [filePath, commentsList] of Object.entries(commentsMap)) {
             // Roots: comments that do not have in_reply_to, or whose parent is not in commentsList
@@ -984,6 +1044,7 @@ export class GerritProvider implements CodeForgeProvider {
 
                 const lastComment = threadComments[threadComments.length - 1];
                 const isResolved = !lastComment.unresolved;
+                const portedLine = portedLinesById?.get(root.id);
 
                 threads.push({
                     id: root.id,
@@ -992,6 +1053,11 @@ export class GerritProvider implements CodeForgeProvider {
                     isResolved,
                     metadata: {
                         patchSet: root.patch_set,
+                        ...(root.commit_id ? { commitId: root.commit_id } : {}),
+                        ...(root.line ? { originalLine: root.line } : {}),
+                        ...(root.side ? { side: root.side } : {}),
+                        ...(root.range ? { range: root.range } : {}),
+                        ...(portedLine !== undefined ? { portedLine } : {}),
                     },
                     comments: threadComments.map((c) => ({
                         id: c.id,
@@ -1008,6 +1074,35 @@ export class GerritProvider implements CodeForgeProvider {
         }
 
         return threads;
+    }
+
+    private async fetchPortedCommentLines(changeNumber: number, signal?: AbortSignal): Promise<Map<string, number>> {
+        const result = new Map<string, number>();
+        if (!this.gerritHost) {
+            return result;
+        }
+        try {
+            const url = `${this.gerritHost}/changes/${changeNumber}/revisions/current/ported_comments/`;
+            const response = await this.fetchGerrit(url, { signal });
+            if (!response.ok) {
+                return result;
+            }
+            const text = await response.text();
+            const portedMap = parseGerritJsonResponse<Record<string, GerritCommentGql[]>>(text);
+            for (const list of Object.values(portedMap)) {
+                if (!Array.isArray(list)) {
+                    continue;
+                }
+                for (const item of list) {
+                    if (item.id && typeof item.line === 'number' && item.line > 0) {
+                        result.set(item.id, item.line);
+                    }
+                }
+            }
+        } catch {
+            // Ported comments endpoint is optional; fall back to local git diff
+        }
+        return result;
     }
 
     public async replyToCommentThread(
@@ -1034,10 +1129,14 @@ export class GerritProvider implements CodeForgeProvider {
         const revisionId = patchSet ?? 'current';
         const draftUrl = `${this.gerritHost}/changes/${changeInfo.number}/revisions/${revisionId}/drafts`;
         const filePath = thread.filePath || '/PATCHSET_LEVEL';
+        const isPatchsetLevel = filePath === '/PATCHSET_LEVEL';
+        const rawLine = typeof thread.metadata?.originalLine === 'number' ? thread.metadata.originalLine : thread.line;
         const line =
-            typeof thread.line === 'number' && Number.isSafeInteger(thread.line) && thread.line > 0
-                ? thread.line
+            !isPatchsetLevel && typeof rawLine === 'number' && Number.isSafeInteger(rawLine) && rawLine > 0
+                ? rawLine
                 : undefined;
+        const side = !isPatchsetLevel ? thread.metadata?.side : undefined;
+        const range = !isPatchsetLevel ? thread.metadata?.range : undefined;
 
         const response = await this.fetchGerrit(draftUrl, {
             method: 'PUT',
@@ -1048,6 +1147,8 @@ export class GerritProvider implements CodeForgeProvider {
             body: JSON.stringify({
                 path: filePath,
                 line,
+                ...(side ? { side } : {}),
+                ...(range ? { range } : {}),
                 message: body,
                 in_reply_to: thread.id,
                 unresolved: resolved !== undefined ? !resolved : !thread.isResolved,
@@ -1137,10 +1238,14 @@ export class GerritProvider implements CodeForgeProvider {
         const revisionId = patchSet ?? 'current';
         const draftUrl = `${this.gerritHost}/changes/${changeInfo.number}/revisions/${revisionId}/drafts`;
         const filePath = thread.filePath || '/PATCHSET_LEVEL';
+        const isPatchsetLevel = filePath === '/PATCHSET_LEVEL';
+        const rawLine = typeof thread.metadata?.originalLine === 'number' ? thread.metadata.originalLine : thread.line;
         const line =
-            typeof thread.line === 'number' && Number.isSafeInteger(thread.line) && thread.line > 0
-                ? thread.line
+            !isPatchsetLevel && typeof rawLine === 'number' && Number.isSafeInteger(rawLine) && rawLine > 0
+                ? rawLine
                 : undefined;
+        const side = !isPatchsetLevel ? thread.metadata?.side : undefined;
+        const range = !isPatchsetLevel ? thread.metadata?.range : undefined;
 
         const response = await this.fetchGerrit(draftUrl, {
             method: 'PUT',
@@ -1151,6 +1256,8 @@ export class GerritProvider implements CodeForgeProvider {
             body: JSON.stringify({
                 path: filePath,
                 line,
+                ...(side ? { side } : {}),
+                ...(range ? { range } : {}),
                 message: resolved ? 'Resolved' : 'Unresolved',
                 in_reply_to: thread.id,
                 unresolved: !resolved,
@@ -1185,12 +1292,80 @@ export class GerritProvider implements CodeForgeProvider {
         this._onDidUpdate.fire();
     }
 
+    public normalizeDescription(description: string): string {
+        return stripGerritTrailers(description);
+    }
+
+    public async fetchUploadedRevisionDetails(info: CodeForgeChangeInfo): Promise<UploadedRevisionDetails | undefined> {
+        if (info.files !== undefined) {
+            return {
+                files: info.files,
+                remoteDescription: info.remoteDescription,
+            };
+        }
+        if (!this.gerritHost) {
+            return undefined;
+        }
+        const changeRef = info.number > 0 ? String(info.number) : encodeURIComponent(info.id);
+        const url = `${this.gerritHost}/changes/${changeRef}/?o=CURRENT_REVISION&o=CURRENT_FILES&o=CURRENT_COMMIT`;
+        const response = await this.fetchGerrit(url);
+        if (response.status === 404) {
+            return undefined;
+        }
+        if (!response.ok) {
+            throw new Error(`Gerrit change details request failed with status ${response.status}`);
+        }
+        const rawText = await response.text();
+        const parsedJson = parseGerritJsonResponse<unknown>(rawText);
+        const validation = GerritChangeSchema.safeParse(parsedJson);
+        if (!validation.success) {
+            throw new Error(`Validation failed for Gerrit change details: ${validation.error.message}`);
+        }
+        const parsedInfo = this.parseGerritChange(validation.data);
+        if (!parsedInfo || parsedInfo.files === undefined) {
+            return undefined;
+        }
+        return {
+            files: parsedInfo.files,
+            remoteDescription: parsedInfo.remoteDescription,
+        };
+    }
+
+    public async getUploadedFileContent(request: UploadedFileRequest): Promise<Uint8Array | undefined> {
+        if (!this.gerritHost) {
+            return undefined;
+        }
+        const changeRef =
+            request.changeNumber !== undefined && request.changeNumber > 0
+                ? String(request.changeNumber)
+                : encodeURIComponent(request.changeId);
+        if (!changeRef) {
+            return undefined;
+        }
+        const cleanPath = request.filePath.replace(/^\/+/, '');
+        const cacheKey = `${changeRef}:${request.revisionId}:${cleanPath}`;
+        return this.uploadedFileContentCache.getOrFetch(cacheKey, async () => {
+            const encodedPath = cleanPath === 'COMMIT_MSG' ? '%2FCOMMIT_MSG' : encodeURIComponent(cleanPath);
+            const url = `${this.gerritHost}/changes/${changeRef}/revisions/${encodeURIComponent(request.revisionId)}/files/${encodedPath}/content`;
+            const response = await this.fetchGerrit(url);
+            if (response.status === 404) {
+                return undefined;
+            }
+            if (!response.ok) {
+                throw new Error(`Gerrit file content request failed with status ${response.status}`);
+            }
+            const base64 = await response.text();
+            return decodeBase64ToUint8Array(base64);
+        });
+    }
+
     public clearCache(): void {
         this.cache.clear();
         this.contentSyncCache.clear();
         void this.commentsCache.clear();
         void this.draftsCache.clear();
-        this.authHeader = undefined;
+        void this.uploadedFileContentCache.clear();
+        this.credentialAvailable = false;
         this.authChecked = false;
         this.lastAuthTime = 0;
         this._onDidUpdate.fire();

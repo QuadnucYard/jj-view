@@ -17,35 +17,79 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// Scope represents a configuration scope ("user", "workspace", or "effective").
+// Scope represents a configuration scope.
 type Scope string
 
 const (
-	ScopeUser      Scope = "user"
-	ScopeWorkspace Scope = "workspace"
-	ScopeEffective Scope = "effective"
+	ScopeUser            Scope = "user"
+	ScopeVscodeUser      Scope = "vscode-user"
+	ScopeWorkspace       Scope = "workspace"
+	ScopeVscodeWorkspace Scope = "vscode-workspace"
+	ScopeEffective       Scope = "effective"
 )
 
 // Options configures the Store.
 type Options struct {
-	UserDataDir    string
-	UserConfigPath string
-	RepoRoot       string
-	OnChange       func(key string, scope string)
+	UserDataDir          string
+	UserConfigPath       string
+	VscodeUserConfigPath string
+	RepoRoot             string
+	OnChange             func(key string, scope string)
+}
+
+// ConfigPaths describes the resolved configuration file paths for each layer.
+type ConfigPaths struct {
+	UserPath            string `json:"userPath"`
+	VscodeUserPath      string `json:"vscodeUserPath,omitempty"`
+	WorkspacePath       string `json:"workspacePath,omitempty"`
+	VscodeWorkspacePath string `json:"vscodeWorkspacePath,omitempty"`
+}
+
+// InspectResult describes the value of a key across all configuration layers.
+type InspectResult struct {
+	Key                  string `json:"key"`
+	Found                bool   `json:"found"`
+	EffectiveValue       any    `json:"effectiveValue,omitempty"`
+	EffectiveSource      Scope  `json:"effectiveSource,omitempty"`
+	EffectiveSourcePath  string `json:"effectiveSourcePath,omitempty"`
+	WorkspaceValue       any    `json:"workspaceValue,omitempty"`
+	HasWorkspace         bool   `json:"hasWorkspace"`
+	WorkspacePath        string `json:"workspacePath,omitempty"`
+	VscodeWorkspaceValue any    `json:"vscodeWorkspaceValue,omitempty"`
+	HasVscodeWorkspace   bool   `json:"hasVscodeWorkspace"`
+	VscodeWorkspacePath  string `json:"vscodeWorkspacePath,omitempty"`
+	UserValue            any    `json:"userValue,omitempty"`
+	HasUser              bool   `json:"hasUser"`
+	UserPath             string `json:"userPath"`
+	VscodeUserValue      any    `json:"vscodeUserValue,omitempty"`
+	HasVscodeUser        bool   `json:"hasVscodeUser"`
+	VscodeUserPath       string `json:"vscodeUserPath,omitempty"`
+}
+
+type workspaceEntry struct {
+	root           string
+	standalonePath string
+	vscodePath     string
+	standaloneData map[string]any
+	vscodeData     map[string]any
 }
 
 // Store manages reading and writing user and workspace configuration.
 type Store struct {
-	mu            sync.RWMutex
-	userPath      string
-	repoRoot      string
-	workspacePath string
-	userData      map[string]any
-	workspaceData map[string]any
-	onChange      func(key string, scope string)
+	mu             sync.RWMutex
+	userPath       string
+	vscodeUserPath string
+	repoRoot       string
+	userData       map[string]any
+	vscodeUserData map[string]any
+	workspaces     map[string]*workspaceEntry
+	onChange       func(key string, scope string)
 
-	watcher *fsnotify.Watcher
-	done    chan struct{}
+	watcher     *fsnotify.Watcher
+	watchMu     sync.Mutex
+	watchedDirs map[string]bool
+	watchAddCh  chan string
+	done        chan struct{}
 }
 
 // NewStore initializes a configuration store.
@@ -64,26 +108,30 @@ func NewStore(opts ...Options) (*Store, error) {
 		}
 	}
 
-	var wsPath string
-	if opt.RepoRoot != "" {
-		wsPath = filepath.Join(opt.RepoRoot, ".vscode", "settings.json")
+	vscodeUserPath := opt.VscodeUserConfigPath
+	if vscodeUserPath == "" && opt.UserConfigPath == "" && opt.UserDataDir == "" {
+		vscodeUserPath = DefaultVscodeUserConfigPath()
 	}
 
 	s := &Store{
-		userPath:      userPath,
-		repoRoot:      opt.RepoRoot,
-		workspacePath: wsPath,
-		userData:      make(map[string]any),
-		workspaceData: make(map[string]any),
-		onChange:      opt.OnChange,
-		done:          make(chan struct{}),
+		userPath:       userPath,
+		vscodeUserPath: vscodeUserPath,
+		repoRoot:       opt.RepoRoot,
+		userData:       make(map[string]any),
+		vscodeUserData: make(map[string]any),
+		workspaces:     make(map[string]*workspaceEntry),
+		onChange:       opt.OnChange,
+		watchedDirs:    make(map[string]bool),
+		watchAddCh:     make(chan string, 128),
+		done:           make(chan struct{}),
 	}
 
 	_ = s.loadUser()
-	if s.workspacePath != "" {
-		_ = s.loadWorkspace()
+	if s.repoRoot != "" {
+		s.mu.Lock()
+		_ = s.ensureWorkspaceLoadedLocked(s.repoRoot)
+		s.mu.Unlock()
 	}
-
 	_ = s.initWatcher()
 
 	return s, nil
@@ -111,8 +159,44 @@ func DefaultConfigPath() string {
 	return filepath.Join(configHome, "jj-view", "config.json")
 }
 
-// stripJSONComments removes single-line // and multi-line /* */ comments from JSON data
-// while safely preserving string literals.
+// DefaultVscodeUserConfigPath returns the platform-specific default VS Code User settings.json path.
+func DefaultVscodeUserConfigPath() string {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			return ""
+		}
+		return filepath.Join(appData, "Code", "User", "settings.json")
+	}
+	if runtime.GOOS == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(home, "Library", "Application Support", "Code", "User", "settings.json")
+	}
+
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "Code", "User", "settings.json")
+}
+
+func standaloneWorkspaceConfigPath(workspaceRoot string) string {
+	return filepath.Join(filepath.Clean(workspaceRoot), ".jj-view", "config.json")
+}
+
+func vscodeWorkspaceConfigPath(workspaceRoot string) string {
+	return filepath.Join(filepath.Clean(workspaceRoot), ".vscode", "settings.json")
+}
+
+// stripJSONComments removes single-line // and multi-line /* */ comments as well
+// as trailing commas before } or ] from JSONC data while preserving string literals.
 func stripJSONComments(data []byte) []byte {
 	var buf bytes.Buffer
 	buf.Grow(len(data))
@@ -176,93 +260,336 @@ func stripJSONComments(data []byte) []byte {
 		buf.WriteByte(c)
 	}
 
-	return buf.Bytes()
+	return stripTrailingCommas(buf.Bytes())
+}
+
+func stripTrailingCommas(data []byte) []byte {
+	var out bytes.Buffer
+	out.Grow(len(data))
+
+	inString := false
+	escaped := false
+	n := len(data)
+
+	for i := 0; i < n; i++ {
+		c := data[i]
+		if inString {
+			out.WriteByte(c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			out.WriteByte(c)
+			continue
+		}
+
+		if c == ',' {
+			j := i + 1
+			for j < n && (data[j] == ' ' || data[j] == '\t' || data[j] == '\r' || data[j] == '\n') {
+				j++
+			}
+			if j < n && (data[j] == '}' || data[j] == ']') {
+				continue
+			}
+		}
+
+		out.WriteByte(c)
+	}
+
+	return out.Bytes()
+}
+
+func parseJSONCFile(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return make(map[string]any), nil
+		}
+		return nil, err
+	}
+
+	cleaned := stripJSONComments(raw)
+	var parsed map[string]any
+	if err := json.Unmarshal(cleaned, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed == nil {
+		parsed = make(map[string]any)
+	}
+	return parsed, nil
 }
 
 func (s *Store) loadUser() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	raw, err := os.ReadFile(s.userPath)
+	parsed, err := parseJSONCFile(s.userPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			s.userData = make(map[string]any)
-			return nil
-		}
 		return err
-	}
-
-	cleaned := stripJSONComments(raw)
-	var parsed map[string]any
-	if err := json.Unmarshal(cleaned, &parsed); err != nil {
-		return err
-	}
-	if parsed == nil {
-		parsed = make(map[string]any)
 	}
 	s.userData = parsed
+
+	if s.vscodeUserPath != "" {
+		vsParsed, vsErr := parseJSONCFile(s.vscodeUserPath)
+		if vsErr != nil {
+			vsParsed = make(map[string]any)
+		}
+		s.vscodeUserData = vsParsed
+	}
 	return nil
 }
 
-func (s *Store) loadWorkspace() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Store) effectiveWorkspaceRootLocked(workspaceRoot string) string {
+	if workspaceRoot != "" {
+		return filepath.Clean(workspaceRoot)
+	}
+	if s.repoRoot != "" {
+		return filepath.Clean(s.repoRoot)
+	}
+	return ""
+}
 
-	if s.workspacePath == "" {
+func (s *Store) watchWorkspaceDirLocked(root string) {
+	if s.watcher == nil || root == "" {
+		return
+	}
+	s.enqueueWatch(root)
+	jjViewDir := filepath.Join(root, ".jj-view")
+	if _, err := os.Stat(jjViewDir); err == nil {
+		s.enqueueWatch(jjViewDir)
+	}
+	vscodeDir := filepath.Join(root, ".vscode")
+	if _, err := os.Stat(vscodeDir); err == nil {
+		s.enqueueWatch(vscodeDir)
+	}
+}
+
+func (s *Store) ensureWorkspaceLoadedLocked(workspaceRoot string) *workspaceEntry {
+	root := s.effectiveWorkspaceRootLocked(workspaceRoot)
+	if root == "" {
 		return nil
 	}
 
-	raw, err := os.ReadFile(s.workspacePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			s.workspaceData = make(map[string]any)
-			return nil
-		}
-		return err
+	if existing, ok := s.workspaces[root]; ok {
+		return existing
 	}
 
-	cleaned := stripJSONComments(raw)
-	var parsed map[string]any
-	if err := json.Unmarshal(cleaned, &parsed); err != nil {
-		return err
+	standalonePath := standaloneWorkspaceConfigPath(root)
+	vscodePath := vscodeWorkspaceConfigPath(root)
+
+	standaloneParsed, err := parseJSONCFile(standalonePath)
+	if err != nil {
+		standaloneParsed = make(map[string]any)
 	}
-	if parsed == nil {
-		parsed = make(map[string]any)
+	vscodeParsed, err := parseJSONCFile(vscodePath)
+	if err != nil {
+		vscodeParsed = make(map[string]any)
 	}
-	s.workspaceData = parsed
-	return nil
+
+	entry := &workspaceEntry{
+		root:           root,
+		standalonePath: standalonePath,
+		vscodePath:     vscodePath,
+		standaloneData: standaloneParsed,
+		vscodeData:     vscodeParsed,
+	}
+	s.workspaces[root] = entry
+	s.watchWorkspaceDirLocked(root)
+	return entry
+}
+
+func hasWorkspaceConfigOnDisk(root string) bool {
+	if root == "" {
+		return false
+	}
+	if _, err := os.Stat(standaloneWorkspaceConfigPath(root)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(vscodeWorkspaceConfigPath(root)); err == nil {
+		return true
+	}
+	return false
+}
+
+// WatchWorkspaceRoot registers a workspace root with the config store and sets
+// it as the fallback workspace root if the store does not yet have a workspace
+// with a workspace config file on disk.
+func (s *Store) WatchWorkspaceRoot(workspaceRoot string) {
+	if workspaceRoot == "" {
+		return
+	}
+	cleaned := filepath.Clean(workspaceRoot)
+
+	s.mu.Lock()
+	_, alreadyLoaded := s.workspaces[cleaned]
+	if s.repoRoot == "" || !hasWorkspaceConfigOnDisk(s.repoRoot) {
+		s.repoRoot = cleaned
+	}
+	entry := s.ensureWorkspaceLoadedLocked(cleaned)
+	hasConfig := entry != nil && (len(entry.standaloneData) > 0 || len(entry.vscodeData) > 0)
+	onChange := s.onChange
+	s.mu.Unlock()
+
+	if !alreadyLoaded && hasConfig && onChange != nil {
+		onChange("", string(ScopeWorkspace))
+	}
 }
 
 func normalizeKey(k string) string {
 	return strings.TrimPrefix(k, "jj-view.")
 }
 
-func (s *Store) getWorkspace(key string) (any, bool) {
+func lookupNestedMap(m map[string]any, dottedKey string) (any, bool) {
+	if !strings.Contains(dottedKey, ".") {
+		return nil, false
+	}
+	if val, ok := m[dottedKey]; ok {
+		return val, true
+	}
+	for i := 0; i < len(dottedKey); i++ {
+		if dottedKey[i] == '.' {
+			prefix := dottedKey[:i]
+			rest := dottedKey[i+1:]
+			if subMap, ok := m[prefix].(map[string]any); ok {
+				if val, ok := subMap[rest]; ok {
+					return val, true
+				}
+				if val, found := lookupNestedMap(subMap, rest); found {
+					return val, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func getFromWorkspaceMap(wsData map[string]any, key string) (any, bool) {
+	if len(wsData) == 0 {
+		return nil, false
+	}
 	norm := normalizeKey(key)
-	if val, ok := s.workspaceData["jj-view."+norm]; ok {
+	if val, ok := wsData["jj-view."+norm]; ok {
 		return val, true
 	}
-	if val, ok := s.workspaceData[key]; ok {
+	if val, ok := wsData[key]; ok {
 		return val, true
 	}
-	if val, ok := s.workspaceData[norm]; ok {
+	if val, ok := wsData[norm]; ok {
+		return val, true
+	}
+	if val, ok := lookupNestedMap(wsData, "jj-view."+norm); ok {
+		return val, true
+	}
+	if val, ok := lookupNestedMap(wsData, norm); ok {
 		return val, true
 	}
 	return nil, false
 }
 
-func (s *Store) getUser(key string) (any, bool) {
+func getFromWorkspaceEntry(entry *workspaceEntry, key string) (any, bool) {
+	if entry == nil {
+		return nil, false
+	}
 	norm := normalizeKey(key)
-	if val, ok := s.userData[norm]; ok {
+	if norm == "codeForge.adapterCommand" {
+		return nil, false
+	}
+	// 1. Standalone .jj-view/config.json has highest precedence
+	if val, ok := getFromWorkspaceMap(entry.standaloneData, key); ok {
 		return val, true
 	}
-	if val, ok := s.userData["jj-view."+norm]; ok {
-		return val, true
+	// 2. Fallback to .vscode/settings.json
+	return getFromWorkspaceMap(entry.vscodeData, key)
+}
+
+func (s *Store) getUser(key string) (any, bool) {
+	return getFromWorkspaceMap(s.userData, key)
+}
+
+func (s *Store) getVscodeUser(key string) (any, bool) {
+	return getFromWorkspaceMap(s.vscodeUserData, key)
+}
+
+// PathsForWorkspace returns the configuration file paths for each layer.
+func (s *Store) PathsForWorkspace(workspaceRoot string) ConfigPaths {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	paths := ConfigPaths{
+		UserPath:       s.userPath,
+		VscodeUserPath: s.vscodeUserPath,
 	}
-	if val, ok := s.userData[key]; ok {
-		return val, true
+	if entry := s.ensureWorkspaceLoadedLocked(workspaceRoot); entry != nil {
+		paths.WorkspacePath = entry.standalonePath
+		paths.VscodeWorkspacePath = entry.vscodePath
 	}
-	return nil, false
+	return paths
+}
+
+// InspectForWorkspace returns the value and provenance of a configuration key across all layers.
+func (s *Store) InspectForWorkspace(key string, workspaceRoot string) InspectResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+	norm := normalizeKey(key)
+	res := InspectResult{
+		Key:            "jj-view." + norm,
+		UserPath:       s.userPath,
+		VscodeUserPath: s.vscodeUserPath,
+	}
+	if entry != nil && norm != "codeForge.adapterCommand" {
+		res.WorkspacePath = entry.standalonePath
+		res.VscodeWorkspacePath = entry.vscodePath
+		if val, ok := getFromWorkspaceMap(entry.standaloneData, key); ok {
+			res.WorkspaceValue = val
+			res.HasWorkspace = true
+		}
+		if val, ok := getFromWorkspaceMap(entry.vscodeData, key); ok {
+			res.VscodeWorkspaceValue = val
+			res.HasVscodeWorkspace = true
+		}
+	}
+	if val, ok := s.getUser(key); ok {
+		res.UserValue = val
+		res.HasUser = true
+	}
+	if val, ok := s.getVscodeUser(key); ok {
+		res.VscodeUserValue = val
+		res.HasVscodeUser = true
+	}
+
+	switch {
+	case res.HasWorkspace:
+		res.Found = true
+		res.EffectiveValue = res.WorkspaceValue
+		res.EffectiveSource = ScopeWorkspace
+		res.EffectiveSourcePath = res.WorkspacePath
+	case res.HasVscodeWorkspace:
+		res.Found = true
+		res.EffectiveValue = res.VscodeWorkspaceValue
+		res.EffectiveSource = ScopeVscodeWorkspace
+		res.EffectiveSourcePath = res.VscodeWorkspacePath
+	case res.HasUser:
+		res.Found = true
+		res.EffectiveValue = res.UserValue
+		res.EffectiveSource = ScopeUser
+		res.EffectiveSourcePath = res.UserPath
+	case res.HasVscodeUser:
+		res.Found = true
+		res.EffectiveValue = res.VscodeUserValue
+		res.EffectiveSource = ScopeVscodeUser
+		res.EffectiveSourcePath = res.VscodeUserPath
+	}
+	return res
 }
 
 // Get returns the effective configuration value for key.
@@ -272,19 +599,46 @@ func (s *Store) Get(key string) (any, bool) {
 
 // GetScoped returns the value for key within a specific scope.
 func (s *Store) GetScoped(scope string, key string) (any, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	return s.GetScopedForWorkspace(scope, key, "")
+}
+
+// GetScopedForWorkspace returns the value for key within a specific scope and workspace root.
+func (s *Store) GetScopedForWorkspace(scope string, key string, workspaceRoot string) (any, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	switch Scope(scope) {
 	case ScopeWorkspace:
-		return s.getWorkspace(key)
+		if normalizeKey(key) == "codeForge.adapterCommand" {
+			return nil, false
+		}
+		entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+		if entry == nil {
+			return nil, false
+		}
+		return getFromWorkspaceMap(entry.standaloneData, key)
+	case ScopeVscodeWorkspace:
+		if normalizeKey(key) == "codeForge.adapterCommand" {
+			return nil, false
+		}
+		entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+		if entry == nil {
+			return nil, false
+		}
+		return getFromWorkspaceMap(entry.vscodeData, key)
 	case ScopeUser:
 		return s.getUser(key)
+	case ScopeVscodeUser:
+		return s.getVscodeUser(key)
 	default: // ScopeEffective
-		if val, ok := s.getWorkspace(key); ok {
+		entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+		if val, ok := getFromWorkspaceEntry(entry, key); ok {
 			return val, true
 		}
-		return s.getUser(key)
+		if val, ok := s.getUser(key); ok {
+			return val, true
+		}
+		return s.getVscodeUser(key)
 	}
 }
 
@@ -295,56 +649,161 @@ func (s *Store) GetAll() map[string]any {
 
 // GetAllScoped returns configuration keys and values for a specific scope.
 func (s *Store) GetAllScoped(scope string) map[string]any {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	return s.GetAllScopedForWorkspace(scope, "")
+}
+
+func flattenNestedKeys(prefix string, src map[string]any, emit func(key string, val any)) {
+	for k, v := range src {
+		fullKey := k
+		if prefix != "" {
+			fullKey = prefix + "." + k
+		}
+		if subMap, ok := v.(map[string]any); ok {
+			flattenNestedKeys(fullKey, subMap, emit)
+		}
+		emit(fullKey, v)
+	}
+}
+
+func (s *Store) mergeVscodeMapIntoLocked(dst map[string]any, src map[string]any) {
+	flattenNestedKeys("", src, func(k string, _ any) {
+		if strings.HasPrefix(k, "jj-view.") || s.isJjViewKeyLocked(k) {
+			norm := normalizeKey(k)
+			if val, ok := getFromWorkspaceMap(src, norm); ok {
+				dst[k] = val
+				dst[norm] = val
+				dst["jj-view."+norm] = val
+			}
+		}
+	})
+}
+
+func mergeStandaloneMapInto(dst map[string]any, src map[string]any) {
+	flattenNestedKeys("", src, func(k string, _ any) {
+		norm := normalizeKey(k)
+		if val, ok := getFromWorkspaceMap(src, norm); ok {
+			dst[k] = val
+			dst[norm] = val
+			dst["jj-view."+norm] = val
+		}
+	})
+}
+
+func stripAdapterCommand(m map[string]any) {
+	if m == nil {
+		return
+	}
+	delete(m, "codeForge.adapterCommand")
+	delete(m, "jj-view.codeForge.adapterCommand")
+	for _, topKey := range []string{"codeForge", "jj-view.codeForge"} {
+		if cf, ok := m[topKey].(map[string]any); ok {
+			if _, has := cf["adapterCommand"]; has {
+				cloned := make(map[string]any, len(cf))
+				for k, v := range cf {
+					if k != "adapterCommand" {
+						cloned[k] = v
+					}
+				}
+				if len(cloned) == 0 {
+					delete(m, topKey)
+				} else {
+					m[topKey] = cloned
+				}
+			}
+		}
+	}
+	if jj, ok := m["jj-view"].(map[string]any); ok {
+		if cf, ok := jj["codeForge"].(map[string]any); ok {
+			if _, has := cf["adapterCommand"]; has {
+				clonedJj := make(map[string]any, len(jj))
+				for k, v := range jj {
+					clonedJj[k] = v
+				}
+				clonedCf := make(map[string]any, len(cf))
+				for k, v := range cf {
+					if k != "adapterCommand" {
+						clonedCf[k] = v
+					}
+				}
+				if len(clonedCf) == 0 {
+					delete(clonedJj, "codeForge")
+				} else {
+					clonedJj["codeForge"] = clonedCf
+				}
+				if len(clonedJj) == 0 {
+					delete(m, "jj-view")
+				} else {
+					m["jj-view"] = clonedJj
+				}
+			}
+		}
+	}
+}
+
+func (s *Store) mergeWorkspaceEntryIntoLocked(dst map[string]any, entry *workspaceEntry) {
+	if entry == nil {
+		return
+	}
+	ws := make(map[string]any)
+	// 1. Lower priority within workspace: .vscode/settings.json (filtered to jj-view keys)
+	s.mergeVscodeMapIntoLocked(ws, entry.vscodeData)
+	// 2. Higher priority within workspace: .jj-view/config.json (all keys belong to jj-view)
+	mergeStandaloneMapInto(ws, entry.standaloneData)
+	stripAdapterCommand(ws)
+	for k, v := range ws {
+		dst[k] = v
+	}
+}
+
+// GetAllScopedForWorkspace returns configuration keys and values for a specific scope and workspace root.
+func (s *Store) GetAllScopedForWorkspace(scope string, workspaceRoot string) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	switch Scope(scope) {
 	case ScopeUser:
 		res := make(map[string]any, len(s.userData)*2)
-		for k, v := range s.userData {
-			res[k] = v
-			norm := normalizeKey(k)
-			res[norm] = v
-			res["jj-view."+norm] = v
-		}
+		mergeStandaloneMapInto(res, s.userData)
+		return res
+
+	case ScopeVscodeUser:
+		res := make(map[string]any)
+		s.mergeVscodeMapIntoLocked(res, s.vscodeUserData)
 		return res
 
 	case ScopeWorkspace:
-		res := make(map[string]any, len(s.workspaceData)*2)
-		for k, v := range s.workspaceData {
-			if strings.HasPrefix(k, "jj-view.") || s.isJjViewKeyLocked(k) {
-				res[k] = v
-				norm := normalizeKey(k)
-				res[norm] = v
-				res["jj-view."+norm] = v
-			}
+		entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+		res := make(map[string]any)
+		if entry != nil {
+			mergeStandaloneMapInto(res, entry.standaloneData)
+			stripAdapterCommand(res)
+		}
+		return res
+
+	case ScopeVscodeWorkspace:
+		entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+		res := make(map[string]any)
+		if entry != nil {
+			s.mergeVscodeMapIntoLocked(res, entry.vscodeData)
+			stripAdapterCommand(res)
 		}
 		return res
 
 	default: // ScopeEffective
 		res := make(map[string]any)
-		// 1. User config values first
-		for k, v := range s.userData {
-			res[k] = v
-			norm := normalizeKey(k)
-			res[norm] = v
-			res["jj-view."+norm] = v
-		}
-		// 2. Workspace config values override user config
-		for k, v := range s.workspaceData {
-			if strings.HasPrefix(k, "jj-view.") || s.isJjViewKeyLocked(k) {
-				res[k] = v
-				norm := normalizeKey(k)
-				res[norm] = v
-				res["jj-view."+norm] = v
-			}
-		}
+		// 1. VS Code user config (lowest priority)
+		s.mergeVscodeMapIntoLocked(res, s.vscodeUserData)
+		// 2. Standalone jj-view user config
+		mergeStandaloneMapInto(res, s.userData)
+		// 3. Workspace config (.vscode/settings.json then .jj-view/config.json)
+		entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+		s.mergeWorkspaceEntryIntoLocked(res, entry)
 		return res
 	}
 }
 
 func (s *Store) isJjViewKeyLocked(k string) bool {
-	if strings.HasPrefix(k, "jj-view.") || strings.HasPrefix(k, "appearance.") || strings.HasPrefix(k, "diff.") {
+	if strings.HasPrefix(k, "jj-view.") || strings.HasPrefix(k, "appearance.") || strings.HasPrefix(k, "diff.") || strings.HasPrefix(k, "codeForge.") {
 		return true
 	}
 	norm := normalizeKey(k)
@@ -359,14 +818,24 @@ func (s *Store) Set(key string, val any) error {
 
 // SetScoped sets or deletes a key-value pair within a specific scope and persists it.
 func (s *Store) SetScoped(scope string, key string, val any) error {
+	return s.SetScopedForWorkspace(scope, key, val, "")
+}
+
+// SetScopedForWorkspace sets or deletes a key-value pair within a specific scope and workspace root.
+func (s *Store) SetScopedForWorkspace(scope string, key string, val any, workspaceRoot string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	norm := normalizeKey(key)
 	sc := Scope(scope)
 
+	if (sc == ScopeWorkspace || sc == ScopeVscodeWorkspace) && norm == "codeForge.adapterCommand" {
+		return fmt.Errorf("setting %q is not allowed in workspace scope", key)
+	}
+
 	if sc == ScopeWorkspace {
-		if s.workspacePath == "" {
+		entry := s.ensureWorkspaceLoadedLocked(workspaceRoot)
+		if entry == nil || entry.standalonePath == "" {
 			return fmt.Errorf("no workspace or repository root configured")
 		}
 		wsKey := key
@@ -374,16 +843,38 @@ func (s *Store) SetScoped(scope string, key string, val any) error {
 			wsKey = "jj-view." + norm
 		}
 		if val == nil {
-			delete(s.workspaceData, wsKey)
-			delete(s.workspaceData, key)
-			delete(s.workspaceData, norm)
-			delete(s.workspaceData, "jj-view."+norm)
+			delete(entry.standaloneData, wsKey)
+			delete(entry.standaloneData, key)
+			delete(entry.standaloneData, norm)
+			delete(entry.standaloneData, "jj-view."+norm)
+			if _, err := os.Stat(entry.standalonePath); err == nil {
+				if err := s.saveStandaloneWorkspaceLocked(entry); err != nil {
+					return err
+				}
+			}
+			// If the key also existed in .vscode/settings.json, remove it there too so resetting works cleanly.
+			_, hadWsKey := entry.vscodeData[wsKey]
+			_, hadKey := entry.vscodeData[key]
+			_, hadNorm := entry.vscodeData[norm]
+			_, hadPref := entry.vscodeData["jj-view."+norm]
+			if hadWsKey || hadKey || hadNorm || hadPref {
+				delete(entry.vscodeData, wsKey)
+				delete(entry.vscodeData, key)
+				delete(entry.vscodeData, norm)
+				delete(entry.vscodeData, "jj-view."+norm)
+				if _, err := os.Stat(entry.vscodePath); err == nil {
+					if err := s.saveVscodeWorkspaceLocked(entry); err != nil {
+						return err
+					}
+				}
+			}
 		} else {
-			s.workspaceData[wsKey] = val
-			s.workspaceData[norm] = val
-		}
-		if err := s.saveWorkspaceLocked(); err != nil {
-			return err
+			entry.standaloneData[wsKey] = val
+			entry.standaloneData[norm] = val
+			entry.standaloneData["jj-view."+norm] = val
+			if err := s.saveStandaloneWorkspaceLocked(entry); err != nil {
+				return err
+			}
 		}
 		if s.onChange != nil {
 			go s.onChange(norm, string(ScopeWorkspace))
@@ -404,9 +895,8 @@ func (s *Store) SetScoped(scope string, key string, val any) error {
 	} else {
 		s.userData[key] = val
 		s.userData[norm] = val
-		if userKey != key {
-			s.userData[userKey] = val
-		}
+		s.userData[userKey] = val
+		s.userData["jj-view."+norm] = val
 	}
 	if err := s.saveUserLocked(); err != nil {
 		return err
@@ -423,7 +913,17 @@ func (s *Store) saveUserLocked() error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	raw, err := json.MarshalIndent(s.userData, "", "  ")
+	fileData := make(map[string]any, len(s.userData))
+	for k, v := range s.userData {
+		if !strings.HasPrefix(k, "jj-view.") {
+			if _, hasPrefixed := s.userData["jj-view."+k]; hasPrefixed {
+				continue
+			}
+		}
+		fileData[k] = v
+	}
+
+	raw, err := json.MarshalIndent(fileData, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -436,34 +936,20 @@ func (s *Store) saveUserLocked() error {
 	return os.Rename(tmpFile, s.userPath)
 }
 
-func (s *Store) saveWorkspaceLocked() error {
-	dir := filepath.Dir(s.workspacePath)
+func (s *Store) saveStandaloneWorkspaceLocked(entry *workspaceEntry) error {
+	dir := filepath.Dir(entry.standalonePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create .vscode directory: %w", err)
+		return fmt.Errorf("failed to create .jj-view directory: %w", err)
 	}
+	s.enqueueWatch(dir)
 
-	var fileData map[string]any
-	raw, err := os.ReadFile(s.workspacePath)
-	if err == nil {
-		_ = json.Unmarshal(stripJSONComments(raw), &fileData)
-	}
-	if fileData == nil {
-		fileData = make(map[string]any)
-	}
-
-	// Remove deleted managed keys
-	for k := range fileData {
-		if strings.HasPrefix(k, "jj-view.") || strings.HasPrefix(k, "appearance.") || strings.HasPrefix(k, "diff.") {
-			if _, ok := s.workspaceData[k]; !ok {
-				norm := normalizeKey(k)
-				if _, ok2 := s.workspaceData[norm]; !ok2 {
-					delete(fileData, k)
-				}
+	fileData := make(map[string]any)
+	for k, v := range entry.standaloneData {
+		if !strings.Contains(k, ".") {
+			if _, hasPrefixed := entry.standaloneData["jj-view."+k]; hasPrefixed {
+				continue
 			}
 		}
-	}
-	// Copy active workspace keys
-	for k, v := range s.workspaceData {
 		fileData[k] = v
 	}
 
@@ -473,11 +959,124 @@ func (s *Store) saveWorkspaceLocked() error {
 	}
 	marshaled = append(marshaled, '\n')
 
-	tmpFile := s.workspacePath + ".tmp"
+	tmpFile := entry.standalonePath + ".tmp"
 	if err := os.WriteFile(tmpFile, marshaled, 0644); err != nil {
 		return err
 	}
-	return os.Rename(tmpFile, s.workspacePath)
+	return os.Rename(tmpFile, entry.standalonePath)
+}
+
+func (s *Store) saveVscodeWorkspaceLocked(entry *workspaceEntry) error {
+	dir := filepath.Dir(entry.vscodePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create .vscode directory: %w", err)
+	}
+	s.enqueueWatch(dir)
+
+	fileData, _ := parseJSONCFile(entry.vscodePath)
+	if fileData == nil {
+		fileData = make(map[string]any)
+	}
+
+	// Remove deleted managed keys
+	for k := range fileData {
+		if strings.HasPrefix(k, "jj-view.") || strings.HasPrefix(k, "appearance.") || strings.HasPrefix(k, "diff.") {
+			if _, ok := entry.vscodeData[k]; !ok {
+				norm := normalizeKey(k)
+				if _, ok2 := entry.vscodeData[norm]; !ok2 {
+					delete(fileData, k)
+				}
+			}
+		}
+	}
+	// Copy active workspace keys (preferring jj-view. prefixed keys so .vscode/settings.json stays clean)
+	for k, v := range entry.vscodeData {
+		if !strings.Contains(k, ".") {
+			if _, hasPrefixed := entry.vscodeData["jj-view."+k]; hasPrefixed {
+				continue
+			}
+		}
+		fileData[k] = v
+	}
+
+	marshaled, err := json.MarshalIndent(fileData, "", "  ")
+	if err != nil {
+		return err
+	}
+	marshaled = append(marshaled, '\n')
+
+	tmpFile := entry.vscodePath + ".tmp"
+	if err := os.WriteFile(tmpFile, marshaled, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, entry.vscodePath)
+}
+
+func (s *Store) addWatchSync(dir string) {
+	if s.watcher == nil || dir == "" {
+		return
+	}
+	cleaned := filepath.Clean(dir)
+	s.watchMu.Lock()
+	if s.watchedDirs[cleaned] {
+		s.watchMu.Unlock()
+		return
+	}
+	s.watchedDirs[cleaned] = true
+	s.watchMu.Unlock()
+
+	if err := s.watcher.Add(cleaned); err != nil {
+		s.watchMu.Lock()
+		delete(s.watchedDirs, cleaned)
+		s.watchMu.Unlock()
+	}
+}
+
+func (s *Store) enqueueWatch(dirs ...string) {
+	if s.watcher == nil {
+		return
+	}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		cleaned := filepath.Clean(dir)
+		s.watchMu.Lock()
+		if s.watchedDirs[cleaned] {
+			s.watchMu.Unlock()
+			continue
+		}
+		s.watchedDirs[cleaned] = true
+		s.watchMu.Unlock()
+
+		select {
+		case s.watchAddCh <- cleaned:
+		case <-s.done:
+			return
+		default:
+			go func(d string) {
+				select {
+				case s.watchAddCh <- d:
+				case <-s.done:
+				}
+			}(cleaned)
+		}
+	}
+}
+
+func (s *Store) watchAddLoop() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case dir := <-s.watchAddCh:
+			if err := s.watcher.Add(dir); err != nil {
+				s.watchMu.Lock()
+				delete(s.watchedDirs, dir)
+				s.watchMu.Unlock()
+			}
+		}
+	}
 }
 
 func (s *Store) initWatcher() error {
@@ -489,26 +1088,44 @@ func (s *Store) initWatcher() error {
 
 	userDir := filepath.Dir(s.userPath)
 	_ = os.MkdirAll(userDir, 0700)
-	_ = s.watcher.Add(userDir)
+	s.addWatchSync(userDir)
 
-	if s.repoRoot != "" {
-		vscodeDir := filepath.Join(s.repoRoot, ".vscode")
+	if s.vscodeUserPath != "" {
+		vsUserDir := filepath.Dir(s.vscodeUserPath)
+		if _, err := os.Stat(vsUserDir); err == nil {
+			s.addWatchSync(vsUserDir)
+		}
+	}
+
+	s.mu.RLock()
+	roots := make([]string, 0, len(s.workspaces))
+	for root := range s.workspaces {
+		roots = append(roots, root)
+	}
+	s.mu.RUnlock()
+
+	for _, root := range roots {
+		s.addWatchSync(root)
+		jjViewDir := filepath.Join(root, ".jj-view")
+		if _, err := os.Stat(jjViewDir); err == nil {
+			s.addWatchSync(jjViewDir)
+		}
+		vscodeDir := filepath.Join(root, ".vscode")
 		if _, err := os.Stat(vscodeDir); err == nil {
-			_ = s.watcher.Add(vscodeDir)
-		} else {
-			_ = s.watcher.Add(s.repoRoot)
+			s.addWatchSync(vscodeDir)
 		}
 	}
 
 	go s.watchLoop()
+	go s.watchAddLoop()
 	return nil
 }
 
 func (s *Store) watchLoop() {
 	userBase := filepath.Base(s.userPath)
-	var wsBase string
-	if s.workspacePath != "" {
-		wsBase = filepath.Base(s.workspacePath)
+	vsUserBase := ""
+	if s.vscodeUserPath != "" {
+		vsUserBase = filepath.Base(s.vscodeUserPath)
 	}
 
 	for {
@@ -520,18 +1137,25 @@ func (s *Store) watchLoop() {
 				return
 			}
 
-			// If .vscode was created in repoRoot, add it to watcher
-			if s.repoRoot != "" && filepath.Base(event.Name) == ".vscode" && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
-				vscodeDir := filepath.Join(s.repoRoot, ".vscode")
-				_ = s.watcher.Add(vscodeDir)
+			base := filepath.Base(event.Name)
+			cleanedEvent := filepath.Clean(event.Name)
+			// If .jj-view or .vscode was created in any watched workspace root, watch it too
+			if (base == ".jj-view" || base == ".vscode") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
+				s.enqueueWatch(event.Name)
 			}
 
-			if filepath.Base(event.Name) == userBase {
+			if base == userBase && cleanedEvent == filepath.Clean(s.userPath) {
 				s.handleUserFileEvent()
+				continue
 			}
 
-			if wsBase != "" && filepath.Base(event.Name) == wsBase {
-				s.handleWorkspaceFileEvent()
+			if vsUserBase != "" && base == vsUserBase && cleanedEvent == filepath.Clean(s.vscodeUserPath) {
+				s.handleVscodeUserFileEvent()
+				continue
+			}
+
+			if base == "config.json" || base == "settings.json" {
+				s.handleWorkspaceFileEvent(cleanedEvent)
 			}
 
 		case _, ok := <-s.watcher.Errors:
@@ -547,12 +1171,8 @@ func (s *Store) handleUserFileEvent() {
 	oldData := s.userData
 	s.mu.RUnlock()
 
-	raw, err := os.ReadFile(s.userPath)
-	var newData map[string]any
-	if err == nil {
-		_ = json.Unmarshal(stripJSONComments(raw), &newData)
-	}
-	if newData == nil {
+	newData, err := parseJSONCFile(s.userPath)
+	if err != nil {
 		newData = make(map[string]any)
 	}
 
@@ -565,25 +1185,17 @@ func (s *Store) handleUserFileEvent() {
 	s.mu.Unlock()
 
 	if s.onChange != nil {
-		s.onChange("", string(ScopeUser))
+		go s.onChange("", string(ScopeUser))
 	}
 }
 
-func (s *Store) handleWorkspaceFileEvent() {
-	if s.workspacePath == "" {
-		return
-	}
-
+func (s *Store) handleVscodeUserFileEvent() {
 	s.mu.RLock()
-	oldData := s.workspaceData
+	oldData := s.vscodeUserData
 	s.mu.RUnlock()
 
-	raw, err := os.ReadFile(s.workspacePath)
-	var newData map[string]any
-	if err == nil {
-		_ = json.Unmarshal(stripJSONComments(raw), &newData)
-	}
-	if newData == nil {
+	newData, err := parseJSONCFile(s.vscodeUserPath)
+	if err != nil {
 		newData = make(map[string]any)
 	}
 
@@ -592,11 +1204,39 @@ func (s *Store) handleWorkspaceFileEvent() {
 		s.mu.Unlock()
 		return
 	}
-	s.workspaceData = newData
+	s.vscodeUserData = newData
 	s.mu.Unlock()
 
 	if s.onChange != nil {
-		s.onChange("", string(ScopeWorkspace))
+		go s.onChange("", string(ScopeVscodeUser))
+	}
+}
+
+func (s *Store) handleWorkspaceFileEvent(changedPath string) {
+	newData, err := parseJSONCFile(changedPath)
+	if err != nil {
+		newData = make(map[string]any)
+	}
+
+	changed := false
+	s.mu.Lock()
+	for _, entry := range s.workspaces {
+		if filepath.Clean(entry.standalonePath) == changedPath {
+			if !reflect.DeepEqual(entry.standaloneData, newData) {
+				entry.standaloneData = newData
+				changed = true
+			}
+		} else if filepath.Clean(entry.vscodePath) == changedPath {
+			if !reflect.DeepEqual(entry.vscodeData, newData) {
+				entry.vscodeData = newData
+				changed = true
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	if changed && s.onChange != nil {
+		go s.onChange("", string(ScopeWorkspace))
 	}
 }
 

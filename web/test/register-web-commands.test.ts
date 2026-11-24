@@ -4,21 +4,32 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { MANUAL_REFRESH_REASON } from '../../src/core/code-forge-service';
+import type { LogViewController } from '../../src/core/controllers/log-view-controller';
 import type { HostFs } from '../../src/core/host/host-system';
 import type { RemoteHostSystem } from '../../src/core/host/remote-host-system';
 import type { JjRepository } from '../../src/core/jj-repository';
 import type { JjRepositoryManager } from '../../src/core/jj-repository-manager';
-import type { JjService } from '../../src/core/jj-service';
+import { JjService, NO_OP_LOGGER } from '../../src/core/jj-service';
 import type { ScmModel } from '../../src/core/scm-model';
 import { Uri } from '../../src/core/uri-utils';
+import { buildGraph, TestRepo } from '../../src/test/test-repo';
 import type { LoggerChannel } from '../../src/utils/output-channel';
+import { createShowDetailsPayload } from '../src/commands/payloads/details.payload';
+import { createRemoteFileUrlPayload } from '../src/commands/payloads/remote-file-url.payload';
+import { createRestoreFileFromRevisionPayload } from '../src/commands/payloads/restore-file-from-revision.payload';
+import { createSimplifyParentsPayload } from '../src/commands/payloads/simplify-parents.payload';
+import { createSplitFilesPayload } from '../src/commands/payloads/split-files.payload';
+import { createSquashRevisionIntoParentPayload } from '../src/commands/payloads/squash-revision.payload';
 import { createSquashSelectionIntoParentPayload } from '../src/commands/payloads/squash-selection.payload';
+import { createToggleDiffEditablePayload } from '../src/commands/payloads/toggle-diff-editable.payload';
 import { registerWebCommands } from '../src/commands/register-web-commands';
 import { WebHostEnvironment } from '../src/host/web-host-environment';
+import { DEFAULT_PACKAGE_JSON_CONTRIBUTES } from '../src/menu/default-menus';
 import { createMock } from './test-mock';
 
 describe('registerWebCommands', () => {
-    function setupTestEnvironment() {
+    function setupTestEnvironment(options?: { logViewController?: LogViewController }) {
         const openedCommitDetails: string[] = [];
         const mockRemoteHost = createMock<RemoteHostSystem>({
             fs: createMock<HostFs>({
@@ -26,6 +37,18 @@ describe('registerWebCommands', () => {
                 writeTextFile: vi.fn(),
             }),
             platform: 'linux',
+            checkUpdate: vi.fn(async () => ({
+                currentVersion: '3.0.0',
+                latestVersion: '3.1.0',
+                canSelfUpdate: true,
+                updateAvailable: true,
+            })),
+            applyUpdate: vi.fn(async () => ({
+                previousVersion: '3.0.0',
+                updatedVersion: '3.1.0',
+                binaryPath: '/tmp/jj-view',
+                restarting: true,
+            })),
         });
 
         const hostEnvironment = new WebHostEnvironment(mockRemoteHost, '/test/workspace', {
@@ -126,10 +149,12 @@ describe('registerWebCommands', () => {
             hostEnvironment,
             logger: mockLogger,
             scmModel: mockScmModel,
+            logViewController: options?.logViewController,
         });
 
         return {
             hostEnvironment,
+            mockRemoteHost,
             mockRepo,
             mockScmModel,
             mockJj,
@@ -151,10 +176,23 @@ describe('registerWebCommands', () => {
             'jj-view.refresh',
             'jj-view.refreshGraph',
             'jj-view.abandon',
+            'jj-view.simplifyParents',
             'jj-view.restore',
+            'jj-view.restoreFileFrom',
             'jj-view.absorb',
+            'jj-view.squashRevisionIntoParent',
+            'jj-view.squashRevisionIntoParentKeepMessage',
+            'jj-view.squashRevisionIntoAncestor',
+            'jj-view.squashRevisionIntoAncestorKeepMessage',
+            'jj-view.splitFilesBefore',
+            'jj-view.splitFilesAfter',
             'jj-view.showDetails',
             'jj-view.openChanges',
+            'jj-view.sync',
+            'jj-view.prev',
+            'jj-view.next',
+            'jj-view.checkForUpdates',
+            'jj-view.installUpdate',
         ];
 
         for (const cmd of commands) {
@@ -162,11 +200,54 @@ describe('registerWebCommands', () => {
         }
     });
 
-    it('executes jj-view.refresh through commands.executeCommand', async () => {
+    it('delegates jj-view.checkForUpdates and jj-view.installUpdate to host system', async () => {
+        const { hostEnvironment, mockRemoteHost } = setupTestEnvironment();
+
+        const checkRes = await hostEnvironment.commands.executeCommand('jj-view.checkForUpdates');
+        expect(mockRemoteHost.checkUpdate).toHaveBeenCalledWith({ force: true });
+        expect(checkRes).toEqual({
+            currentVersion: '3.0.0',
+            latestVersion: '3.1.0',
+            canSelfUpdate: true,
+            updateAvailable: true,
+        });
+
+        const applyRes = await hostEnvironment.commands.executeCommand('jj-view.installUpdate');
+        expect(mockRemoteHost.applyUpdate).toHaveBeenCalled();
+        expect(applyRes).toEqual({
+            previousVersion: '3.0.0',
+            updatedVersion: '3.1.0',
+            binaryPath: '/tmp/jj-view',
+            restarting: true,
+        });
+    });
+
+    it('executes jj-view.refresh through commands.executeCommand without duplicate un-reasoned refresh', async () => {
         const { hostEnvironment, mockRepo } = setupTestEnvironment();
 
         await hostEnvironment.commands.executeCommand('jj-view.refresh');
-        expect(mockRepo.refresh).toHaveBeenCalled();
+        expect(mockRepo.refresh).toHaveBeenCalledTimes(1);
+        expect(mockRepo.refresh).toHaveBeenCalledWith({ reason: MANUAL_REFRESH_REASON, forceSnapshot: true });
+    });
+
+    it('executes jj-view.refreshGraph via logViewController without trailing un-reasoned repo.refresh', async () => {
+        const logViewController = createMock<LogViewController>({
+            refresh: vi.fn(async () => {}),
+        });
+        const { hostEnvironment, mockRepo } = setupTestEnvironment({ logViewController });
+
+        await hostEnvironment.commands.executeCommand('jj-view.refreshGraph');
+        expect(logViewController.refresh).toHaveBeenCalledTimes(1);
+        expect(logViewController.refresh).toHaveBeenCalledWith(MANUAL_REFRESH_REASON);
+        expect(mockRepo.refresh).not.toHaveBeenCalled();
+    });
+
+    it('executes jj-view.refreshGraph fallback with MANUAL_REFRESH_REASON when logViewController is absent', async () => {
+        const { hostEnvironment, mockRepo } = setupTestEnvironment();
+
+        await hostEnvironment.commands.executeCommand('jj-view.refreshGraph');
+        expect(mockRepo.refresh).toHaveBeenCalledTimes(1);
+        expect(mockRepo.refresh).toHaveBeenCalledWith({ reason: MANUAL_REFRESH_REASON });
     });
 
     it('executes jj-view.commit with passed message', async () => {
@@ -188,6 +269,57 @@ describe('registerWebCommands', () => {
 
         await hostEnvironment.commands.executeCommand('jj-view.showDetails', 'my-change-id');
         expect(openedCommitDetails).toContain('my-change-id');
+    });
+
+    it('creates showDetails payload without hardcoding @ and resolves custom or cancelled quick-pick input', async () => {
+        expect(createShowDetailsPayload([])).toEqual({ revision: undefined });
+        expect(createShowDetailsPayload(['abc'])).toEqual({ revision: 'abc' });
+
+        const { hostEnvironment, openedCommitDetails } = setupTestEnvironment();
+
+        // 1. User cancels the QuickInput prompt
+        const cancelSessionSeen = new Promise<void>((resolve) => {
+            const sub = hostEnvironment.quickInput.onDidChangeSession((session) => {
+                if (session?.type === 'quick-pick') {
+                    expect(session.options.placeHolder).toBe('Select or enter a revision to view details');
+                    expect(session.options.acceptCustomValue).toBe(true);
+                    sub.dispose();
+                    hostEnvironment.quickInput.cancel();
+                    resolve();
+                }
+            });
+        });
+
+        await Promise.all([hostEnvironment.commands.executeCommand('jj-view.showDetails'), cancelSessionSeen]);
+        expect(openedCommitDetails).toHaveLength(0);
+
+        // 2. User submits a custom arbitrary revision expression through QuickInputService.acceptCustomValue
+        const customSessionSeen = new Promise<void>((resolve) => {
+            const sub = hostEnvironment.quickInput.onDidChangeSession((session) => {
+                if (session?.type === 'quick-pick') {
+                    sub.dispose();
+                    hostEnvironment.quickInput.acceptCustomValue('custom-sha-123');
+                    resolve();
+                }
+            });
+        });
+
+        await Promise.all([hostEnvironment.commands.executeCommand('jj-view.showDetails'), customSessionSeen]);
+        expect(openedCommitDetails).toEqual(['my-change-id']);
+
+        // 3. User picks an existing list item (even when wrapped in a Proxy)
+        const existingSessionSeen = new Promise<void>((resolve) => {
+            const sub = hostEnvironment.quickInput.onDidChangeSession((session) => {
+                if (session?.type === 'quick-pick') {
+                    sub.dispose();
+                    hostEnvironment.quickInput.accept(new Proxy(session.options.items[0], {}));
+                    resolve();
+                }
+            });
+        });
+
+        await Promise.all([hostEnvironment.commands.executeCommand('jj-view.showDetails'), existingSessionSeen]);
+        expect(openedCommitDetails).toEqual(['my-change-id', 'my-change-id']);
     });
 
     it('creates squashSelectionIntoParent payload from arguments or host documents fallback', () => {
@@ -216,5 +348,571 @@ describe('registerWebCommands', () => {
         // Without arguments and without selections
         const emptyPayload = createSquashSelectionIntoParentPayload([]);
         expect(emptyPayload).toEqual({});
+    });
+
+    it('creates simplifyParents payload for single, multi-selected, SCM group, and empty inputs', () => {
+        expect(createSimplifyParentsPayload([{ id: 'jj.group.workingCopy', resourceStates: [] }])).toEqual({
+            revisions: ['@'],
+        });
+        expect(createSimplifyParentsPayload([{ changeId: 'rev1' }], ['sel1', 'sel2'])).toEqual({
+            revisions: ['rev1'],
+        });
+        expect(createSimplifyParentsPayload([{ changeId: 'sel1' }], ['sel1', 'sel2'])).toEqual({
+            revisions: ['sel1', 'sel2'],
+        });
+        expect(createSimplifyParentsPayload([], ['sel1', 'sel2'])).toEqual({
+            revisions: ['sel1', 'sel2'],
+        });
+        expect(createSimplifyParentsPayload([], [])).toEqual({
+            revisions: [],
+        });
+    });
+
+    it('executes jj-view.simplifyParents against a real repository using argument or selected commits', async () => {
+        const testRepo = new TestRepo();
+        let hostEnvironment: WebHostEnvironment | undefined;
+
+        try {
+            testRepo.init();
+            const realJj = new JjService(testRepo.path, NO_OP_LOGGER);
+
+            const graph = await buildGraph(testRepo, [
+                { label: 'C', description: 'C' },
+                { label: 'B', parents: ['C'], description: 'B' },
+                { label: 'A1', parents: ['B', 'C'], description: 'A1' },
+                { label: 'A2', parents: ['B', 'C'], description: 'A2', isCurrentWorkingCopy: true },
+            ]);
+
+            const mockRemoteHost = createMock<RemoteHostSystem>({
+                fs: createMock<HostFs>({
+                    readTextFile: vi.fn(),
+                    writeTextFile: vi.fn(),
+                }),
+                platform: 'linux',
+            });
+            hostEnvironment = new WebHostEnvironment(mockRemoteHost, testRepo.path);
+
+            let selectedCommitIds: string[] = [];
+            const realRepo = createMock<JjRepository>({
+                jj: realJj,
+                rootUri: Uri.file(testRepo.path),
+                refresh: vi.fn(async () => {}),
+            });
+            const repoManager = createMock<JjRepositoryManager>({
+                repositories: [realRepo],
+                focusedRepository: realRepo,
+            });
+            const scmModel = createMock<ScmModel>({
+                jj: realJj,
+                getSelectedCommitIds: () => selectedCommitIds,
+                refresh: vi.fn(async () => {}),
+            });
+            const logger = createMock<LoggerChannel>({
+                info: vi.fn(),
+                error: vi.fn(),
+                debug: vi.fn(),
+                warn: vi.fn(),
+            });
+
+            registerWebCommands({
+                repositoryManager: repoManager,
+                hostEnvironment,
+                logger,
+                scmModel,
+            });
+
+            await hostEnvironment.commands.executeCommand('jj-view.simplifyParents', { changeId: graph.A1.changeId });
+            const logsA1 = await realJj.getLog({ revision: graph.A1.changeId, omitChanges: true });
+            expect(logsA1[0].parents.map((p) => p.change_id)).toEqual([graph.B.changeId]);
+
+            const graph2 = await buildGraph(testRepo, [
+                { label: 'C2', description: 'C2' },
+                { label: 'B2', parents: ['C2'], description: 'B2' },
+                { label: 'M1', parents: ['B2', 'C2'], description: 'M1' },
+                { label: 'M2', parents: ['B2', 'C2'], description: 'M2' },
+            ]);
+            selectedCommitIds = [graph2.M1.changeId, graph2.M2.changeId];
+            await hostEnvironment.commands.executeCommand('jj-view.simplifyParents', { changeId: graph2.M1.changeId });
+            const logsM1 = await realJj.getLog({ revision: graph2.M1.changeId, omitChanges: true });
+            const logsM2 = await realJj.getLog({ revision: graph2.M2.changeId, omitChanges: true });
+            expect(logsM1[0].parents.map((p) => p.change_id)).toEqual([graph2.B2.changeId]);
+            expect(logsM2[0].parents.map((p) => p.change_id)).toEqual([graph2.B2.changeId]);
+        } finally {
+            hostEnvironment?.notifications.clearAll();
+            hostEnvironment?.dispose();
+            await testRepo.dispose();
+        }
+    });
+
+    it('executes squash keep-message commands with real JjService via web command registry', async () => {
+        const testRepo = new TestRepo();
+        testRepo.init();
+        const jj = new JjService(testRepo.path, NO_OP_LOGGER);
+
+        const ids = await buildGraph(testRepo, [
+            { label: 'base', description: 'Base', files: { 'base.txt': 'base' } },
+            { label: 'grandparent', parents: ['base'], description: 'Grandparent Desc', files: { 'gp.txt': 'gp' } },
+            { label: 'parent', parents: ['grandparent'], description: 'Parent Desc', files: { 'p.txt': 'p' } },
+            {
+                label: 'child',
+                parents: ['parent'],
+                description: 'Child Desc',
+                files: { 'c.txt': 'c' },
+                isCurrentWorkingCopy: true,
+            },
+        ]);
+        testRepo.config('revset-aliases."immutable_heads()"', `commit_id("${ids.base.commitId}")`);
+
+        const mockRemoteHost = createMock<RemoteHostSystem>({
+            fs: createMock<HostFs>({
+                readTextFile: vi.fn(),
+                writeTextFile: vi.fn(),
+            }),
+            platform: 'linux',
+        });
+        const hostEnvironment = new WebHostEnvironment(mockRemoteHost, testRepo.path);
+        const mockRepo = createMock<JjRepository>({
+            jj,
+            rootUri: Uri.file(testRepo.path),
+            refresh: vi.fn(async () => {}),
+        });
+        const mockRepoManager = createMock<JjRepositoryManager>({
+            repositories: [mockRepo],
+            focusedRepository: mockRepo,
+        });
+        const mockScmModel = createMock<ScmModel>({
+            jj,
+            refresh: vi.fn(async () => {}),
+        });
+        const mockLogger = createMock<LoggerChannel>({
+            info: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+            warn: vi.fn(),
+        });
+
+        registerWebCommands({
+            repositoryManager: mockRepoManager,
+            hostEnvironment,
+            logger: mockLogger,
+            scmModel: mockScmModel,
+        });
+
+        await hostEnvironment.commands.executeCommand('jj-view.squashRevisionIntoParentKeepMessage', {
+            changeId: ids.child.changeId,
+        });
+        expect(testRepo.getDescription(ids.parent.changeId)).toBe('Parent Desc');
+        expect(testRepo.getFileContent(ids.parent.changeId, 'c.txt')).toBe('c');
+
+        await hostEnvironment.commands.executeCommand('jj-view.squashRevisionIntoAncestorKeepMessage', {
+            changeId: ids.parent.changeId,
+            ancestorRevision: ids.grandparent.changeId,
+        });
+        expect(testRepo.getDescription(ids.grandparent.changeId)).toBe('Grandparent Desc');
+        expect(testRepo.getFileContent(ids.grandparent.changeId, 'c.txt')).toBe('c');
+    });
+
+    it('extracts targetParent and empty ancestor group revision in web squash payload creators', () => {
+        expect(createSquashRevisionIntoParentPayload([{ revision: 'rev1', targetParent: 'p2' }])).toEqual({
+            revision: 'rev1',
+            targetParent: 'p2',
+        });
+
+        const scmWithAncestor = createMock<ScmModel>({
+            snapshot: createMock<NonNullable<ScmModel['snapshot']>>({
+                ancestors: [
+                    {
+                        entry: {
+                            change_id: 'ancestor-change',
+                            commit_id: 'ancestor-commit',
+                            description: 'Ancestor',
+                            author: { name: 'A', email: 'a@a.com', timestamp: '' },
+                            committer: { name: 'A', email: 'a@a.com', timestamp: '' },
+                            parents: [],
+                            bookmarks: [],
+                        },
+                        prefix: 'Parent',
+                        isMutable: true,
+                        canSquash: true,
+                        changes: [],
+                        label: 'Parent: ancestor',
+                        contextValue: 'jj.group.allowSquash',
+                    },
+                ],
+            }),
+        });
+        const emptyAncestorGroup = { id: 'ancestor-0', label: 'Parent', resourceStates: [] };
+        expect(createSquashRevisionIntoParentPayload([emptyAncestorGroup], undefined, scmWithAncestor)).toEqual({
+            revision: 'ancestor-change',
+            targetParent: undefined,
+        });
+    });
+
+    it('creates restoreFileFrom payload from arguments or active host document fallback', () => {
+        const uri = Uri.file('/test/workspace/file.txt');
+        const payload = createRestoreFileFromRevisionPayload([{ resourceUri: uri, revision: 'main' }]);
+        expect(payload.fileUri?.toString()).toBe(uri.toString());
+        expect(payload.revision).toBe('main');
+
+        const uriOnlyPayload = createRestoreFileFromRevisionPayload([uri]);
+        expect(uriOnlyPayload.fileUri?.toString()).toBe(uri.toString());
+        expect(uriOnlyPayload.revision).toBeUndefined();
+
+        const { hostEnvironment } = setupTestEnvironment();
+        const activeUri = Uri.file('/test/workspace/active.txt');
+        hostEnvironment.documents.setDelegate({
+            getActiveDocumentUri: () => activeUri,
+        });
+        const fallbackPayload = createRestoreFileFromRevisionPayload([], hostEnvironment);
+        expect(fallbackPayload.fileUri).toBe(activeUri);
+        expect(fallbackPayload.revision).toBeUndefined();
+
+        const overridePayload = createRestoreFileFromRevisionPayload([{ resourceUri: uri }], hostEnvironment);
+        expect(overridePayload.fileUri?.toString()).toBe(uri.toString());
+
+        const emptyPayload = createRestoreFileFromRevisionPayload([]);
+        expect(emptyPayload).toEqual({ fileUri: undefined, revision: undefined });
+    });
+
+    it('creates toggleDiffEditable payload and executes toggle commands via web command registry with real TestRepo', async () => {
+        const testRepo = new TestRepo();
+        let hostEnvironment: WebHostEnvironment | undefined;
+        testRepo.init();
+        try {
+            const jj = new JjService(testRepo.path, NO_OP_LOGGER);
+            const ids = await buildGraph(testRepo, [
+                { label: 'parent', description: 'Mutable Parent', files: { 'item.txt': 'v1\n' } },
+                { label: 'wc', parents: ['parent'], description: 'WC', isCurrentWorkingCopy: true },
+            ]);
+
+            const leftUri = Uri.parse(
+                `jj-view:///item.txt#mode=diff&root=${encodeURIComponent(testRepo.path)}&base=${ids.parent.changeId}&side=left`,
+            );
+            const viewRightUri = Uri.parse(
+                `jj-view:///item.txt#mode=diff&root=${encodeURIComponent(testRepo.path)}&base=${ids.parent.changeId}&side=right`,
+            );
+
+            // Payload creator tests
+            const objPayload = createToggleDiffEditablePayload([
+                { leftUri, rightUri: viewRightUri, resourceUri: viewRightUri, title: 'item.txt' },
+            ]);
+            expect(objPayload.leftUri?.toString()).toBe(leftUri.toString());
+            expect(objPayload.rightUri?.toString()).toBe(viewRightUri.toString());
+            expect(objPayload.title).toBe('item.txt');
+
+            const openedDiffs: { leftUri: Uri; rightUri: Uri; title: string }[] = [];
+            const closedTabs: string[] = [];
+            const savedUris: string[] = [];
+
+            const mockRemoteHost = createMock<RemoteHostSystem>({
+                fs: createMock<HostFs>({ readTextFile: vi.fn(), writeTextFile: vi.fn() }),
+                platform: 'linux',
+            });
+            hostEnvironment = new WebHostEnvironment(mockRemoteHost, testRepo.path);
+            hostEnvironment.nav.setCallbacks({
+                onOpenDiff: async (l, r, t) => {
+                    openedDiffs.push({ leftUri: l, rightUri: r, title: t });
+                },
+                onCloseTab: async (uri) => {
+                    closedTabs.push(uri.toString());
+                },
+            });
+            let activeUri: Uri | undefined = viewRightUri;
+            hostEnvironment.documents.setDelegate({
+                getActiveDocumentUri: () => activeUri,
+                getOpenDiffTabs: () =>
+                    openedDiffs.length === 0
+                        ? [
+                              {
+                                  originalUri: leftUri,
+                                  modifiedUri: viewRightUri,
+                                  label: `item.txt (${ids.parent.changeId})`,
+                                  close: async () => {
+                                      closedTabs.push(viewRightUri.toString());
+                                  },
+                              },
+                          ]
+                        : [
+                              {
+                                  originalUri: leftUri,
+                                  modifiedUri: openedDiffs[0].rightUri,
+                                  label: openedDiffs[0].title,
+                                  close: async () => {
+                                      closedTabs.push(openedDiffs[0].rightUri.toString());
+                                  },
+                              },
+                          ],
+                saveIfDirty: async (uri) => {
+                    savedUris.push(uri.toString());
+                },
+            });
+
+            const repo = createMock<JjRepository>({
+                jj,
+                rootUri: Uri.file(testRepo.path),
+                refresh: vi.fn(async () => {}),
+            });
+            const logger = createMock<LoggerChannel>({ info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+            const repositoryManager = createMock<JjRepositoryManager>({
+                repositories: [repo],
+                focusedRepository: repo,
+                outputChannel: logger,
+                getRepositoryForUri: vi.fn(() => repo),
+                setFocusedRepository: vi.fn(),
+            });
+
+            registerWebCommands({
+                hostEnvironment,
+                repositoryManager,
+                scmModel: createMock<ScmModel>(),
+                logger,
+            });
+
+            // Fallback payload uses active document URI
+            const fallbackPayload = createToggleDiffEditablePayload([], hostEnvironment);
+            expect(fallbackPayload.resourceUri?.toString()).toBe(viewRightUri.toString());
+
+            await hostEnvironment.commands.executeCommand('jj-view.enableDiffEditing', { resourceUri: viewRightUri });
+            expect(openedDiffs).toHaveLength(1);
+            expect(openedDiffs[0].rightUri.scheme).toBe('jj-edit');
+            expect(closedTabs).toEqual([viewRightUri.toString()]);
+
+            const editUri = openedDiffs[0].rightUri;
+            activeUri = editUri;
+            await hostEnvironment.commands.executeCommand('jj-view.disableDiffEditing');
+            expect(savedUris).toEqual([editUri.toString()]);
+            expect(openedDiffs).toHaveLength(2);
+            expect(openedDiffs[1].rightUri.scheme).toBe('jj-view');
+            expect(closedTabs).toEqual([viewRightUri.toString(), editUri.toString()]);
+        } finally {
+            hostEnvironment?.notifications.clearAll();
+            hostEnvironment?.dispose();
+            await testRepo.dispose();
+        }
+    });
+
+    describe('jj-view.pickChange web command and menu parity', () => {
+        async function withRealRepoEnv(
+            fn: (env: {
+                repo: TestRepo;
+                hostEnvironment: WebHostEnvironment;
+                repoRefreshSpy: ReturnType<typeof vi.fn<() => Promise<void>>>;
+            }) => Promise<void>,
+        ) {
+            const repo = new TestRepo();
+            let hostEnvironment: WebHostEnvironment | undefined;
+            try {
+                repo.init();
+                const jj = new JjService(repo.path, NO_OP_LOGGER);
+
+                const mockRemoteHost = createMock<RemoteHostSystem>({
+                    fs: createMock<HostFs>({
+                        readTextFile: vi.fn(),
+                        writeTextFile: vi.fn(),
+                    }),
+                    platform: 'linux',
+                });
+                hostEnvironment = new WebHostEnvironment(mockRemoteHost, repo.path);
+                const repoRefreshSpy = vi.fn(async () => {});
+                const mockRepo = createMock<JjRepository>({
+                    jj,
+                    rootUri: Uri.file(repo.path),
+                    refresh: repoRefreshSpy,
+                });
+
+                const mockLogger = createMock<LoggerChannel>({
+                    info: vi.fn(),
+                    error: vi.fn(),
+                    debug: vi.fn(),
+                    warn: vi.fn(),
+                });
+
+                const mockRepoManager = createMock<JjRepositoryManager>({
+                    repositories: [mockRepo],
+                    focusedRepository: mockRepo,
+                    outputChannel: mockLogger,
+                });
+                const mockScmModel = createMock<ScmModel>({
+                    jj,
+                    repo: mockRepo,
+                    getSelectedCommitIds: () => [],
+                });
+
+                registerWebCommands({
+                    repositoryManager: mockRepoManager,
+                    hostEnvironment,
+                    logger: mockLogger,
+                    scmModel: mockScmModel,
+                });
+
+                await fn({ repo, hostEnvironment, repoRefreshSpy });
+            } finally {
+                hostEnvironment?.notifications.clearAll();
+                hostEnvironment?.dispose();
+                await repo.dispose();
+            }
+        }
+
+        it('registers jj-view.pickChange and marks it hidden in commandPalette', () => {
+            const { hostEnvironment } = setupTestEnvironment();
+
+            expect(hostEnvironment.commands.hasCommand('jj-view.pickChange')).toBe(true);
+            const commandDef = DEFAULT_PACKAGE_JSON_CONTRIBUTES.commands?.find(
+                (cmd) => cmd.command === 'jj-view.pickChange',
+            );
+            expect(commandDef).toEqual({
+                command: 'jj-view.pickChange',
+                title: 'Pick Change',
+                category: 'JJ View',
+            });
+            const paletteRule = DEFAULT_PACKAGE_JSON_CONTRIBUTES.menus?.commandPalette?.find(
+                (rule) => rule.command === 'jj-view.pickChange',
+            );
+            expect(paletteRule).toEqual({
+                command: 'jj-view.pickChange',
+                when: 'false',
+            });
+        });
+
+        it('lists matching changes, returns selected ID, and skips repo.refresh', async () => {
+            await withRealRepoEnv(async ({ repo, hostEnvironment, repoRefreshSpy }) => {
+                repo.new(undefined, 'other');
+
+                const quickPickSpy = vi
+                    .spyOn(hostEnvironment.ui, 'showQuickPick')
+                    .mockImplementation(async (items) => items[0]);
+
+                const result = await hostEnvironment.commands.executeCommand<string | undefined>('jj-view.pickChange', {
+                    revset: 'root()',
+                });
+
+                expect(quickPickSpy).toHaveBeenCalledTimes(1);
+                const passedItems = quickPickSpy.mock.calls[0][0];
+                expect(passedItems).toHaveLength(1);
+                expect(result).toBe(String(passedItems[0].value));
+                expect(repoRefreshSpy).not.toHaveBeenCalled();
+            });
+        });
+
+        it('returns undefined when prompt is cancelled', async () => {
+            await withRealRepoEnv(async ({ repo, hostEnvironment, repoRefreshSpy }) => {
+                repo.new(undefined, 'candidate');
+
+                vi.spyOn(hostEnvironment.ui, 'showQuickPick').mockResolvedValue(undefined);
+
+                const result = await hostEnvironment.commands.executeCommand<string | undefined>('jj-view.pickChange');
+
+                expect(result).toBeUndefined();
+                expect(repoRefreshSpy).not.toHaveBeenCalled();
+            });
+        });
+
+        it('trims custom revision accepted through hostEnvironment.quickInput', async () => {
+            await withRealRepoEnv(async ({ repo, hostEnvironment }) => {
+                repo.new(undefined, 'candidate');
+
+                const commandPromise = hostEnvironment.commands.executeCommand<string | undefined>(
+                    'jj-view.pickChange',
+                );
+                await vi.waitFor(() => {
+                    expect(hostEnvironment.quickInput.activeSession?.type).toBe('quick-pick');
+                });
+                hostEnvironment.quickInput.acceptCustomValue('  @-  ');
+
+                expect(await commandPromise).toBe('@-');
+            });
+        });
+    });
+
+    it('creates splitFiles payload from SCM resource states and explicit path objects', () => {
+        const uri1 = Uri.file('/test/workspace/a.txt');
+        const uri2 = Uri.file('/test/workspace/b.txt');
+        expect(createSplitFilesPayload([{ resourceUri: uri1, revision: 'rev1' }, [{ resourceUri: uri2 }]])).toEqual({
+            paths: [uri1.fsPath, uri2.fsPath],
+            revision: 'rev1',
+        });
+        expect(createSplitFilesPayload([{ paths: ['src/a.ts', 'src/b.ts'], revision: 'abc123' }])).toEqual({
+            paths: ['src/a.ts', 'src/b.ts'],
+            revision: 'abc123',
+        });
+    });
+
+    it('registers jj-view.openFileOnRemote and jj-view.copyRemoteFileUrl without triggering repo.refresh', async () => {
+        const repo = new TestRepo();
+        repo.init({ colocate: false });
+        const repoRefreshSpy = vi.fn().mockResolvedValue(undefined);
+        let hostEnvironment: WebHostEnvironment | undefined;
+
+        try {
+            repo.addRemote('origin', 'https://github.com/acme/web-test.git');
+            repo.writeFile('hello.ts', 'line1\nline2\n');
+            repo.describe('pushed commit');
+            const sha = repo.getCommitId('@');
+            repo.new(undefined, 'wc');
+
+            const jj = new JjService(repo.path, NO_OP_LOGGER);
+            const mockRepo = createMock<JjRepository>({
+                rootUri: Uri.file(repo.path),
+                jj,
+                refresh: repoRefreshSpy,
+            });
+            const mockRepoManager = createMock<JjRepositoryManager>({
+                repositories: [mockRepo],
+                focusedRepository: mockRepo,
+                setFocusedRepository: vi.fn(),
+            });
+            const mockScmModel = createMock<ScmModel>({
+                repo: mockRepo,
+                jj,
+                getSelectedCommitIds: vi.fn().mockReturnValue([]),
+            });
+            const mockRemoteHost = createMock<RemoteHostSystem>({
+                platform: 'linux',
+                fs: createMock<HostFs>({
+                    stat: vi.fn().mockRejectedValue(new Error('ENOENT')),
+                }),
+            });
+            hostEnvironment = new WebHostEnvironment(mockRemoteHost, repo.path);
+            const fileUri = Uri.file(`${repo.path}/hello.ts`);
+            hostEnvironment.documents.setDelegate({
+                getActiveDocumentUri: () => fileUri,
+                getActiveDocumentSelections: () => [{ startLine: 0, endLine: 1 }],
+            });
+
+            registerWebCommands({
+                repositoryManager: mockRepoManager,
+                hostEnvironment,
+                logger: NO_OP_LOGGER,
+                scmModel: mockScmModel,
+            });
+
+            expect(hostEnvironment.commands.hasCommand('jj-view.openFileOnRemote')).toBe(true);
+            expect(hostEnvironment.commands.hasCommand('jj-view.copyRemoteFileUrl')).toBe(true);
+
+            const copySpy = vi.spyOn(hostEnvironment.nav, 'copyToClipboard').mockResolvedValue(undefined);
+            const openSpy = vi.spyOn(hostEnvironment.nav, 'openExternal').mockResolvedValue(undefined);
+
+            await hostEnvironment.commands.executeCommand('jj-view.copyRemoteFileUrl');
+            expect(copySpy).toHaveBeenCalledWith(`https://github.com/acme/web-test/blob/${sha}/hello.ts#L1-L2`);
+
+            await hostEnvironment.commands.executeCommand('jj-view.openFileOnRemote', {
+                filePath: 'hello.ts',
+                isRepoRelative: true,
+                revision: sha,
+            });
+            expect(openSpy).toHaveBeenCalledTimes(1);
+            expect(openSpy.mock.calls[0][0].toString()).toBe(`https://github.com/acme/web-test/blob/${sha}/hello.ts`);
+            expect(repoRefreshSpy).not.toHaveBeenCalled();
+
+            // Payload builder converts 0-based active selections to 1-based line ranges
+            expect(createRemoteFileUrlPayload([], hostEnvironment)).toEqual({
+                fileUri,
+                lineRange: { startLine: 1, endLine: 2 },
+            });
+        } finally {
+            hostEnvironment?.notifications.clearAll();
+            hostEnvironment?.dispose();
+            await repo.dispose();
+        }
     });
 });

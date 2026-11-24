@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -15,30 +16,118 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/brychanrobot/jj-view/internal/server"
+	"github.com/brychanrobot/jj-view/internal/update"
 )
 
-var (
-	version = "2.9.0"
+var releaseAsset = ""
+
+const (
+	installAntigravityPluginCommand = "install-antigravity-plugin"
+	updateCommand                   = "update"
 )
+
+func effectiveReleaseAsset() string {
+	if envAsset := strings.TrimSpace(os.Getenv("JJ_VIEW_RELEASE_ASSET")); envAsset != "" {
+		return envAsset
+	}
+	return strings.TrimSpace(releaseAsset)
+}
+
+func effectiveUpdateURL(explicit string) string {
+	if trimmed := strings.TrimSpace(explicit); trimmed != "" {
+		return trimmed
+	}
+	if envURL := strings.TrimSpace(os.Getenv("JJ_VIEW_UPDATE_URL")); envURL != "" {
+		return envURL
+	}
+	return update.DefaultReleasesURL
+}
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == installAntigravityPluginCommand {
+		err := runInstallAntigravityPlugin(os.Args[2:])
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		if err != nil {
+			log.Fatalf("Install failed: %v", err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == configCommand {
+		err := runConfigCommand(os.Args[2:], os.Stdout, os.Stderr)
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == updateCommand {
+		err := runUpdateCommand(os.Args[2:], os.Stdout, os.Stderr)
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	flag.Usage = func() {
+		printUsage(flag.CommandLine, "jj-view [flags]",
+			"Serve the JJ View UI for a Jujutsu repository.",
+			"Subcommands:\n  "+configCommand+"                      Query and modify JJ View configuration.\n  "+updateCommand+"                      Check for and install JJ View updates.\n  "+installAntigravityPluginCommand+"  Register this binary as an Antigravity plugin.")
+	}
 	hostFlag := flag.String("host", "127.0.0.1", "Host address to bind to")
 	portFlag := flag.Int("port", 8080, "Port to listen on (0 for dynamic port)")
 	repoFlag := flag.String("repo", ".", "Path to Jujutsu repository")
 	userDataDirFlag := flag.String("user-data-dir", "", "Path to user data directory for settings and state")
 	userConfigFlag := flag.String("user-config", "", "Path to custom user configuration JSON file")
 	noOpenFlag := flag.Bool("no-open", false, "Do not open browser automatically")
+	allowedOriginsFlag := flag.String("allowed-origins", "", "Comma-separated extra browser origin hosts to accept, e.g. 'ui.example.com,*.proxy.example.com'. Loopback, the bound host and the request host are always accepted.")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 
 	flag.Parse()
 
+	// The standard flag package stops at the first positional argument and
+	// silently ignores the rest, so a mistyped subcommand would otherwise
+	// start the server with defaults.
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "jj-view: unknown command %q\n\n", flag.Arg(0))
+		flag.Usage()
+		os.Exit(2)
+	}
+
 	if *versionFlag {
 		fmt.Printf("jj-view version %s\n", version)
 		os.Exit(0)
+	}
+
+	execPath := resolveExecutablePath(os.Args[0])
+	update.CleanupStaleFiles(execPath)
+	reloadPortStr := os.Getenv(reloadPortEnvVar)
+	reloadSessionToken := os.Getenv(reloadSessionTokenEnvVar)
+	reloadAllowedRootsStr := os.Getenv(reloadAllowedRootsEnvVar)
+	_ = os.Unsetenv(reloadPortEnvVar)
+	_ = os.Unsetenv(reloadSessionTokenEnvVar)
+	_ = os.Unsetenv(reloadAllowedRootsEnvVar)
+	isReload := reloadPortStr != "" || reloadSessionToken != ""
+	var reloadAllowedRoots []string
+	if reloadAllowedRootsStr != "" {
+		for _, r := range filepath.SplitList(reloadAllowedRootsStr) {
+			if r != "" {
+				reloadAllowedRoots = append(reloadAllowedRoots, r)
+			}
+		}
 	}
 
 	passedFlags := make(map[string]bool)
@@ -52,7 +141,11 @@ func main() {
 		os.Getenv("JJ_VIEW_AGY_SIDECAR") != ""
 
 	port := *portFlag
-	if !passedFlags["port"] {
+	if reloadPortStr != "" {
+		if p, err := strconv.Atoi(reloadPortStr); err == nil && p > 0 && p <= 65535 {
+			port = p
+		}
+	} else if !passedFlags["port"] {
 		if pStr := os.Getenv("ANTIGRAVITY_SIDECAR_WEB_PORT"); pStr != "" {
 			if p, err := strconv.Atoi(pStr); err == nil && p >= 0 && p <= 65535 {
 				port = p
@@ -63,7 +156,7 @@ func main() {
 	}
 
 	noOpen := *noOpenFlag
-	if !passedFlags["no-open"] && isSidecar {
+	if isReload || (!passedFlags["no-open"] && isSidecar) {
 		noOpen = true
 	}
 
@@ -90,15 +183,37 @@ func main() {
 		absUserDataDir = resolved
 	}
 
+	var allowedOrigins []string
+	for _, entry := range strings.Split(*allowedOriginsFlag, ",") {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			allowedOrigins = append(allowedOrigins, trimmed)
+		}
+	}
+
+	// Register signal handler before creating the server and printing the ready URL
+	// so callers or self-update callbacks that signal SIGHUP cannot race with setup.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
 	cfg := server.Config{
-		Host:           *hostFlag,
-		Port:           port,
-		RepoRoot:       absRepo,
-		SidecarToken:   os.Getenv("ANTIGRAVITY_SIDECAR_UI_TOKEN"),
-		CSRFToken:      os.Getenv("ANTIGRAVITY_CSRF_TOKEN"),
-		Version:        version,
-		UserDataDir:    absUserDataDir,
-		UserConfigPath: userConfigPath,
+		Host:              *hostFlag,
+		Port:              port,
+		RepoRoot:          absRepo,
+		SessionToken:      reloadSessionToken,
+		SidecarToken:      os.Getenv("ANTIGRAVITY_SIDECAR_UI_TOKEN"),
+		CSRFToken:         os.Getenv("ANTIGRAVITY_CSRF_TOKEN"),
+		Version:           version,
+		ReleaseAsset:      effectiveReleaseAsset(),
+		ExecutablePath:    execPath,
+		ReleasesURL:       effectiveUpdateURL(""),
+		OnReload: func() error {
+			sigChan <- syscall.SIGHUP
+			return nil
+		},
+		UserDataDir:       absUserDataDir,
+		UserConfigPath:    userConfigPath,
+		AllowedOrigins:    allowedOrigins,
+		ExtraAllowedRoots: reloadAllowedRoots,
 	}
 
 	srv, err := server.NewServer(cfg)
@@ -106,7 +221,7 @@ func main() {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
 
-	if err := srv.Listen(); err != nil {
+	if err := listenWithReloadRetry(srv, isReload); err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
@@ -123,18 +238,41 @@ func main() {
 		go openBrowser(serverURL)
 	}
 
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	sig := <-sigChan
 
-	fmt.Println("\nShutting down JJ View server...")
+	if sig == syscall.SIGHUP {
+		fmt.Println("\nReloading JJ View server in-place (SIGHUP)...")
+	} else {
+		fmt.Println("\nShutting down JJ View server...")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	allowedRoots := srv.AllowedRoots()
 	if err := srv.Close(ctx); err != nil {
 		log.Printf("Error during shutdown: %v", err)
 	}
+
+	if sig == syscall.SIGHUP {
+		signal.Reset(syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		if err := execInPlace(execPath, os.Args, os.Environ(), srv.Port(), srv.SessionToken(), allowedRoots...); err != nil {
+			log.Fatalf("In-place reload failed: %v", err)
+		}
+	}
+}
+
+func listenWithReloadRetry(srv *server.Server, isReload bool) error {
+	err := srv.Listen()
+	if err == nil || !isReload {
+		return err
+	}
+	for i := 0; i < 200; i++ {
+		time.Sleep(10 * time.Millisecond)
+		if err = srv.Listen(); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 func openBrowser(targetURL string) {

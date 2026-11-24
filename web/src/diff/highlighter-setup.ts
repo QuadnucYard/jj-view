@@ -4,24 +4,18 @@
  */
 
 import { registerCustomLanguage, registerCustomTheme } from '@pierre/diffs';
-import pierreDarkRaw from '@pierre/theme/pierre-dark';
-import pierreDarkProtanopiaDeuteranopiaRaw from '@pierre/theme/pierre-dark-protanopia-deuteranopia';
-import pierreDarkSoftRaw from '@pierre/theme/pierre-dark-soft';
-import pierreDarkTritanopiaRaw from '@pierre/theme/pierre-dark-tritanopia';
-import pierreDarkVibrantRaw from '@pierre/theme/pierre-dark-vibrant';
-import pierreLightRaw from '@pierre/theme/pierre-light';
-import pierreLightProtanopiaDeuteranopiaRaw from '@pierre/theme/pierre-light-protanopia-deuteranopia';
-import pierreLightSoftRaw from '@pierre/theme/pierre-light-soft';
-import pierreLightTritanopiaRaw from '@pierre/theme/pierre-light-tritanopia';
-import pierreLightVibrantRaw from '@pierre/theme/pierre-light-vibrant';
+import { getOrCreateWorkerPoolSingleton, type WorkerPoolManager } from '@pierre/diffs/worker';
 import { normalizeTheme, type ThemeRegistration } from 'shiki';
 import { loadBazelGrammar } from './grammars/bazel';
+import { CPP_RAW_STRING_LANGUAGES, loadCppWithRawStringsGrammar } from './grammars/cpp-raw-strings';
 import { loadMojomGrammar, mojomGrammar } from './grammars/mojom';
 import { loadProguardGrammar, proguardGrammar } from './grammars/proguard';
 import { loadTextprotoGrammar, textprotoGrammar } from './grammars/textproto';
 
 export {
+    CPP_RAW_STRING_LANGUAGES,
     loadBazelGrammar,
+    loadCppWithRawStringsGrammar,
     loadMojomGrammar,
     loadProguardGrammar,
     loadTextprotoGrammar,
@@ -52,18 +46,104 @@ let isRegistered = false;
 const normalizedPierreThemes = new Map<string, ThemeRegistration>();
 const normalizedShikiThemes = new Map<string, ThemeRegistration>();
 
-const PIERRE_RAW_THEMES: Record<string, RawPierreTheme> = {
-    'pierre-dark': pierreDarkRaw,
-    'pierre-dark-soft': pierreDarkSoftRaw,
-    'pierre-dark-vibrant': pierreDarkVibrantRaw,
-    'pierre-dark-protanopia-deuteranopia': pierreDarkProtanopiaDeuteranopiaRaw,
-    'pierre-dark-tritanopia': pierreDarkTritanopiaRaw,
-    'pierre-light': pierreLightRaw,
-    'pierre-light-soft': pierreLightSoftRaw,
-    'pierre-light-vibrant': pierreLightVibrantRaw,
-    'pierre-light-protanopia-deuteranopia': pierreLightProtanopiaDeuteranopiaRaw,
-    'pierre-light-tritanopia': pierreLightTritanopiaRaw,
+let diffWorkerPoolManager: WorkerPoolManager | undefined;
+let diffWorkerBlobUrl: string | undefined;
+let initWorkerPromise: Promise<void> | null = null;
+
+interface JjViewWorkerWindow extends Window {
+    __JJ_VIEW_CONFIG__?: {
+        sidecarToken?: string;
+        token?: string;
+    };
+}
+
+export async function initPierreWorker(): Promise<void> {
+    if (typeof window === 'undefined' || diffWorkerBlobUrl) {
+        return;
+    }
+    if (initWorkerPromise) {
+        return initWorkerPromise;
+    }
+    initWorkerPromise = (async () => {
+        try {
+            const win = window as JjViewWorkerWindow;
+            const token =
+                win.__JJ_VIEW_CONFIG__?.sidecarToken ||
+                win.__JJ_VIEW_CONFIG__?.token ||
+                new URLSearchParams(window.location.search).get('token') ||
+                '';
+            const workerUrl = token
+                ? `/dist/pierre-worker.js?token=${encodeURIComponent(token)}`
+                : '/dist/pierre-worker.js';
+            const headers: Record<string, string> = token ? { 'X-Sidecar-Token': token } : {};
+            const response = await fetch(workerUrl, { headers });
+            if (!response.ok) {
+                console.warn('[Pierre Worker] Failed to fetch /dist/pierre-worker.js:', response.statusText);
+                return;
+            }
+            const text = await response.text();
+            const blob = new Blob([text], { type: 'application/javascript' });
+            diffWorkerBlobUrl = URL.createObjectURL(blob);
+        } catch (err) {
+            console.warn('[Pierre Worker] Could not create worker blob URL:', err);
+        }
+    })();
+    return initWorkerPromise;
+}
+
+export function getOrCreateDiffWorkerPool(themeName: string): WorkerPoolManager | undefined {
+    if (typeof window === 'undefined' || !diffWorkerBlobUrl) {
+        return undefined;
+    }
+    const workerUrl = diffWorkerBlobUrl;
+    if (!diffWorkerPoolManager) {
+        try {
+            diffWorkerPoolManager = getOrCreateWorkerPoolSingleton({
+                poolOptions: {
+                    workerFactory: () => new Worker(workerUrl),
+                    poolSize: Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 2) - 1)),
+                },
+                highlighterOptions: {
+                    theme: themeName,
+                    preferredHighlighter: 'shiki-js',
+                    // Required for `Editor.edit()` to reuse the worker's highlighted output.
+                    // Without it the editor's `beginEditSession` sees mismatched render
+                    // options, drops the cache, and re-highlights the whole file synchronously.
+                    useTokenTransformer: true,
+                },
+            });
+        } catch (err) {
+            console.warn('[Pierre Worker] Failed to initialize worker pool:', err);
+            return undefined;
+        }
+    } else {
+        void diffWorkerPoolManager.setRenderOptions({ theme: themeName });
+    }
+    return diffWorkerPoolManager;
+}
+
+interface RawPierreThemeModule {
+    default: RawPierreTheme;
+}
+
+type PierreThemeLoader = () => Promise<RawPierreThemeModule>;
+
+// Lazy on purpose: static imports put all ten themes on the startup critical
+// path as eagerly-fetched chunks, and only one is ever active.
+const PIERRE_THEME_LOADERS: Record<string, PierreThemeLoader> = {
+    'pierre-dark': () => import('@pierre/theme/pierre-dark'),
+    'pierre-dark-soft': () => import('@pierre/theme/pierre-dark-soft'),
+    'pierre-dark-vibrant': () => import('@pierre/theme/pierre-dark-vibrant'),
+    'pierre-dark-protanopia-deuteranopia': () => import('@pierre/theme/pierre-dark-protanopia-deuteranopia'),
+    'pierre-dark-tritanopia': () => import('@pierre/theme/pierre-dark-tritanopia'),
+    'pierre-light': () => import('@pierre/theme/pierre-light'),
+    'pierre-light-soft': () => import('@pierre/theme/pierre-light-soft'),
+    'pierre-light-vibrant': () => import('@pierre/theme/pierre-light-vibrant'),
+    'pierre-light-protanopia-deuteranopia': () => import('@pierre/theme/pierre-light-protanopia-deuteranopia'),
+    'pierre-light-tritanopia': () => import('@pierre/theme/pierre-light-tritanopia'),
 };
+
+const DEFAULT_PIERRE_THEME = 'pierre-dark-soft';
 
 const SHIKI_THEME_LOADERS: Record<string, ThemeLoader> = {
     'github-dark': () => import('@shikijs/themes/github-dark'),
@@ -100,12 +180,36 @@ const SHIKI_THEME_LOADERS: Record<string, ThemeLoader> = {
     'light-plus': () => import('@shikijs/themes/light-plus'),
 };
 
+export function ensureThemeSelectionBackground(theme: ThemeRegistration, themeName?: string): void {
+    const isLight = theme.type === 'light' || isLightTheme(themeName ?? theme.name ?? '');
+    theme.colors ??= {};
+    const raw = theme.colors['editor.selectionBackground'];
+    const existing = typeof raw === 'string' ? raw.trim() : undefined;
+    const isMissingOrTransparent =
+        !existing || existing === 'transparent' || existing === '#0000' || existing === '#00000000';
+
+    if (isMissingOrTransparent) {
+        theme.colors['editor.selectionBackground'] = isLight ? '#009fff2e' : '#69b1ff4d';
+    } else if (/^#[0-9a-fA-F]{6}$/.test(existing)) {
+        theme.colors['editor.selectionBackground'] = `${existing}${isLight ? '38' : '4d'}`;
+    } else if (/^#[0-9a-fA-F]{3}$/.test(existing)) {
+        const r = existing[1];
+        const g = existing[2];
+        const b = existing[3];
+        theme.colors['editor.selectionBackground'] = `#${r}${r}${g}${g}${b}${b}${isLight ? '38' : '4d'}`;
+    } else if (/^#[0-9a-fA-F]{6}[fF]{2}$/.test(existing)) {
+        theme.colors['editor.selectionBackground'] = `${existing.slice(0, 7)}${isLight ? '38' : '4d'}`;
+    }
+}
+
 function toThemeRegistration(theme: RawPierreTheme): ThemeRegistration {
-    return {
+    const isLight = theme.type === 'light' || theme.name.includes('light');
+    const colors = theme.colors ? { ...theme.colors } : {};
+    const reg: ThemeRegistration = {
         name: theme.name,
         displayName: theme.displayName,
-        type: theme.type ?? (theme.name.includes('light') ? 'light' : 'dark'),
-        colors: theme.colors ? { ...theme.colors } : {},
+        type: theme.type ?? (isLight ? 'light' : 'dark'),
+        colors,
         settings: (theme.tokenColors ?? []).map((tc) => {
             let scope: string | string[] | undefined;
             if (typeof tc.scope === 'string') {
@@ -120,12 +224,14 @@ function toThemeRegistration(theme: RawPierreTheme): ThemeRegistration {
             };
         }),
     };
+    ensureThemeSelectionBackground(reg, theme.name);
+    return reg;
 }
 
 /**
- * Pre-registers bundled Shiki language grammars, all 10 Pierre themes, and Shiki themes with @pierre/diffs
- * so they are bundled into the web distribution and resolve synchronously/locally
- * without unbundled runtime HTTP dynamic imports.
+ * Pre-registers Shiki language grammars and Shiki theme loaders with @pierre/diffs.
+ * Pierre themes ship built-in with @pierre/diffs and are only loaded (lazily) by
+ * loadTheme() when the app needs their colors for CSS theming.
  */
 interface ThemeWindow extends Window {
     __jjRegisteredThemes?: Set<string>;
@@ -133,6 +239,7 @@ interface ThemeWindow extends Window {
 }
 
 export function ensureHighlighterRegistered(): void {
+    void initPierreWorker();
     if (isRegistered) {
         return;
     }
@@ -156,12 +263,8 @@ export function ensureHighlighterRegistered(): void {
         registeredLanguages = new Set<string>();
     }
 
-    // Normalize all Pierre Themes for application CSS theming.
-    // Note: Do NOT call registerCustomTheme for Pierre themes because @pierre/diffs already has them registered built-in.
-    for (const [name, raw] of Object.entries(PIERRE_RAW_THEMES)) {
-        const normalized = normalizeTheme(toThemeRegistration(raw));
-        normalizedPierreThemes.set(name, normalized);
-    }
+    // Pierre themes are not registered with @pierre/diffs (it ships them
+    // built-in) and are normalized lazily in loadTheme() for app CSS theming.
 
     // Register all Shiki theme loaders with Pierre once
     for (const [name, loader] of Object.entries(SHIKI_THEME_LOADERS)) {
@@ -174,6 +277,7 @@ export function ensureHighlighterRegistered(): void {
                 }
                 const mod = await loader();
                 const normalized = normalizeTheme(mod.default);
+                ensureThemeSelectionBackground(normalized, name);
                 normalizedShikiThemes.set(name, normalized);
                 return normalized;
             });
@@ -203,8 +307,8 @@ export function ensureHighlighterRegistered(): void {
     registerLangOnce('shellscript', () => import('@shikijs/langs/shellscript'), ['sh', 'bash', 'zsh', 'gradlew']);
     registerLangOnce('bat', () => import('@shikijs/langs/bat'), ['bat', 'cmd', 'gradlew.bat']);
     registerLangOnce('diff', () => import('@shikijs/langs/diff'), ['diff', 'patch']);
-    registerLangOnce('c', () => import('@shikijs/langs/c'), ['c', 'h']);
-    registerLangOnce('cpp', () => import('@shikijs/langs/cpp'), ['cpp', 'cc', 'cxx', 'hpp', 'hh', 'hxx']);
+    registerLangOnce('c', () => import('@shikijs/langs/c'), ['c']);
+    registerLangOnce('cpp', loadCppWithRawStringsGrammar, ['cpp', 'cc', 'cxx', 'h', 'hpp', 'hh', 'hxx', 'mm']);
     registerLangOnce('csharp', () => import('@shikijs/langs/csharp'), ['cs']);
     registerLangOnce('java', () => import('@shikijs/langs/java'), ['java', 'aidl']);
     registerLangOnce('dockerfile', () => import('@shikijs/langs/dockerfile'), ['dockerfile', 'Dockerfile']);
@@ -235,11 +339,7 @@ export function ensureHighlighterRegistered(): void {
     registerLangOnce('proto', () => import('@shikijs/langs/proto'), []);
 
     registerLangOnce('textproto', loadTextprotoGrammar, ['textproto', 'pbtxt', 'prototxt']);
-    registerLangOnce(
-        'pbtxt',
-        async () => ({ default: [{ ...textprotoGrammar, name: 'pbtxt', aliases: ['textproto'] }] }),
-        [],
-    );
+    registerLangOnce('pbtxt', loadTextprotoGrammar, []);
 
     registerLangOnce('kotlin', () => import('@shikijs/langs/kotlin'), [
         'kt',
@@ -264,49 +364,79 @@ export function ensureHighlighterRegistered(): void {
     registerLangOnce('proguard', loadProguardGrammar, ['pro', 'proguard-rules.pro', 'consumer-rules.pro']);
 }
 
+/** Loads a chunk once, retrying a single time: a stale chunk hash right after a daemon update is the usual failure. */
+async function loadWithRetry<T>(name: string, loader: () => Promise<T>): Promise<T | undefined> {
+    try {
+        return await loader();
+    } catch (err) {
+        console.warn(`Dynamic load of theme "${name}" failed, retrying...`, err);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        try {
+            return await loader();
+        } catch (retryErr) {
+            console.error(`Failed to load theme "${name}":`, retryErr);
+            return undefined;
+        }
+    }
+}
+
+async function loadPierreTheme(name: string): Promise<ThemeRegistration | undefined> {
+    const cached = normalizedPierreThemes.get(name);
+    if (cached) {
+        return cached;
+    }
+    const loader = PIERRE_THEME_LOADERS[name];
+    if (!loader) {
+        return undefined;
+    }
+    const mod = await loadWithRetry(name, loader);
+    if (!mod) {
+        return undefined;
+    }
+    const normalized = normalizeTheme(toThemeRegistration(mod.default));
+    normalizedPierreThemes.set(name, normalized);
+    return normalized;
+}
+
+async function loadShikiTheme(name: string): Promise<ThemeRegistration | undefined> {
+    const cached = normalizedShikiThemes.get(name);
+    if (cached) {
+        return cached;
+    }
+    const loader = SHIKI_THEME_LOADERS[name];
+    if (!loader) {
+        return undefined;
+    }
+    const mod = await loadWithRetry(name, loader);
+    if (!mod) {
+        return undefined;
+    }
+    const normalized = normalizeTheme(mod.default);
+    ensureThemeSelectionBackground(normalized, name);
+    normalizedShikiThemes.set(name, normalized);
+    return normalized;
+}
+
 /**
  * Loads a ThemeRegistration by name, resolving Pierre or Shiki themes.
+ * Falls back to the default Pierre theme for unknown names or load failures.
  */
 export async function loadTheme(name: string): Promise<ThemeRegistration> {
     ensureHighlighterRegistered();
 
-    const pierre = normalizedPierreThemes.get(name);
-    if (pierre) {
-        return pierre;
+    const theme = (await loadPierreTheme(name)) ?? (await loadShikiTheme(name));
+    if (theme) {
+        return theme;
     }
 
-    const cachedShiki = normalizedShikiThemes.get(name);
-    if (cachedShiki) {
-        return cachedShiki;
-    }
-
-    const loader = SHIKI_THEME_LOADERS[name];
-    if (loader) {
-        try {
-            const mod = await loader();
-            const normalized = normalizeTheme(mod.default);
-            normalizedShikiThemes.set(name, normalized);
-            return normalized;
-        } catch (err) {
-            console.warn(`Dynamic load of theme "${name}" failed, retrying...`, err);
-            try {
-                await new Promise((resolve) => setTimeout(resolve, 150));
-                const mod = await loader();
-                const normalized = normalizeTheme(mod.default);
-                normalizedShikiThemes.set(name, normalized);
-                return normalized;
-            } catch (retryErr) {
-                console.error(`Failed to load theme "${name}":`, retryErr);
-            }
-        }
-    }
-
-    const fallback = normalizedPierreThemes.get('pierre-dark-soft');
+    const fallback = await loadPierreTheme(DEFAULT_PIERRE_THEME);
     if (fallback) {
         return fallback;
     }
-
-    return normalizeTheme(toThemeRegistration(pierreDarkSoftRaw));
+    // Both the requested theme and the default chunk failed to load (e.g. the
+    // daemon was updated under us). Return a minimal theme so the app still
+    // renders; the next reload picks up matching chunks.
+    return normalizeTheme({ name: DEFAULT_PIERRE_THEME, type: 'dark', colors: {}, settings: [] });
 }
 
 const LIGHT_THEME_NAMES = new Set([
@@ -407,6 +537,7 @@ export function applyAppTheme(theme: ThemeRegistration): void {
         'statusBar.foreground': statusBarFg,
         'statusBar.border': statusBarBorder,
         'widget.border': sideBarBorder,
+        'editor.selectionBackground': colors['editor.selectionBackground'] || (isLight ? '#009fff2e' : '#69b1ff4d'),
         'editorWarning.foreground': colors['editorWarning.foreground'] || (isLight ? '#bf8803' : '#cca700'),
         'editorError.foreground': colors['editorError.foreground'] || (isLight ? '#e51400' : '#f14c4c'),
         'editorInfo.foreground': colors['editorInfo.foreground'] || (isLight ? '#1a85ff' : '#3794ff'),

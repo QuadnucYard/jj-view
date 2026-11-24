@@ -5,15 +5,29 @@
 
 import type { LoggerChannel } from '../utils/output-channel';
 import { TimerBucket } from '../utils/timer-bucket';
-import type { ChangeStatusRequest, CodeForgeProvider } from './code-forge-provider';
+import type {
+    ChangeStatusRequest,
+    CodeForgeProvider,
+    UploadedFileRequest,
+    UploadedRevisionDetails,
+} from './code-forge-provider';
 import type { CodeForgeProviderFactory } from './code-forge-provider-factory';
 import type { CodeForgeRegistry } from './code-forge-registry';
+import { CustomCliForgeProvider } from './custom-cli-forge-provider';
 import { type Disposable, disposeSafely, type Event, EventEmitter } from './host/events';
 import type { HostDisposable, HostEnvironment } from './host/host-environment';
 import type { JjService } from './jj-service';
 import type { CodeForgeChangeInfo, CommitParent, JjLogEntry } from './jj-types';
 
 const DEFAULT_PRIORITY_ORDER = ['github', 'gitlab', 'gerrit'];
+
+/** Refresh reason for user-initiated refreshes; they bypass `codeForge.minRefreshIntervalSeconds`. */
+export const MANUAL_REFRESH_REASON = 'manual refresh command';
+
+const DEFAULT_POLL_INTERVAL_SECONDS = 60;
+const MIN_POLL_INTERVAL_SECONDS = 10;
+/** Longer timer delays overflow and fire immediately. */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 function getProviderPriority(provider: CodeForgeProvider): number {
     if (provider.priority !== undefined) {
@@ -24,7 +38,13 @@ function getProviderPriority(provider: CodeForgeProvider): number {
 }
 
 export class CodeForgeService implements Disposable {
-    private poller: NodeJS.Timeout | undefined;
+    private poller: ReturnType<typeof setInterval> | undefined;
+    private pollerIntervalMs = 0;
+    private pollingRequested = false;
+    private lastStatusFetchAt: number | undefined;
+    private statusFetchEpoch = 0;
+    private deferredRefreshPending = false;
+    private deferredRefreshTimers = new TimerBucket();
     private activeProviderDisposable: Disposable | undefined;
     private disposables: (Disposable | HostDisposable)[] = [];
     private isDisposed = false;
@@ -45,6 +65,7 @@ export class CodeForgeService implements Disposable {
 
     private providers = new Map<string, CodeForgeProvider>();
     private activeProviderInstance: CodeForgeProvider | undefined;
+    private customCliProvider: CustomCliForgeProvider;
 
     constructor(
         public readonly workspaceRoot: string,
@@ -53,6 +74,9 @@ export class CodeForgeService implements Disposable {
         private host: HostEnvironment,
         private outputChannel: LoggerChannel,
     ) {
+        this.customCliProvider = new CustomCliForgeProvider(this.host, this.outputChannel);
+        this.providers.set('custom-cli', this.customCliProvider);
+
         for (const factory of this.registry.getFactories()) {
             this.providers.set(factory.id, factory.create(this.outputChannel, this.host));
         }
@@ -72,13 +96,26 @@ export class CodeForgeService implements Disposable {
         if (this.host.config.onDidChangeConfiguration) {
             this.disposables.push(
                 this.host.config.onDidChangeConfiguration((e) => {
+                    if (e.affectsConfiguration('jj-view.codeForge.enableComments')) {
+                        this._onDidUpdate.fire();
+                        if (this.host.config.get<boolean>('codeForge.enableComments', true) ?? true) {
+                            this.forceRefresh();
+                        }
+                    }
                     if (
                         e.affectsConfiguration('jj-view.gerrit') ||
                         e.affectsConfiguration('jj-view.github') ||
                         e.affectsConfiguration('jj-view.gitlab') ||
-                        e.affectsConfiguration('jj-view.codeForge')
+                        e.affectsConfiguration('jj-view.codeForge.provider') ||
+                        e.affectsConfiguration('jj-view.codeForge.adapterCommand')
                     ) {
                         this.detectActiveProvider(true);
+                    }
+                    if (e.affectsConfiguration('jj-view.codeForge.pollIntervalSeconds')) {
+                        this.schedulePoller();
+                    }
+                    if (e.affectsConfiguration('jj-view.codeForge.minRefreshIntervalSeconds')) {
+                        this.rearmDeferredRefresh();
                     }
                 }),
             );
@@ -94,11 +131,14 @@ export class CodeForgeService implements Disposable {
             return;
         }
         this.isDisposed = true;
+        this.statusFetchEpoch++;
+        this.deferredRefreshPending = false;
         this.stopPolling();
         this.safeDispose(this.backoffTimers, 'backoff timers');
+        this.safeDispose(this.deferredRefreshTimers, 'deferred refresh timers');
         this.safeDispose(this.activeProviderDisposable, 'active provider');
         this.safeDeactivate(this.activeProviderInstance);
-        for (const provider of this.providers.values()) {
+        for (const provider of new Set(this.providers.values())) {
             if (typeof provider.dispose === 'function') {
                 const disposeFn = provider.dispose.bind(provider);
                 this.safeDispose({ dispose: disposeFn }, `provider ${provider.id}`);
@@ -145,28 +185,133 @@ export class CodeForgeService implements Disposable {
         return this.providers.get(id);
     }
 
+    /** Starts polling every `codeForge.pollIntervalSeconds` (0 disables). Idempotent. */
     public startPolling() {
-        if (this.poller) {
+        this.pollingRequested = true;
+        this.schedulePoller();
+    }
+
+    public stopPolling() {
+        this.pollingRequested = false;
+        this.clearPoller();
+    }
+
+    private getPollIntervalMs(): number {
+        const seconds = this.host.config.get<number>('codeForge.pollIntervalSeconds', DEFAULT_POLL_INTERVAL_SECONDS);
+        if (typeof seconds !== 'number' || !Number.isFinite(seconds)) {
+            return DEFAULT_POLL_INTERVAL_SECONDS * 1000;
+        }
+        if (seconds <= 0) {
+            return 0;
+        }
+        return Math.min(Math.max(seconds, MIN_POLL_INTERVAL_SECONDS) * 1000, MAX_TIMER_DELAY_MS);
+    }
+
+    private schedulePoller(): void {
+        if (this.isDisposed) {
+            return;
+        }
+        const intervalMs = this.pollingRequested ? this.getPollIntervalMs() : 0;
+        if (intervalMs === 0) {
+            this.clearPoller();
+            return;
+        }
+        if (this.poller && this.pollerIntervalMs === intervalMs) {
             return;
         }
 
+        this.clearPoller();
+        this.pollerIntervalMs = intervalMs;
         this.poller = setInterval(() => {
             const isActive = this.host.ui.isActive ?? this.host.ui.isFocused ?? true;
             if (this.isEnabled && isActive) {
                 this.forceRefresh();
             }
-        }, 60000);
+        }, intervalMs);
     }
 
-    public stopPolling() {
+    private clearPoller(): void {
         if (this.poller) {
             clearInterval(this.poller);
             this.poller = undefined;
         }
+        this.pollerIntervalMs = 0;
+    }
+
+    /** Time left in the `codeForge.minRefreshIntervalSeconds` window; 0 if unset or elapsed. */
+    private getMinRefreshRemainingMs(): number {
+        const seconds = this.host.config.get<number>('codeForge.minRefreshIntervalSeconds', 0);
+        if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+            return 0;
+        }
+        if (this.lastStatusFetchAt === undefined) {
+            return 0;
+        }
+        const elapsedMs = Date.now() - this.lastStatusFetchAt;
+        if (elapsedMs < 0) {
+            return 0;
+        }
+        return Math.max(seconds * 1000 - elapsedMs, 0);
+    }
+
+    /** Whether a fetch ran less than `codeForge.minRefreshIntervalSeconds` ago. */
+    public isWithinMinRefreshInterval(): boolean {
+        return this.getMinRefreshRemainingMs() > 0;
+    }
+
+    /**
+     * Refreshes once the throttle window ends, for a change whose fetch was held back. Calls coalesce into one
+     * trailing forceRefresh(). No attempt is made to detect an intervening fetch covering it, since providers
+     * swallow errors; at most one extra fetch results.
+     */
+    public scheduleDeferredRefresh(): void {
+        if (this.isDisposed || this.deferredRefreshPending) {
+            return;
+        }
+        this.deferredRefreshPending = true;
+        this.armDeferredRefreshTimer();
+    }
+
+    private armDeferredRefreshTimer(): void {
+        if (this.isDisposed || !this.deferredRefreshPending) {
+            return;
+        }
+        const delayMs = Math.min(this.getMinRefreshRemainingMs(), MAX_TIMER_DELAY_MS);
+        this.deferredRefreshTimers.schedule(() => {
+            if (this.isDisposed || !this.deferredRefreshPending) {
+                return;
+            }
+            if (this.getMinRefreshRemainingMs() > 0) {
+                // A fetch (or the timer clamp) moved the end of the window.
+                this.armDeferredRefreshTimer();
+                return;
+            }
+            this.deferredRefreshPending = false;
+            const isActive = this.host.ui.isActive ?? this.host.ui.isFocused ?? true;
+            if (isActive) {
+                this.forceRefresh();
+            }
+        }, delayMs);
+    }
+
+    /** Re-arms a pending deferred refresh after the setting changes. */
+    private rearmDeferredRefresh(): void {
+        if (this.isDisposed || !this.deferredRefreshPending) {
+            return;
+        }
+        this.deferredRefreshTimers.dispose();
+        this.armDeferredRefreshTimer();
+    }
+
+    private cancelDeferredRefresh(): void {
+        this.deferredRefreshTimers.dispose();
+        this.deferredRefreshPending = false;
     }
 
     public clearCache(): void {
-        for (const provider of this.providers.values()) {
+        this.statusFetchEpoch++;
+        this.lastStatusFetchAt = undefined;
+        for (const provider of new Set(this.providers.values())) {
             provider.clearCache();
         }
     }
@@ -226,18 +371,23 @@ export class CodeForgeService implements Disposable {
             const remotes = await this.jjService.getGitRemotes();
             const repoRoot = await this.jjService.getRepoRoot();
             const preferredId = this.host.config.get<string>('codeForge.provider');
+            const prevActive = this.activeProviderInstance;
+            const prevActiveId = prevActive?.id;
 
             let detectedProvider: CodeForgeProvider | undefined;
 
             if (preferredId) {
-                const provider = this.providers.get(preferredId);
+                let provider = this.providers.get(preferredId);
+                if (!provider && (preferredId === 'custom-cli' || preferredId === this.customCliProvider.id)) {
+                    provider = this.customCliProvider;
+                }
                 if (provider && (await provider.detect(repoRoot, remotes))) {
                     detectedProvider = provider;
                 }
             }
 
             if (!detectedProvider) {
-                const sortedProviders = Array.from(this.providers.values()).sort(
+                const sortedProviders = Array.from(new Set(this.providers.values())).sort(
                     (a, b) => getProviderPriority(a) - getProviderPriority(b),
                 );
 
@@ -249,9 +399,15 @@ export class CodeForgeService implements Disposable {
                 }
             }
 
-            const prevActive = this.activeProviderInstance;
-            const changed = prevActive?.id !== detectedProvider?.id;
+            if (detectedProvider && detectedProvider === this.customCliProvider) {
+                this.providers.set(this.customCliProvider.id, this.customCliProvider);
+            }
+
+            const changed = prevActive !== detectedProvider || prevActiveId !== detectedProvider?.id;
             if (changed) {
+                this.statusFetchEpoch++;
+                this.lastStatusFetchAt = undefined;
+                this.cancelDeferredRefresh();
                 this.activeProviderDisposable?.dispose();
                 prevActive?.deactivate();
 
@@ -280,10 +436,39 @@ export class CodeForgeService implements Disposable {
     }
 
     public async ensureFreshStatuses(changes: ChangeStatusRequest[]): Promise<boolean> {
-        if (!this.activeProviderInstance) {
+        const provider = this.activeProviderInstance;
+        if (!provider) {
             return false;
         }
-        return this.activeProviderInstance.fetchStatuses(changes, this.jjService);
+        const epoch = this.statusFetchEpoch;
+        try {
+            return await provider.fetchStatuses(changes, this.jjService);
+        } finally {
+            if (!this.isDisposed && this.activeProviderInstance === provider && this.statusFetchEpoch === epoch) {
+                this.lastStatusFetchAt = Date.now();
+            }
+        }
+    }
+
+    public normalizeDescription(description: string): string {
+        if (this.activeProviderInstance?.normalizeDescription) {
+            return this.activeProviderInstance.normalizeDescription(description);
+        }
+        return description.trim();
+    }
+
+    public async fetchUploadedRevisionDetails(info: CodeForgeChangeInfo): Promise<UploadedRevisionDetails | undefined> {
+        if (!this.activeProviderInstance?.fetchUploadedRevisionDetails) {
+            return undefined;
+        }
+        return this.activeProviderInstance.fetchUploadedRevisionDetails(info, this.jjService);
+    }
+
+    public async getUploadedFileContent(request: UploadedFileRequest): Promise<Uint8Array | undefined> {
+        if (!this.activeProviderInstance?.getUploadedFileContent) {
+            return undefined;
+        }
+        return this.activeProviderInstance.getUploadedFileContent(request);
     }
 
     private verifyStructureSync(
@@ -298,7 +483,7 @@ export class CodeForgeService implements Disposable {
 
         const remoteParents = info.remoteParents;
         if (!remoteParents || remoteParents.length === 0) {
-            info.parentSynced = true;
+            info.parentSynced = info.parentSynced ?? true;
             return;
         }
 
@@ -309,20 +494,33 @@ export class CodeForgeService implements Disposable {
 
         const remoteSet = new Set(remoteParents);
         const matches = parents.every((localParent) => {
+            if (localParent.is_immutable && remoteSet.has(localParent.commit_id)) {
+                return true;
+            }
             const parentCommit = commitMap.get(localParent.commit_id);
             const parentBookmarks = parentCommit
                 ? (parentCommit.bookmarks ?? []).filter((b) => !b.remote).map((b) => b.name)
                 : undefined;
-            const parentInfo = activeProvider.getCachedChangeInfo(
-                localParent.change_id,
-                parentCommit?.description,
-                parentBookmarks,
-                localParent.commit_id,
-            );
+            const parentInfo =
+                parentCommit?.codeForgeChange ??
+                activeProvider.getCachedChangeInfo(
+                    localParent.change_id,
+                    parentCommit?.description,
+                    parentBookmarks,
+                    localParent.commit_id,
+                );
             if (!parentInfo) {
                 return localParent.is_immutable && remoteSet.has(localParent.commit_id);
             }
-            return parentInfo.currentRevision !== undefined && remoteSet.has(parentInfo.currentRevision);
+            const isParentSynced =
+                localParent.commit_id === parentInfo.currentRevision ||
+                parentInfo.synced === true ||
+                (parentInfo.synced === undefined &&
+                    parentInfo.contentSynced === true &&
+                    parentInfo.parentSynced !== false);
+            return (
+                parentInfo.currentRevision !== undefined && remoteSet.has(parentInfo.currentRevision) && isParentSynced
+            );
         });
 
         info.parentSynced = matches;
@@ -334,8 +532,11 @@ export class CodeForgeService implements Disposable {
             return;
         }
 
+        const commentsEnabled = this.host.config.get<boolean>('codeForge.enableComments', true) ?? true;
+        const isManagedBookmark = activeProvider.isManagedBookmark;
         const commitMap = new Map<string, JjLogEntry>();
         for (const commit of commits) {
+            commit.codeForgeNeedsUpload = undefined;
             if (commit.commit_id) {
                 commitMap.set(commit.commit_id, commit);
                 const info = activeProvider.getCachedChangeInfo(
@@ -344,17 +545,52 @@ export class CodeForgeService implements Disposable {
                     (commit.bookmarks ?? []).filter((b) => !b.remote).map((b) => b.name),
                     commit.commit_id,
                 );
-                commit.codeForgeChange = info ? { ...info } : undefined;
+                if (info) {
+                    commit.codeForgeChange = commentsEnabled
+                        ? { ...info }
+                        : {
+                              ...info,
+                              unresolvedComments: 0,
+                              draftComments: undefined,
+                              draftResponses: undefined,
+                              addressedThreads: undefined,
+                              hasDraftResponses: undefined,
+                          };
+                } else {
+                    commit.codeForgeChange = undefined;
+                }
             }
         }
 
-        // Structural Pass
-        for (const commit of commits) {
+        // Structural Pass (bottom-up so parent.codeForgeChange.synced is resolved before children)
+        const structureEvaluated = new Set<string>();
+        const evaluateStructure = (commit: JjLogEntry): void => {
+            if (commit.commit_id) {
+                if (structureEvaluated.has(commit.commit_id)) {
+                    return;
+                }
+                structureEvaluated.add(commit.commit_id);
+            }
+            if (commit.parents) {
+                for (const parent of commit.parents) {
+                    const parentCommit = commitMap.get(parent.commit_id);
+                    if (parentCommit) {
+                        evaluateStructure(parentCommit);
+                    }
+                }
+            }
             const info = commit.codeForgeChange;
             if (info && commit.parents) {
                 this.verifyStructureSync(commit.parents, info, activeProvider, commitMap);
                 info.synced = info.contentSynced && info.parentSynced;
             }
+            if (isManagedBookmark && commit.bookmarks && commit.bookmarks.length > 0) {
+                commit.bookmarks = commit.bookmarks.filter((b) => !isManagedBookmark.call(activeProvider, b.name));
+            }
+        };
+
+        for (const commit of commits) {
+            evaluateStructure(commit);
         }
 
         const needsUploadCache = new Map<string, boolean>();
@@ -365,7 +601,7 @@ export class CodeForgeService implements Disposable {
             }
 
             const commit = commitMap.get(commitId);
-            if (!commit) {
+            if (!commit || commit.is_immutable) {
                 return false;
             }
 
@@ -403,7 +639,12 @@ export class CodeForgeService implements Disposable {
         };
 
         for (const commit of commits) {
-            if (commit.commit_id && commit.codeForgeChange && commit.codeForgeChange.status === 'NEW') {
+            if (
+                !commit.is_immutable &&
+                commit.commit_id &&
+                commit.codeForgeChange &&
+                commit.codeForgeChange.status === 'NEW'
+            ) {
                 const needsUpload = computeNeedsUpload(commit.commit_id);
                 commit.codeForgeNeedsUpload = needsUpload;
             }

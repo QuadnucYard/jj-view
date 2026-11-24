@@ -3,7 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { z } from 'zod';
-import { JjBookmarkSchema, JjStatusEntrySchema, JjTagSchema } from '../../jj-schemas';
+import { CodeForgeChangeInfoSchema, JjBookmarkSchema, JjStatusEntrySchema, JjTagSchema } from '../../jj-schemas';
+
+const RemoteFileActionPayloadSchema = z.object({
+    changeId: z.string(),
+    path: z.string(),
+    status: z.string().optional(),
+});
 
 export const CommitDetailsToHostMessageSchema = z.discriminatedUnion('type', [
     z.object({ type: z.literal('webviewLoaded') }),
@@ -37,6 +43,28 @@ export const CommitDetailsToHostMessageSchema = z.discriminatedUnion('type', [
             changeId: z.string(),
         }),
     }),
+    z.object({
+        type: z.literal('openCompareWithUploaded'),
+        payload: z.object({
+            changeId: z.string(),
+        }),
+    }),
+    z.object({
+        type: z.literal('splitFiles'),
+        payload: z.object({
+            changeId: z.string(),
+            paths: z.array(z.string()).min(1),
+            placement: z.enum(['before', 'after']),
+        }),
+    }),
+    z.object({
+        type: z.literal('openFileOnRemote'),
+        payload: RemoteFileActionPayloadSchema,
+    }),
+    z.object({
+        type: z.literal('copyRemoteFileUrl'),
+        payload: RemoteFileActionPayloadSchema,
+    }),
 ]);
 export type CommitDetailsToHostMessage = z.infer<typeof CommitDetailsToHostMessageSchema>;
 
@@ -47,6 +75,12 @@ export const CommitDetailsPayloadSchema = z.object({
     changeIdOffset: z.number().optional(),
     commitId: z.string().optional(),
     description: z.string().optional(),
+    /**
+     * Unsaved description text, present only while it differs from
+     * `description`. Lets a (re)mounted view pick up an in-progress edit
+     * that the controller still holds.
+     */
+    unsavedDraft: z.string().optional(),
     files: z.array(JjStatusEntrySchema).optional(),
     isImmutable: z.boolean().optional(),
     isEmpty: z.boolean().optional(),
@@ -73,6 +107,10 @@ export const CommitDetailsPayloadSchema = z.object({
     theme: z.string().optional(),
     formatDescriptionOnSave: z.boolean().optional(),
     isLoadingFiles: z.boolean().optional(),
+    codeForgeChange: CodeForgeChangeInfoSchema.optional(),
+    codeForgeNeedsUpload: z.boolean().optional(),
+    descriptionModifiedFromRemote: z.boolean().optional(),
+    unuploadedFilePaths: z.array(z.string()).optional(),
 });
 export type CommitDetailsPayload = z.infer<typeof CommitDetailsPayloadSchema>;
 

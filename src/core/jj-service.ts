@@ -2,12 +2,25 @@
  * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
-import path from 'pathe';
 import type { z } from 'zod';
 import { AsyncCache } from '../utils/async-cache';
 import { getErrorMessage } from '../utils/error-utils';
+import { type DiffHunkRange, parseDiffHunks, parseMultiFileDiffHunks } from '../utils/line-drift';
+import { LruCache } from '../utils/lru-cache';
 import { type LoggerChannel, NO_OP_LOGGER } from '../utils/output-channel';
-import { type HostSystem, type ProcessExecOptions, ProcessExitError, type TrackableProcess } from './host/host-system';
+import type { UploadedRevisionFile } from './code-forge-provider';
+import {
+    HELPER_SCRIPT_TOKEN,
+    type HostPlatform,
+    type HostSystem,
+    type ProcessExecOptions,
+    ProcessExitError,
+    type ProcessResult,
+    SCRATCH_DIR_TOKEN,
+    type ScratchExecRequest,
+    type ScratchExecResult,
+    type TrackableProcess,
+} from './host/host-system';
 import { NodeHostSystem } from './host/node-host-system';
 import {
     ANNOTATION_TEMPLATE,
@@ -18,14 +31,12 @@ import {
 } from './jj-blame';
 import type { IJjTrackedProcess, JjProcessTracker } from './jj-process-tracker';
 import {
-    ChangesAndStatsOutputSchema,
     type ConflictedFileEntry,
+    createJjOutputSchemas,
     type DiffStatEntry,
     JjBookmarkSchema,
     type JjFileChange,
-    JjFileChangeSchema,
     type JjFileChangeWithStats,
-    JjLogEntrySchema,
     JjTagSchema,
     JjWorkspaceSchema,
 } from './jj-schemas';
@@ -42,8 +53,76 @@ import {
 import type { JjBookmark, JjLogEntry, JjStatusEntry, JjTag, JjWorkspace } from './jj-types';
 import type { SelectionRange } from './patch-helper';
 import * as PatchHelper from './patch-helper';
+import {
+    isWindowsStylePath,
+    normalizeRepoSeparators,
+    pathDirname,
+    pathIsAbsolute,
+    pathJoin,
+    pathNormalize,
+    pathRelative,
+    pathResolve,
+    trimSeparators,
+    unquoteGitPath,
+} from './path-utils';
+import { isInsideRelativePath, normalizeDriveLetter, resolvePathAgainstRealRootAsync } from './uri-utils';
 
 export { NO_OP_LOGGER };
+
+export interface GitCommitDetails {
+    description: string;
+    files: Record<string, UploadedRevisionFile>;
+}
+
+const HEX_COMMIT_PATTERN = /^[0-9a-fA-F]{4,64}$/;
+
+function parseGitRawFiles(
+    tokens: string[],
+    startIndex: number,
+    platform?: HostPlatform | string,
+): Record<string, UploadedRevisionFile> {
+    const files: Record<string, UploadedRevisionFile> = {};
+    let idx = startIndex;
+    while (idx < tokens.length) {
+        const header = tokens[idx].replace(/^(?:\r?\n)+/, '');
+        if (!header?.startsWith(':')) {
+            idx++;
+            continue;
+        }
+        const match = /^:\d+\s+\d+\s+[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+([A-Z])(?:\d+)?$/.exec(header);
+        if (!match) {
+            idx++;
+            continue;
+        }
+        const [, rawNewSha, statusLetter] = match;
+        const isZeroSha = /^0+$/.test(rawNewSha);
+        const newSha = statusLetter === 'D' || isZeroSha ? undefined : rawNewSha;
+
+        if (statusLetter === 'R' || statusLetter === 'C') {
+            const oldPath = tokens[idx + 1];
+            const newPath = tokens[idx + 2];
+            if (oldPath !== undefined && newPath !== undefined) {
+                files[normalizeRepoSeparators(newPath, platform)] = {
+                    status: statusLetter,
+                    oldPath: normalizeRepoSeparators(oldPath, platform),
+                    newSha,
+                };
+            }
+            idx += 3;
+            continue;
+        }
+
+        const filePath = tokens[idx + 1];
+        if (filePath !== undefined) {
+            files[normalizeRepoSeparators(filePath, platform)] = {
+                status: statusLetter,
+                newSha,
+            };
+        }
+        idx += 2;
+    }
+    return files;
+}
 
 export interface JjLogOptions {
     revision?: string;
@@ -73,9 +152,26 @@ const DIFF_STATS_FIELD: JjTemplateField = {
 };
 
 const COMMIT_DETAILS_TEMPLATE = buildLogTemplate({ ...LOG_ENTRY_SCHEMA, conflicts: CONFLICTED_FILES_FIELD });
-const COMMIT_DETAILS_SCHEMA = JjLogEntrySchema.extend({ conflicts: ChangesAndStatsOutputSchema.shape.conflicts });
 const DIFF_STATS_TEMPLATE = buildLogTemplate({ stats: DIFF_STATS_FIELD });
-const DIFF_STATS_SCHEMA = ChangesAndStatsOutputSchema.pick({ stats: true });
+/**
+ * Target placement strategy when rebasing commits:
+ * - 'onto': Rebase onto target destination(s) using canonical `-o` (`--onto`).
+ * - 'after': Insert after target commit(s) using `-A` (`--insert-after`).
+ * - 'before': Insert before target commit(s) using `-B` (`--insert-before`).
+ */
+export type RebasePlacement = 'onto' | 'before' | 'after';
+
+/**
+ * Options configuring a rebase operation.
+ */
+export interface RebaseOptions {
+    /** Target revision(s) or revsets. */
+    target: string | string[];
+    /** Placement relative to target. Defaults to 'onto'. */
+    placement?: RebasePlacement;
+    /** Whether to rebase a single revision ('revision' / `-r`) or the source and its descendants ('source' / `-s`). Defaults to 'source'. */
+    mode?: 'source' | 'revision';
+}
 
 // Safety timeout: if a mutation takes longer than this, unblock file watcher
 const ONE_MINUTE = 60_000;
@@ -116,31 +212,53 @@ export interface JjRunOptions {
     label?: string;
 }
 
-function unquoteGitPath(rawPath: string): string {
-    if (!rawPath.startsWith('"') || !rawPath.endsWith('"')) {
-        return rawPath;
-    }
-    try {
-        const parsed = JSON.parse(rawPath);
-        if (typeof parsed === 'string') {
-            return parsed;
+function escapeFilesetString(relPath: string): string {
+    let escaped = '';
+    for (const ch of relPath) {
+        const code = ch.charCodeAt(0);
+        if (ch === '\\') {
+            escaped += '\\\\';
+        } else if (ch === '"') {
+            escaped += '\\"';
+        } else if (ch === '\t') {
+            escaped += '\\t';
+        } else if (ch === '\r') {
+            escaped += '\\r';
+        } else if (ch === '\n') {
+            escaped += '\\n';
+        } else if (ch === '\0') {
+            escaped += '\\0';
+        } else if (code < 0x20 || code === 0x7f) {
+            escaped += `\\x${code.toString(16).padStart(2, '0')}`;
+        } else {
+            escaped += ch;
         }
-    } catch {
-        // Fallback for Git's C-style octal escape sequences (e.g. \303\251)
-        const unescapedBinary = rawPath
-            .slice(1, -1)
-            .replace(/\\([0-7]{3})/g, (_, oct: string) => String.fromCharCode(parseInt(oct, 8)))
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, '\\');
-        return Buffer.from(unescapedBinary, 'latin1').toString('utf8');
     }
-    return rawPath;
+    return escaped;
+}
+
+/**
+ * Formats a workspace-relative path prefix (file or directory) as a JJ `root:"..."` fileset literal
+ * so backslashes, quotes, and fileset metacharacters are treated as literal path characters.
+ */
+export function formatRootFileset(relPath: string): string {
+    return `root:"${escapeFilesetString(relPath)}"`;
+}
+
+/**
+ * Formats a workspace-relative file path as an exact JJ `root-file:"..."` fileset literal
+ * so fileset metacharacters (`:`, `*`, `~`, parentheses) and leading dashes are treated as literal path characters.
+ */
+export function formatRootFileFileset(relPath: string): string {
+    return `root-file:"${escapeFilesetString(relPath)}"`;
 }
 
 export class JjService {
     public binaryPath: string;
     public processTracker?: JjProcessTracker;
     public readonly system: HostSystem;
+    private readonly _pathPlatform: HostPlatform | string;
+    private readonly _schemas: ReturnType<typeof createJjOutputSchemas>;
     private readonly _getConfig?: JjServiceConfigProvider;
     private readonly _onWorkspaceUpdated?: () => Promise<void>;
     private _writeOperationCount = 0;
@@ -151,11 +269,19 @@ export class JjService {
     private _cacheEpoch = 0;
     private _diffCacheGeneration = 0;
     private readonly _logEntryCache = new Map<string, JjLogEntry>();
+    private _logRevsetPromise: Promise<string> | undefined;
     private readonly _diffCache: AsyncCache<string, { tempDir: string; expires: number }>;
+    private readonly _diffContentCache = new Map<string, Map<string, { left: string; right: string }>>();
+    private readonly _diffBinaryCache = new Map<string, Map<string, { left: Uint8Array; right: Uint8Array }>>();
     private readonly _changesCache = new AsyncCache<string, JjStatusEntry[]>({
         clone: (entries) => entries.map((e) => ({ ...e })),
     });
     private readonly _blameCache = new AsyncCache<string, JjFileBlame | undefined>({ maxEntries: 20 });
+    private readonly _gitBlobContentCache = new LruCache<string, string>({ maxEntries: 200 });
+    private readonly _gitCommitDetailsCache = new LruCache<string, GitCommitDetails>({ maxEntries: 200 });
+    private readonly _gitRangeFilesCache = new LruCache<string, Record<string, UploadedRevisionFile>>({
+        maxEntries: 200,
+    });
     private _mutationMutex: Promise<void> = Promise.resolve();
 
     constructor(
@@ -168,6 +294,9 @@ export class JjService {
         this._onWorkspaceUpdated = options?.onWorkspaceUpdated;
         this.processTracker = options?.processTracker;
         this.system = options?.system ?? new NodeHostSystem();
+        this._pathPlatform =
+            this.system.platform === 'win32' || isWindowsStylePath(this.workspaceRoot) ? 'win32' : this.system.platform;
+        this._schemas = createJjOutputSchemas(this._pathPlatform);
         this._diffCache = new AsyncCache<string, { tempDir: string; expires: number }>({
             onEvict: (entry) => this.system.fs.rm(entry.tempDir, { recursive: true, force: true }).catch(() => {}),
         });
@@ -184,12 +313,30 @@ export class JjService {
     }
 
     private _repoRoot?: string;
+    private _repoRootPromise?: Promise<string>;
+    /**
+     * Resolves `jj root` for this service's workspaceRoot. Concurrent callers
+     * share one spawn: the result only depends on cwd, which is fixed per
+     * instance. Different instances (different cwds) still spawn separately.
+     */
     async getRepoRoot(): Promise<string> {
-        if (this._repoRoot) {
+        if (this._repoRoot !== undefined) {
             return this._repoRoot;
         }
-        this._repoRoot = await this.run('root', [], { useCachedSnapshot: true, label: 'getRepoRoot' });
-        return this._repoRoot;
+        if (this._repoRootPromise) {
+            return this._repoRootPromise;
+        }
+        const promise = this.run('root', [], { useCachedSnapshot: true, label: 'getRepoRoot' });
+        this._repoRootPromise = promise;
+        try {
+            const root = await promise;
+            this._repoRoot = root;
+            return root;
+        } finally {
+            if (this._repoRootPromise === promise) {
+                this._repoRootPromise = undefined;
+            }
+        }
     }
 
     /**
@@ -203,12 +350,13 @@ export class JjService {
     }
 
     private async resolveRepoStorePath(workspaceRoot: string): Promise<string> {
-        const repoPath = path.join(workspaceRoot, '.jj', 'repo');
+        const platform = this._pathPlatform;
+        const repoPath = pathJoin([workspaceRoot, '.jj', 'repo'], platform);
         try {
             const stats = await this.system.fs.lstat(repoPath);
             if (stats.isFile()) {
                 const content = await this.system.fs.readTextFile(repoPath);
-                return path.resolve(path.dirname(repoPath), content.trim());
+                return pathResolve([pathDirname(repoPath, platform), content.trim()], platform);
             }
             return await this.system.fs.realpath(repoPath);
         } catch {
@@ -221,10 +369,11 @@ export class JjService {
      */
     async getMainWorkspaceRoot(): Promise<string> {
         const storePath = await this.getRepoStorePath();
+        const platform = this._pathPlatform;
         // The store is typically <main-root>/.jj/repo.
         // Parent 1: <main-root>/.jj
         // Parent 2: <main-root>
-        return path.dirname(path.dirname(storePath));
+        return pathDirname(pathDirname(storePath, platform), platform);
     }
 
     private _gitRoot?: string | null;
@@ -276,62 +425,176 @@ export class JjService {
         return message.includes('index.lock') || message.includes('Could not acquire lock');
     }
 
-    private toRelative(filePath: string): string {
-        if (path.isAbsolute(filePath)) {
-            return path.relative(this.workspaceRoot, filePath);
+    private _workspaceReal?: string;
+    private _workspaceRealPromise?: Promise<string>;
+    private _realRoots?: { repoReal: string; workspaceReal: string };
+    private _realRootsPromise?: Promise<{ repoReal: string; workspaceReal: string }>;
+
+    /**
+     * Resolves and caches the canonical `realpath` of `workspaceRoot`, falling
+     * back to `workspaceRoot` without caching if resolution fails.
+     */
+    async getWorkspaceReal(): Promise<string> {
+        if (this._workspaceReal !== undefined) {
+            return this._workspaceReal;
         }
-        return filePath;
+        if (this._workspaceRealPromise) {
+            return this._workspaceRealPromise;
+        }
+        let promise: Promise<string> | undefined;
+        promise = (async () => {
+            try {
+                const real = await this.system.fs.realpath(this.workspaceRoot);
+                this._workspaceReal = real;
+                return real;
+            } catch {
+                return this.workspaceRoot;
+            } finally {
+                if (this._workspaceRealPromise === promise) {
+                    this._workspaceRealPromise = undefined;
+                }
+            }
+        })();
+        this._workspaceRealPromise = promise;
+        return promise;
+    }
+
+    private async getRealRoots(): Promise<{ repoReal: string; workspaceReal: string }> {
+        if (this._realRoots) {
+            return this._realRoots;
+        }
+        if (this._realRootsPromise) {
+            return this._realRootsPromise;
+        }
+        let promise: Promise<{ repoReal: string; workspaceReal: string }> | undefined;
+        promise = (async () => {
+            try {
+                const [repoRoot, workspaceReal] = await Promise.all([this.getRepoRoot(), this.getWorkspaceReal()]);
+                let repoReal = repoRoot;
+                let repoRealOk = false;
+                try {
+                    repoReal = await this.system.fs.realpath(repoRoot);
+                    repoRealOk = true;
+                } catch {
+                    repoReal = repoRoot;
+                }
+                const resolvedWorkspaceReal = this._workspaceReal;
+                if (repoRealOk && resolvedWorkspaceReal !== undefined) {
+                    const resolvedRoots = { repoReal, workspaceReal: resolvedWorkspaceReal };
+                    this._realRoots = resolvedRoots;
+                    return resolvedRoots;
+                }
+                return { repoReal, workspaceReal };
+            } finally {
+                if (this._realRootsPromise === promise) {
+                    this._realRootsPromise = undefined;
+                }
+            }
+        })();
+        this._realRootsPromise = promise;
+        return promise;
+    }
+
+    private async workspaceRelativeToRepoRelative(workspaceRelPath: string): Promise<string> {
+        const platform = this._pathPlatform;
+        const repoRoot = await this.getRepoRoot();
+        const normRepoRoot = normalizeDriveLetter(pathNormalize(repoRoot, platform));
+        const normWorkspaceRoot = normalizeDriveLetter(pathNormalize(this.workspaceRoot, platform));
+        if (normRepoRoot === normWorkspaceRoot) {
+            return pathNormalize(workspaceRelPath, platform);
+        }
+        const { repoReal, workspaceReal } = await this.getRealRoots();
+        const normRepoReal = normalizeDriveLetter(pathNormalize(repoReal, platform));
+        const normWorkspaceReal = normalizeDriveLetter(pathNormalize(workspaceReal, platform));
+        if (normRepoReal === normWorkspaceReal) {
+            return pathNormalize(workspaceRelPath, platform);
+        }
+        const repoToWorkspace = pathRelative(normRepoReal, normWorkspaceReal, platform);
+        return pathNormalize(pathJoin([repoToWorkspace, workspaceRelPath], platform), platform);
+    }
+
+    private async resolveRelativeToRealRoot(filePath: string, realRoot: string): Promise<string> {
+        const platform = this._pathPlatform;
+        const resolution = await resolvePathAgainstRealRootAsync(filePath, realRoot, this.system.fs, platform);
+        if (resolution?.inside) {
+            return resolution.relativePath;
+        }
+        const fileReal = resolution?.resolvedPath ?? filePath;
+        return pathNormalize(
+            pathRelative(
+                normalizeDriveLetter(pathNormalize(realRoot, platform)),
+                normalizeDriveLetter(fileReal),
+                platform,
+            ),
+            platform,
+        );
+    }
+
+    private async toRelative(filePath: string): Promise<string> {
+        const platform = this._pathPlatform;
+        if (!pathIsAbsolute(filePath, platform)) {
+            return filePath;
+        }
+        const directRel = pathRelative(
+            normalizeDriveLetter(this.workspaceRoot),
+            normalizeDriveLetter(filePath),
+            platform,
+        );
+        if (isInsideRelativePath(directRel, platform)) {
+            return pathNormalize(directRel, platform);
+        }
+        const workspaceReal = await this.getWorkspaceReal();
+        return this.resolveRelativeToRealRoot(filePath, workspaceReal);
     }
 
     private async toRepoRelative(filePath: string): Promise<string> {
-        const repoRoot = await this.getRepoRoot();
-        const repoReal = await this.system.fs.realpath(repoRoot).catch(() => repoRoot);
-        const workspaceReal = await this.system.fs.realpath(this.workspaceRoot).catch(() => this.workspaceRoot);
-
-        if (!path.isAbsolute(filePath)) {
-            const repoToWorkspace = path.relative(repoReal, workspaceReal);
-            return path.normalize(path.join(repoToWorkspace, filePath));
+        const platform = this._pathPlatform;
+        if (!pathIsAbsolute(filePath, platform)) {
+            return this.workspaceRelativeToRepoRelative(filePath);
         }
 
-        const rel = path.relative(repoReal, filePath);
-        if (!rel.startsWith('..')) {
-            return path.normalize(rel);
+        const directWorkspaceRel = pathRelative(
+            normalizeDriveLetter(this.workspaceRoot),
+            normalizeDriveLetter(filePath),
+            platform,
+        );
+        if (isInsideRelativePath(directWorkspaceRel, platform)) {
+            return this.workspaceRelativeToRepoRelative(directWorkspaceRel);
         }
 
-        const fileReal = await this.resolveRealPath(filePath);
-        return path.normalize(path.relative(repoReal, fileReal));
+        const { repoReal } = await this.getRealRoots();
+        const normRepoReal = normalizeDriveLetter(pathNormalize(repoReal, platform));
+        const rel = pathRelative(normRepoReal, normalizeDriveLetter(filePath), platform);
+        if (isInsideRelativePath(rel, platform)) {
+            return pathNormalize(rel, platform);
+        }
+
+        return this.resolveRelativeToRealRoot(filePath, repoReal);
     }
 
-    private async resolveRealPath(filePath: string): Promise<string> {
-        try {
-            return await this.system.fs.realpath(filePath);
-        } catch {}
-
-        let cur = path.dirname(filePath);
-        const tail: string[] = [path.basename(filePath)];
-        while (cur && cur !== path.dirname(cur) && !/^[a-zA-Z]:(\/)?$/.test(cur)) {
-            try {
-                const parentReal = await this.system.fs.realpath(cur);
-                return path.join(parentReal, ...tail);
-            } catch {
-                tail.unshift(path.basename(cur));
-                cur = path.dirname(cur);
-            }
+    /**
+     * Resolves a file path (absolute or workspace-relative) to a canonical repo-relative path,
+     * or `undefined` if the path lies outside the repository.
+     */
+    async resolveRepoRelativePath(filePath: string): Promise<string | undefined> {
+        const platform = this._pathPlatform;
+        const rel = await this.toRepoRelative(filePath);
+        if (!isInsideRelativePath(rel, platform)) {
+            return undefined;
         }
-        return filePath;
+        const normalized = normalizeRepoSeparators(trimSeparators(rel, platform), platform);
+        if (!normalized || normalized === '.') {
+            return '';
+        }
+        return normalized;
     }
 
     private getToolConfigArgs(toolName: string, scriptPath: string, argsTemplate: string[]): string[] {
         const isWin = this.system.platform === 'win32';
-        const normalizedScriptPath = path.normalize(scriptPath);
+        const normalizedScriptPath = pathNormalize(scriptPath, this.system.platform);
 
-        // Ensure all arguments in the template are quoted for the JSON array
-        const quotedArgs = argsTemplate.map((arg) => {
-            if (arg.startsWith('"') && arg.endsWith('"')) {
-                return arg;
-            }
-            return `"${arg}"`;
-        });
+        // JSON.stringify produces valid TOML double-quoted strings, preserving backslashes on POSIX
+        const quotedArgs = argsTemplate.map((arg) => JSON.stringify(arg));
 
         if (isWin) {
             // On Windows, we must use cmd /c to execute .bat files correctly from jj
@@ -363,9 +626,7 @@ export class JjService {
         return this.runInternal(command, args, options);
     }
 
-    private async runInternal(command: string, args: string[], options: JjRunOptions = {}): Promise<string> {
-        const opId = this._nextOpId++;
-
+    private buildGlobalArgs(options: JjRunOptions): string[] {
         const globalArgs = [
             '--config',
             'ui.log-word-wrap=false',
@@ -376,13 +637,62 @@ export class JjService {
             '--config',
             'ui.diff-instructions=false',
         ];
-
         if (options.useCachedSnapshot) {
             globalArgs.push('--ignore-working-copy');
         }
+        return globalArgs;
+    }
+
+    private async runInternal(command: string, args: string[], options: JjRunOptions = {}): Promise<string> {
+        const result = await this.execTracked(command, args, options, (allArgs, execOptions) =>
+            this.system.process.execFile(this.binaryPath, allArgs, execOptions),
+        );
+        const shouldTrim = options.trim !== false;
+        return shouldTrim ? result.stdout.trim() : result.stdout;
+    }
+
+    /**
+     * Runs a jj command that needs a fresh scratch directory (created by the host) and
+     * a helper script path, as a single host operation. `scratch.completionMarker`
+     * decides success: helper scripts intentionally exit non-zero to abort the jj
+     * operation after capturing output, so exit code alone is not meaningful.
+     */
+    private async runInScratchDir(
+        command: string,
+        args: string[],
+        scratch: Omit<ScratchExecRequest, 'file' | 'args' | 'options'>,
+        options: JjRunOptions = {},
+    ): Promise<ScratchExecResult> {
+        return this.execTracked(command, args, options, async (allArgs, execOptions) => {
+            const result = await this.system.process.execFileInScratchDir({
+                ...scratch,
+                file: this.binaryPath,
+                args: allArgs,
+                options: execOptions,
+            });
+            if (result.exitCode === 0 || result.markerPresent) {
+                return result;
+            }
+            await this.system.fs.rm(result.scratchDir, { recursive: true, force: true }).catch(() => {});
+            throw new ProcessExitError(
+                `Process ${this.binaryPath} failed with exit code ${result.exitCode}`,
+                result.exitCode,
+                result.stdout,
+                result.stderr,
+            );
+        });
+    }
+
+    private async execTracked<T extends ProcessResult>(
+        command: string,
+        args: string[],
+        options: JjRunOptions,
+        invoke: (allArgs: string[], execOptions: ProcessExecOptions) => Promise<T>,
+    ): Promise<T> {
+        const opId = this._nextOpId++;
 
         const start = performance.now();
-        const allArgs = [...globalArgs, command, ...args];
+        const allArgs = [...this.buildGlobalArgs(options), command, ...args];
         const prefix = options.label ? `[${options.label}] ` : '';
         const fullCommandStr = `jj ${[command, ...args].join(' ')}`;
         const logSummaryStr = `${prefix}jj ${[command, ...args].slice(0, 2).join(' ')}${[command, ...args].length > 2 ? '...' : ''}`;
@@ -428,6 +738,7 @@ export class JjService {
                     JJ_VIEW_EXTENSION: '1',
                 },
                 maxBuffer: 100 * 1024 * 1024,
+                timeout: maxDuration,
                 signal: abortController.signal,
                 onSpawn: (childProcess) => {
                     spawnedProc = childProcess;
@@ -441,10 +752,7 @@ export class JjService {
                 },
             };
 
-            const result = await Promise.race([
-                this.system.process.execFile(this.binaryPath, allArgs, execOptions),
-                timeoutPromise,
-            ]);
+            const result = await Promise.race([invoke(allArgs, execOptions), timeoutPromise]);
             const duration = performance.now() - start;
             if (globalThis.__JJ_VIEW_COMMAND_HOOK__) {
                 globalThis.__JJ_VIEW_COMMAND_HOOK__(command, args, duration);
@@ -457,8 +765,7 @@ export class JjService {
                 await this.clearCache().catch((err) => this.logger.warn(`Warning: failed to clear cache: ${err}`));
             }
 
-            const shouldTrim = options.trim !== false;
-            return shouldTrim ? result.stdout.trim() : result.stdout;
+            return result;
         } catch (err: unknown) {
             if (timedOut) {
                 throw new Error(
@@ -644,12 +951,17 @@ export class JjService {
         }
 
         const epoch = this._cacheEpoch;
+        // The nearest-ancestor search set needs the configured log revset when
+        // no explicit revision is given. Start that lookup now so it overlaps
+        // the main log query instead of adding a serial jj spawn afterwards.
+        const searchSet =
+            includeNearestVisibleAncestors && !revision ? this.getConfiguredLogRevset() : Promise.resolve(revision);
         const output = await this.run('log', args, { useCachedSnapshot: true, label: 'getLog' });
-        const entries = this._parseJsonLines(output, JjLogEntrySchema, 'getLog');
+        const entries = this._parseJsonLines(output, this._schemas.logEntry, 'getLog');
 
         if (includeNearestVisibleAncestors) {
             const visibleIds = new Set<string>(entries.map((e) => e.change_id));
-            await this._resolveNearestVisibleAncestors(entries, visibleIds, revision);
+            await this._resolveNearestVisibleAncestors(entries, visibleIds, await searchSet);
         }
 
         if (omitChanges && this._cacheEpoch === epoch) {
@@ -666,25 +978,30 @@ export class JjService {
         return entries[0];
     }
 
+    private static readonly FALLBACK_LOG_REVSET = 'present(@) | ancestors(immutable_heads().., 2) | trunk()';
+
+    /**
+     * The user's configured `revsets.log`, memoized until the next cache clear.
+     * Falls back to jj's default when the key is unset or the lookup fails.
+     */
+    private getConfiguredLogRevset(): Promise<string> {
+        if (this._logRevsetPromise) {
+            return this._logRevsetPromise;
+        }
+        const promise = this.run('config', ['get', 'revsets.log'], {
+            useCachedSnapshot: true,
+            label: 'getLog:revsets.log',
+        }).catch(() => JjService.FALLBACK_LOG_REVSET);
+        this._logRevsetPromise = promise;
+        return promise;
+    }
+
     private async _resolveNearestVisibleAncestors(
         entries: JjLogEntry[],
         visibleIds: Set<string>,
-        revision?: string,
+        requestedSearchSet: string | undefined,
     ): Promise<void> {
-        // Determine the search set for nearest ancestors.
-        // If an explicit revision was provided, we use that.
-        // Otherwise, we default to the configured log revset (or a safe fallback).
-        let searchSet = revision;
-        if (!searchSet) {
-            try {
-                searchSet = await this.run('config', ['get', 'revsets.log'], {
-                    useCachedSnapshot: true,
-                    label: 'getLog:revsets.log',
-                });
-            } catch {
-                searchSet = 'present(@) | ancestors(immutable_heads().., 2) | trunk()';
-            }
-        }
+        const searchSet = requestedSearchSet || JjService.FALLBACK_LOG_REVSET;
 
         const followUps: Promise<void>[] = [];
         for (const entry of entries) {
@@ -744,12 +1061,23 @@ export class JjService {
         return output.trim().split('\n').filter(Boolean);
     }
 
-    async restore(paths: string[], options: { from?: string; into?: string; changesIn?: string } = {}): Promise<void> {
+    private async toRepoFilesets(paths: readonly string[], mode: 'exact' | 'prefix' = 'prefix'): Promise<string[]> {
+        const repoPaths = await Promise.all(
+            paths.map(async (p) => normalizeRepoSeparators(await this.toRepoRelative(p), this._pathPlatform)),
+        );
+        const formatter = mode === 'exact' ? formatRootFileFileset : formatRootFileset;
+        return Array.from(new Set(repoPaths)).map((rel) => formatter(rel));
+    }
+
+    async restore(
+        paths: string[],
+        options: { from?: string; into?: string; changesIn?: string; exact?: boolean } = {},
+    ): Promise<void> {
         if (paths.length === 0) {
             return;
         }
-        const relativePaths = paths.map((p) => this.toRelative(p));
-        const cmdArgs = [...relativePaths];
+        const filesets = await this.toRepoFilesets(paths, options.exact ? 'exact' : 'prefix');
+        const cmdArgs: string[] = [];
         if (options.changesIn) {
             cmdArgs.push('--changes-in', options.changesIn);
         } else {
@@ -760,7 +1088,30 @@ export class JjService {
                 cmdArgs.push('--into', options.into);
             }
         }
+        cmdArgs.push('--', ...filesets);
         await this.run('restore', cmdArgs, { isMutation: true, label: 'restore' });
+    }
+
+    /**
+     * Split specific file(s) from a revision into a new commit placed before or after it.
+     */
+    async splitFiles(options: {
+        revision: string;
+        paths: string[];
+        placement: 'before' | 'after';
+        message?: string;
+    }): Promise<void> {
+        if (options.paths.length === 0) {
+            return;
+        }
+        const revision = options.revision.trim();
+        if (revision.length === 0) {
+            throw new Error('Revision must not be empty.');
+        }
+        const filesets = await this.toRepoFilesets(options.paths, 'exact');
+        const placementFlag = options.placement === 'before' ? '-B' : '-A';
+        const args = ['-r', revision, placementFlag, revision, '-m', options.message ?? '', '--', ...filesets];
+        await this.run('split', args, { isMutation: true, label: 'split' });
     }
 
     /**
@@ -768,12 +1119,14 @@ export class JjService {
      * Uses `jj resolve` with a custom capture tool to extract the properly separated content.
      */
     async getConflictParts(filePath: string): Promise<{ base: string; left: string; right: string }> {
-        const tempDir = await this.system.fs.mkdtemp(path.join(this.system.fs.tempDir, 'jj-conflict-'));
-        const relativePath = this.toRelative(filePath);
+        const repoRelPath = normalizeRepoSeparators(await this.toRepoRelative(filePath), this._pathPlatform);
+        const tempDir = await this.system.fs.mkdtemp(
+            pathJoin([this.system.fs.tempDir, 'jj-conflict-'], this.system.platform),
+        );
 
         try {
             // Normalize path separators to forward slashes for safe injection into JS script string
-            const tempDirNormalized = path.normalize(tempDir);
+            const tempDirNormalized = pathNormalize(tempDir, this.system.platform);
             const basePath = `${tempDirNormalized}/base`;
             const leftPath = `${tempDirNormalized}/left`;
             const rightPath = `${tempDirNormalized}/right`;
@@ -790,21 +1143,25 @@ export class JjService {
                     tempDirNormalized,
                 ]);
 
-                await this.run('resolve', ['--tool', toolName, ...toolConfig, relativePath], {
-                    useCachedSnapshot: true,
-                    label: `getConflictParts ${relativePath}`,
-                });
+                await this.run(
+                    'resolve',
+                    ['--tool', toolName, ...toolConfig, '--', formatRootFileFileset(repoRelPath)],
+                    {
+                        useCachedSnapshot: true,
+                        label: `getConflictParts ${repoRelPath}`,
+                    },
+                );
             } catch (err) {
                 resolveError = err;
             }
 
             // Verify that conflict-capture actually ran and wrote the .complete marker
-            const marker = path.join(tempDir, '.complete');
+            const marker = pathJoin([tempDir, '.complete'], this.system.platform);
             const isCompleted = await this.system.fs.exists(marker);
             if (!isCompleted) {
                 throw (
                     resolveError ??
-                    new Error(`Failed to capture conflict parts for ${relativePath}: tool did not complete.`)
+                    new Error(`Failed to capture conflict parts for ${repoRelPath}: tool did not complete.`)
                 );
             }
 
@@ -857,38 +1214,110 @@ export class JjService {
     }
 
     private async _readDiffContent(revision: string, filePath: string): Promise<{ left: string; right: string }> {
-        const cache = await this.getDiffForRevision(revision);
+        const generation = this._diffCacheGeneration;
+        const start = performance.now();
         const relativePath = await this.toRepoRelative(filePath);
-        const leftPath = path.join(cache.tempDir, 'left', relativePath);
-        const rightPath = path.join(cache.tempDir, 'right', relativePath);
 
-        const leftExists = await this.system.fs.exists(leftPath);
-        const rightExists = await this.system.fs.exists(rightPath);
-
-        if (leftExists || rightExists) {
-            const left = leftExists ? await this.system.fs.readTextFile(leftPath) : '';
-            const right = rightExists ? await this.system.fs.readTextFile(rightPath) : '';
-            return { left, right };
+        // Fast path: in-memory cache hit (0 RPCs, 0 ms)
+        const revisionContentCache = this._diffContentCache.get(revision);
+        const cached = revisionContentCache?.get(relativePath);
+        if (cached) {
+            const totalDuration = performance.now() - start;
+            const msg = `[Perf:JjService] getDiffContent(${revision}, ${relativePath}) MEMORY-HIT: ${totalDuration.toFixed(1)}ms`;
+            this.logger.debug(msg);
+            if (typeof console !== 'undefined' && console.log) {
+                console.log(msg);
+            }
+            return cached;
         }
 
-        // If not in cache, it means there are no differences for this file
-        // relative to the parent(s). Fallback to fetching file content directly.
-        // This handles "Quick Diff" on unchanged files where we need the base content.
-        try {
-            this.logger.debug(`getDiffContent fallback ${filePath} ${revision}`);
-            const content = await this._readFileContent(filePath, revision, 'default');
-            return { left: content, right: content };
-        } catch (err: unknown) {
-            if (await this.fileExistsAtRevision(filePath, revision)) {
-                throw err;
+        let warmDuration = 0;
+        let readDuration = 0;
+        let left = '';
+        let right = '';
+        let bothMissing = false;
+
+        // The cache may be cleared between obtaining the tempDir and reading from it
+        // (an eviction removes the directory). Distinguish that from "file absent from
+        // the diff" by checking whether the entry we read from is still the live one.
+        const MAX_READ_ATTEMPTS = 2;
+        for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
+            const warmStart = performance.now();
+            const cache = await this.getDiffForRevision(revision);
+            warmDuration += performance.now() - warmStart;
+
+            const leftPath = pathJoin([cache.tempDir, 'left', relativePath], this._pathPlatform);
+            const rightPath = pathJoin([cache.tempDir, 'right', relativePath], this._pathPlatform);
+
+            // Read left and right in one host call; null means the side is absent from the diff.
+            const readStart = performance.now();
+            const [leftContent, rightContent] = await this.system.fs.readTextFiles([leftPath, rightPath]);
+            readDuration += performance.now() - readStart;
+
+            left = leftContent ?? '';
+            right = rightContent ?? '';
+            bothMissing = leftContent === null && rightContent === null;
+            if (generation !== this._diffCacheGeneration) {
+                return { left, right };
             }
-            return { left: '', right: '' };
+
+            const evictedDuringRead = this._diffCache.peek(revision)?.tempDir !== cache.tempDir;
+            if (!bothMissing || !evictedDuringRead || attempt === MAX_READ_ATTEMPTS) {
+                break;
+            }
+            this.logger.debug(`getDiffContent ${revision} ${relativePath}: diff cache evicted during read, retrying`);
+        }
+
+        if (bothMissing) {
+            // If neither file exists in the bulk diff cache, it means there are no differences
+            // for this file relative to the parent(s). Fallback to fetching file content directly.
+            // This handles "Quick Diff" on unchanged files where we need the base content.
+            try {
+                this.logger.debug(`getDiffContent fallback ${filePath} ${revision}`);
+                const content = await this._readFileContent(filePath, revision, 'default');
+                left = content;
+                right = content;
+            } catch (error: unknown) {
+                if (await this.fileExistsAtRevision(filePath, revision)) {
+                    throw error;
+                }
+            }
+        }
+
+        const result = { left, right };
+
+        if (generation === this._diffCacheGeneration) {
+            let contentMap = this._diffContentCache.get(revision);
+            if (!contentMap) {
+                contentMap = new Map();
+                this._diffContentCache.set(revision, contentMap);
+            }
+            contentMap.set(relativePath, result);
+        }
+
+        const totalDuration = performance.now() - start;
+        const msg = `[Perf:JjService] getDiffContent(${revision}, ${relativePath}) took ${totalDuration.toFixed(1)}ms (warm: ${warmDuration.toFixed(1)}ms, read: ${readDuration.toFixed(1)}ms)`;
+        this.logger.debug(msg);
+        if (typeof console !== 'undefined' && console.log) {
+            console.log(msg);
+        }
+        return result;
+    }
+
+    private async readOptionalBinaryFile(filePath: string): Promise<Uint8Array | null> {
+        try {
+            return await this.system.fs.readBinaryFile(filePath);
+        } catch (error: unknown) {
+            if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+                return null;
+            }
+            throw error;
         }
     }
 
     async fileExistsAtRevision(filePath: string, revision: string): Promise<boolean> {
-        const relativePath = (await this.toRepoRelative(filePath)).replace(/\\/g, '/');
-        const fileset = `file:${JSON.stringify(relativePath)}`;
+        const relativePath = await this.toRepoRelative(filePath);
+        const fileset = formatRootFileFileset(relativePath);
         const output = await this.run('file', ['list', '-r', revision, '-T', '"exists"', '--', fileset], {
             useCachedSnapshot: true,
             label: 'fileExistsAtRevision',
@@ -897,67 +1326,171 @@ export class JjService {
     }
 
     /**
+     * Get the left (auto-merged parents) and right (revision) binary bytes for a file's diff.
+     * Uses the bulk cache, warming it if necessary.
+     */
+    async getDiffBinaryContent(revision: string, filePath: string): Promise<{ left: Uint8Array; right: Uint8Array }> {
+        return this._readStableDiff(() => this._readDiffBinaryContent(revision, filePath));
+    }
+
+    private async _readDiffBinaryContent(
+        revision: string,
+        filePath: string,
+    ): Promise<{ left: Uint8Array; right: Uint8Array }> {
+        const generation = this._diffCacheGeneration;
+        const start = performance.now();
+        const relativePath = await this.toRepoRelative(filePath);
+
+        const revisionBinaryCache = this._diffBinaryCache.get(revision);
+        const cached = revisionBinaryCache?.get(relativePath);
+        if (cached) {
+            const totalDuration = performance.now() - start;
+            const msg = `[Perf:JjService] getDiffBinaryContent(${revision}, ${relativePath}) MEMORY-HIT: ${totalDuration.toFixed(1)}ms`;
+            this.logger.debug(msg);
+            if (typeof console !== 'undefined' && console.log) {
+                console.log(msg);
+            }
+            return cached;
+        }
+
+        let warmDuration = 0;
+        let readDuration = 0;
+        let left: Uint8Array = new Uint8Array(0);
+        let right: Uint8Array = new Uint8Array(0);
+        let bothMissing = false;
+
+        const MAX_READ_ATTEMPTS = 2;
+        for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
+            const warmStart = performance.now();
+            const cache = await this.getDiffForRevision(revision);
+            warmDuration += performance.now() - warmStart;
+
+            const leftPath = pathJoin([cache.tempDir, 'left', relativePath], this._pathPlatform);
+            const rightPath = pathJoin([cache.tempDir, 'right', relativePath], this._pathPlatform);
+
+            const readStart = performance.now();
+            const [leftBytes, rightBytes] = await Promise.all([
+                this.readOptionalBinaryFile(leftPath),
+                this.readOptionalBinaryFile(rightPath),
+            ]);
+            readDuration += performance.now() - readStart;
+
+            left = leftBytes ?? new Uint8Array(0);
+            right = rightBytes ?? new Uint8Array(0);
+            bothMissing = leftBytes === null && rightBytes === null;
+            if (generation !== this._diffCacheGeneration) {
+                return { left, right };
+            }
+
+            const evictedDuringRead = this._diffCache.peek(revision)?.tempDir !== cache.tempDir;
+            if (!bothMissing || !evictedDuringRead || attempt === MAX_READ_ATTEMPTS) {
+                break;
+            }
+            this.logger.debug(
+                `getDiffBinaryContent ${revision} ${relativePath}: diff cache evicted during read, retrying`,
+            );
+        }
+
+        if (bothMissing) {
+            try {
+                this.logger.debug(`getDiffBinaryContent fallback ${filePath} ${revision}`);
+                const bytes = await this.getFileBinaryContent(filePath, revision);
+                left = bytes;
+                right = bytes;
+            } catch {
+                left = new Uint8Array(0);
+                right = new Uint8Array(0);
+            }
+        }
+
+        const result = { left, right };
+
+        if (generation === this._diffCacheGeneration) {
+            let binaryMap = this._diffBinaryCache.get(revision);
+            if (!binaryMap) {
+                binaryMap = new Map();
+                this._diffBinaryCache.set(revision, binaryMap);
+            }
+            binaryMap.set(relativePath, result);
+        }
+
+        const totalDuration = performance.now() - start;
+        const msg = `[Perf:JjService] getDiffBinaryContent(${revision}, ${relativePath}) took ${totalDuration.toFixed(1)}ms (warm: ${warmDuration.toFixed(1)}ms, read: ${readDuration.toFixed(1)}ms)`;
+        this.logger.debug(msg);
+        if (typeof console !== 'undefined' && console.log) {
+            console.log(msg);
+        }
+        return result;
+    }
+
+    /**
      * Ensures that the diff cache for a revision is warm and valid.
      * Extracts all changed files into a temporary directory using a single 'jj diffedit' call.
      */
     async getDiffForRevision(revision: string, force: boolean = false): Promise<{ tempDir: string; expires: number }> {
+        const start = performance.now();
         if (force) {
             this._diffCacheGeneration++;
+            this._diffContentCache.delete(revision);
+            this._diffBinaryCache.delete(revision);
             await this._diffCache.delete(revision);
         }
-        return this._diffCache.getOrFetch(revision, () => this._warmDiffCache(revision));
+        const isWarm = this._diffCache.has(revision);
+        const result = await this._diffCache.getOrFetch(revision, () => this._warmDiffCache(revision));
+        const duration = performance.now() - start;
+        const msg = `[Perf:JjService] getDiffForRevision(${revision}) ${isWarm ? 'HIT' : 'WARM'}: ${duration.toFixed(1)}ms`;
+        this.logger.debug(msg);
+        if (typeof console !== 'undefined' && console.log) {
+            console.log(msg);
+        }
+        return result;
     }
 
     private async _warmDiffCache(revision: string): Promise<{ tempDir: string; expires: number }> {
-        const tempDir = await this.system.fs.mkdtemp(path.join(this.system.fs.tempDir, 'jj-bulk-diff-'));
-        const leftDir = path.join(tempDir, 'left');
-        const rightDir = path.join(tempDir, 'right');
+        const toolName = 'vscode-bulk-capture';
+        const toolConfig = this.getToolConfigArgs(toolName, HELPER_SCRIPT_TOKEN, [
+            '$left',
+            '$right',
+            `${SCRATCH_DIR_TOKEN}/left`,
+            `${SCRATCH_DIR_TOKEN}/right`,
+        ]);
 
-        try {
-            await this.system.fs.mkdir(leftDir, { recursive: true });
-            await this.system.fs.mkdir(rightDir, { recursive: true });
+        // One host round trip: mkdtemp + mkdir left/right + resolve batch-diff + jj diffedit + marker check.
+        // batch-diff exits 1 by design (to abort the diffedit); the `.complete` marker signals success.
+        const result = await this.runInScratchDir(
+            'diffedit',
+            ['-r', revision, '--ignore-immutable', '--tool', toolName, ...toolConfig],
+            {
+                scratchPrefix: 'jj-bulk-diff-',
+                subdirs: ['left', 'right'],
+                helperScript: 'batch-diff',
+                completionMarker: 'right/.complete',
+            },
+            {
+                useCachedSnapshot: true,
+                label: `getDiffForRevision ${revision}`,
+            },
+        );
 
-            const normalizedScriptPath = await this.system.process.getHelperScriptPath('batch-diff');
-            const toolName = 'vscode-bulk-capture';
-            const toolConfig = this.getToolConfigArgs(toolName, normalizedScriptPath, [
-                '$left',
-                '$right',
-                path.normalize(leftDir),
-                path.normalize(rightDir),
-            ]);
-
-            try {
-                await this.run('diffedit', ['-r', revision, '--ignore-immutable', '--tool', toolName, ...toolConfig], {
-                    useCachedSnapshot: true,
-                    label: `getDiffForRevision ${revision}`,
-                });
-            } catch (err) {
-                // Verify that batch-diff actually ran and wrote the .complete marker
-                const marker = path.join(rightDir, '.complete');
-                const isCompleted = await this.system.fs.exists(marker);
-                if (!isCompleted) {
-                    throw err;
-                }
-            }
-
-            return {
-                tempDir,
-                expires: Date.now() + 5 * 60_000,
-            };
-        } catch (err) {
-            await this.system.fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-            throw err;
-        }
+        return {
+            tempDir: result.scratchDir,
+            expires: Date.now() + 5 * 60_000,
+        };
     }
 
     async clearCache(): Promise<void> {
         this._cacheEpoch++;
         this._diffCacheGeneration++;
-        this._repoRoot = undefined;
         this._logEntryCache.clear();
+        this._logRevsetPromise = undefined;
         this._gitRoot = undefined;
         this._gitRootPromise = undefined;
         this._gitBlobHashCache.clear();
+        this._diffContentCache.clear();
+        this._diffBinaryCache.clear();
+        this._gitBlobContentCache.clear();
+        this._gitCommitDetailsCache.clear();
+        this._gitRangeFilesCache.clear();
         await Promise.all([this._diffCache.clear(), this._changesCache.clear(), this._blameCache.clear()]);
     }
 
@@ -997,15 +1530,20 @@ export class JjService {
         }
 
         return this.runMutation(async () => {
-            const tempDir = await this.system.fs.mkdtemp(path.join(this.system.fs.tempDir, 'jj-batch-edit-'));
+            const hostPlatform = this.system.platform;
+            const tempDir = await this.system.fs.mkdtemp(
+                pathJoin([this.system.fs.tempDir, 'jj-batch-edit-'], hostPlatform),
+            );
             try {
                 const writePromises = Array.from(files.entries()).map(async ([filePath, content], idx) => {
-                    const repoRelPath = await this.toRepoRelative(filePath);
-                    const workspaceRelPath = this.toRelative(filePath);
+                    const repoRelPath = normalizeRepoSeparators(
+                        await this.toRepoRelative(filePath),
+                        this._pathPlatform,
+                    );
                     const safeName = repoRelPath.replace(/[\\/]/g, '_');
-                    const tmpPath = path.join(tempDir, `src_${idx}_${safeName}`);
+                    const tmpPath = pathJoin([tempDir, `src_${idx}_${safeName}`], hostPlatform);
                     await this.system.fs.writeTextFile(tmpPath, content);
-                    return { repoRelPath, workspaceRelPath, tmpPath };
+                    return { repoRelPath, tmpPath };
                 });
 
                 const fileList = await Promise.all(writePromises);
@@ -1015,14 +1553,22 @@ export class JjService {
 
                 const argsTemplate = ['$left', '$right'];
                 for (const f of fileList) {
-                    argsTemplate.push(path.normalize(f.tmpPath));
-                    argsTemplate.push(path.normalize(f.repoRelPath));
+                    argsTemplate.push(pathNormalize(f.tmpPath, hostPlatform));
+                    argsTemplate.push(f.repoRelPath);
                 }
                 const toolConfig = this.getToolConfigArgs(toolName, normalizedScriptPath, argsTemplate);
 
                 await this.runInternal(
                     'diffedit',
-                    ['-r', revision, '--tool', toolName, ...toolConfig, ...fileList.map((f) => f.workspaceRelPath)],
+                    [
+                        '-r',
+                        revision,
+                        '--tool',
+                        toolName,
+                        ...toolConfig,
+                        '--',
+                        ...fileList.map((f) => formatRootFileFileset(f.repoRelPath)),
+                    ],
                     { isMutation: true, label: 'setFilesContent' },
                 );
             } finally {
@@ -1068,7 +1614,7 @@ export class JjService {
             throw new Error('Cannot squash revision into or onto itself.');
         }
         const args: string[] = [];
-        const relativePaths = paths.map((p) => this.toRelative(p));
+        const filesets = paths.length > 0 ? await this.toRepoFilesets(paths, 'prefix') : [];
 
         if (ontoRevision) {
             // Squash onto target (creating a new commit on top of ontoRevision)
@@ -1092,29 +1638,40 @@ export class JjService {
         if (message) {
             args.push('-m', message);
         }
-        if (relativePaths.length > 0) {
-            args.push(...relativePaths);
+        if (filesets.length > 0) {
+            args.push('--', ...filesets);
         }
         await this.run('squash', args, { isMutation: true, label: 'squashRevision' });
     }
 
-    async rebase(
-        source: string,
-        destination: string | string[],
-        mode: 'source' | 'revision' = 'source',
-    ): Promise<string> {
+    async rebase(source: string, options: RebaseOptions): Promise<string> {
+        const cleanSource = source.trim();
+        if (cleanSource.length === 0) {
+            throw new Error('Rebase source must not be empty');
+        }
+
+        const rawTargets = Array.isArray(options.target) ? options.target : [options.target];
+        const targets = Array.from(new Set(rawTargets.map((t) => t.trim()).filter((t) => t.length > 0)));
+        if (targets.length === 0) {
+            throw new Error('Rebase target must not be empty');
+        }
+        if (targets.includes(cleanSource)) {
+            throw new Error('Cannot rebase a revision onto or around itself');
+        }
+
         const args: string[] = [];
-        const destinations = Array.isArray(destination) ? destination : [destination];
-        destinations.forEach((d) => {
-            args.push('-d', d);
+        const placement = options.placement ?? 'onto';
+        const flag = placement === 'after' ? '-A' : placement === 'before' ? '-B' : '-o';
+        targets.forEach((t) => {
+            args.push(flag, t);
         });
 
-        if (mode === 'source') {
-            // Rebase set (source and descendants)
-            args.push('-s', source);
-        } else {
+        if (options.mode === 'revision') {
             // Rebase revision (cherry-pick like behavior)
-            args.push('-r', source);
+            args.push('-r', cleanSource);
+        } else {
+            // Rebase set (source and descendants)
+            args.push('-s', cleanSource);
         }
         return this.run('rebase', args, { isMutation: true, label: 'rebase' });
     }
@@ -1133,12 +1690,29 @@ export class JjService {
         return this.run('abandon', revs, { isMutation: true, label: 'abandon' });
     }
 
+    async simplifyParents(revisions: string[]): Promise<string> {
+        const revs = Array.from(new Set(revisions.map((r) => r.trim()).filter((r) => r.length > 0)));
+        if (revs.length === 0) {
+            throw new Error('At least one revision is required for simplify-parents');
+        }
+        const args = revs.flatMap((rev) => ['-r', rev]);
+        return this.run('simplify-parents', args, { isMutation: true, label: 'simplifyParents' });
+    }
+
     async undo(): Promise<string> {
         return this.run('undo', [], { isMutation: true, label: 'undo' });
     }
 
     async redo(): Promise<string> {
         return this.run('redo', [], { isMutation: true, label: 'redo' });
+    }
+
+    async prev(): Promise<string> {
+        return this.run('prev', [], { isMutation: true, label: 'prev' });
+    }
+
+    async next(): Promise<string> {
+        return this.run('next', [], { isMutation: true, label: 'next' });
     }
 
     async getGitRemotes(): Promise<{ name: string; url: string }[]> {
@@ -1157,6 +1731,35 @@ export class JjService {
                 });
         } catch {
             return [];
+        }
+    }
+
+    /**
+     * Returns the forge web base URL resolved by jujutsu's `git_web_url([remote])` template.
+     * When `remote` is omitted, prefers `'origin'` and falls back to the first configured remote.
+     */
+    async getGitWebUrl(remote?: string): Promise<string | undefined> {
+        let targetRemote = remote?.trim();
+        if (!targetRemote) {
+            const remotes = await this.getGitRemotes();
+            if (remotes.length === 0) {
+                return undefined;
+            }
+            targetRemote = remotes.find((r) => r.name === 'origin')?.name ?? remotes[0]?.name;
+        }
+
+        const escapedRemote = targetRemote ? targetRemote.replace(/\\/g, '\\\\').replace(/"/g, '\\"') : undefined;
+        const template = escapedRemote ? `git_web_url("${escapedRemote}")` : 'git_web_url()';
+
+        try {
+            const output = await this.run('log', ['--no-graph', '-r', 'root()', '-T', template], {
+                useCachedSnapshot: true,
+                label: 'getGitWebUrl',
+            });
+            const trimmed = output.trim();
+            return trimmed.length > 0 ? trimmed : undefined;
+        } catch {
+            return undefined;
         }
     }
 
@@ -1184,19 +1787,38 @@ export class JjService {
             return [];
         }
 
-        // Use a template to ensure clean, machine-readable output.
-        // Paths are passed as positional arguments (filesets).
-        // Since paths is just an array of workspace-relative strings, they act as implicit fileset matches.
-        // E.g., jj file list path/to/a path/to/b
-        const args = ['list', '-T', 'path.display() ++ "\\n"', ...nonEmptyPaths];
+        // Format as root:"..." filesets so literal backslashes and metacharacters match tracked files cleanly.
+        const filesets = await this.toRepoFilesets(nonEmptyPaths, 'prefix');
+        const args = ['list', '-T', 'path.display() ++ "\\n"', '--', ...filesets];
         try {
             const output = await this.run('file', args, { useCachedSnapshot: true, label: 'checkTrackedPaths' });
             return output
                 .split('\n')
-                .map((line) => line.trim())
+                .map((line) => normalizeRepoSeparators(line.trim(), this._pathPlatform))
                 .filter((line) => line.length > 0);
         } catch {
             return nonEmptyPaths;
+        }
+    }
+
+    /**
+     * Returns whether `repoRelativePath` exists in the tree at `revision`.
+     */
+    async hasFileAtRevision(repoRelativePath: string, revision: string): Promise<boolean> {
+        const trimmedPath = normalizeRepoSeparators(repoRelativePath.trim(), this._pathPlatform);
+        const trimmedRev = revision.trim();
+        if (!trimmedPath || !trimmedRev) {
+            return false;
+        }
+        try {
+            const output = await this.run(
+                'file',
+                ['list', '-r', trimmedRev, '-T', 'path.display() ++ "\\n"', '--', formatRootFileFileset(trimmedPath)],
+                { useCachedSnapshot: true, label: 'hasFileAtRevision' },
+            );
+            return output.trim().length > 0;
+        } catch {
+            return true;
         }
     }
 
@@ -1267,11 +1889,11 @@ export class JjService {
     }
 
     private async updateStaleWorkspaceAt(cwd: string): Promise<void> {
-        if (!(await this.system.fs.exists(path.join(cwd, '.jj', 'working_copy', 'type')))) {
+        if (!(await this.system.fs.exists(pathJoin([cwd, '.jj', 'working_copy', 'type'], this._pathPlatform)))) {
             throw new Error(`Workspace checkout is unavailable at ${cwd}`);
         }
         const [repoStore, checkoutStore] = await Promise.all([this.getRepoStorePath(), this.resolveRepoStorePath(cwd)]);
-        if (path.relative(repoStore, checkoutStore)) {
+        if (pathRelative(repoStore, checkoutStore, this._pathPlatform)) {
             throw new Error(`Workspace checkout at ${cwd} belongs to another repository`);
         }
         await this.run('workspace', ['update-stale'], { cwd, isMutation: true, label: 'workspaceUpdateStale' });
@@ -1279,7 +1901,7 @@ export class JjService {
     }
 
     async getWorkspaces(options: { includeStale?: boolean } = {}): Promise<JjWorkspace[]> {
-        const schema = JjWorkspaceSchema.extend({ target: JjLogEntrySchema.shape.commit_id });
+        const schema = JjWorkspaceSchema.extend({ target: this._schemas.logEntry.shape.commit_id });
         const template = buildLogTemplate(WORKSPACE_SCHEMA);
         const output = await this.run('workspace', ['list', '-T', template], {
             useCachedSnapshot: true,
@@ -1298,7 +1920,7 @@ export class JjService {
     private async isWorkspaceStale(cwd: string, target: string): Promise<boolean> {
         const readOptions = { cwd, useCachedSnapshot: true, label: 'isWorkspaceStale' };
         try {
-            if (!(await this.system.fs.exists(path.join(cwd, '.jj', 'working_copy', 'type')))) {
+            if (!(await this.system.fs.exists(pathJoin([cwd, '.jj', 'working_copy', 'type'], this._pathPlatform)))) {
                 return false;
             }
             const checkout = await this.run('debug', ['working-copy'], readOptions);
@@ -1342,11 +1964,11 @@ export class JjService {
         if (!entry) {
             return undefined;
         }
-        const relativePath = this.toRelative(filePath).replace(/\\/g, '/');
+        const relativePath = await this.toRepoRelative(filePath);
         const key = JSON.stringify([entry.commit_id, relativePath]);
         return this._blameCache.getOrFetch(key, async () => {
             // Literal filesets prevent punctuation in filenames from becoming query syntax.
-            const fileset = `file:${JSON.stringify(relativePath)}`;
+            const fileset = formatRootFileFileset(relativePath);
             const metadata = await this.run(
                 'file',
                 ['list', '-r', entry.commit_id, '-T', 'if(conflict, "conflict", "file")', '--', fileset],
@@ -1401,24 +2023,89 @@ export class JjService {
         revision: string,
         conflictStyle: 'git' | 'default',
     ): Promise<string> {
+        const platform = this._pathPlatform;
+        const repoRelPath = normalizeRepoSeparators(await this.toRepoRelative(filePath), platform);
+
         // Check cache first (only for default conflict style for now)
         if (conflictStyle === 'default') {
             try {
                 const cache = await this.getDiffForRevision(revision);
-                const relativePath = await this.toRepoRelative(filePath);
-                const rightPath = path.join(cache.tempDir, 'right', relativePath);
+                const rightPath = pathJoin([cache.tempDir, 'right', repoRelPath], platform);
                 return await this.system.fs.readTextFile(rightPath);
             } catch {
                 // Fall through if not in cache (e.g. file not changed in this revision)
             }
         }
 
-        const relativePath = this.toRelative(filePath);
-        const args = ['show', relativePath, '-r', revision];
+        const args = ['show', '-r', revision];
         if (conflictStyle === 'git') {
             args.push('--config=ui.conflict-marker-style=git');
         }
+        args.push('--', formatRootFileFileset(repoRelPath));
         return this.run('file', args, { trim: false, useCachedSnapshot: true, label: 'getFileContent' });
+    }
+
+    async getFileBinaryContent(filePath: string, revision: string = '@'): Promise<Uint8Array> {
+        const platform = this._pathPlatform;
+        const relativePath = normalizeRepoSeparators(await this.toRepoRelative(filePath), platform);
+        try {
+            const cache = await this.getDiffForRevision(revision);
+            const rightPath = pathJoin([cache.tempDir, 'right', relativePath], platform);
+            return await this.system.fs.readBinaryFile(rightPath);
+        } catch {
+            // Fall through if not in cache (e.g. file not changed in this revision)
+        }
+
+        const workspaceRelPath = await this.toRelative(filePath);
+        if (revision === '@') {
+            try {
+                const fullPath = pathResolve([this.workspaceRoot, workspaceRelPath], platform);
+                return await this.system.fs.readBinaryFile(fullPath);
+            } catch {
+                // Fall through if disk file is missing/unreadable
+            }
+        }
+
+        const toolName = 'vscode-bulk-capture';
+        const toolConfig = this.getToolConfigArgs(toolName, HELPER_SCRIPT_TOKEN, [
+            '$left',
+            '$right',
+            `${SCRATCH_DIR_TOKEN}/left`,
+            `${SCRATCH_DIR_TOKEN}/right`,
+        ]);
+
+        const result = await this.runInScratchDir(
+            'diffedit',
+            [
+                '--from',
+                'root()',
+                '--to',
+                revision,
+                '--ignore-immutable',
+                '--tool',
+                toolName,
+                ...toolConfig,
+                '--',
+                formatRootFileFileset(relativePath),
+            ],
+            {
+                scratchPrefix: 'jj-file-bin-',
+                subdirs: ['left', 'right'],
+                helperScript: 'batch-diff',
+                completionMarker: 'right/.complete',
+            },
+            {
+                useCachedSnapshot: true,
+                label: `getFileBinaryContent ${revision} ${relativePath}`,
+            },
+        );
+
+        try {
+            const rightPath = pathJoin([result.scratchDir, 'right', relativePath], platform);
+            return await this.system.fs.readBinaryFile(rightPath);
+        } finally {
+            await this.system.fs.rm(result.scratchDir, { recursive: true, force: true }).catch(() => {});
+        }
     }
 
     async resolve(revision: string): Promise<void> {
@@ -1461,9 +2148,9 @@ export class JjService {
         });
     }
 
-    async cat(path: string, revision: string = '@-'): Promise<string> {
-        const relativePath = this.toRelative(path);
-        return this.run('file', ['show', '-r', revision, relativePath], {
+    async cat(filePath: string, revision: string = '@-'): Promise<string> {
+        const repoRelPath = normalizeRepoSeparators(await this.toRepoRelative(filePath), this._pathPlatform);
+        return this.run('file', ['show', '-r', revision, '--', formatRootFileFileset(repoRelPath)], {
             trim: false,
             useCachedSnapshot: true,
             label: 'cat',
@@ -1472,6 +2159,35 @@ export class JjService {
 
     async status(): Promise<string> {
         return this.run('status', [], { isMutation: true, useCachedSnapshot: false, label: 'status' });
+    }
+
+    /**
+     * Snapshots the working copy (records any on-disk edits into `@`) without
+     * clearing caches. If the snapshot produced a new operation, the caller can
+     * detect it via {@link getOperationHeads} and invalidate selectively.
+     */
+    async snapshotWorkingCopy(): Promise<void> {
+        await this.run('status', [], { useCachedSnapshot: false, label: 'snapshot' });
+    }
+
+    /**
+     * Returns the current operation head IDs, sorted. Reads the op heads store
+     * directly (a single directory listing) rather than spawning `jj`, so it is
+     * cheap enough to call on every refresh to detect whether anything changed.
+     */
+    async getOperationHeads(): Promise<string[]> {
+        const storePath = await this.getRepoStorePath();
+        const platform = this._pathPlatform;
+        try {
+            const heads = await this.system.fs.readdir(pathJoin([storePath, 'op_heads', 'heads'], platform));
+            return heads.sort();
+        } catch {
+            const checkoutBytes = await this.system.fs.readBinaryFile(
+                pathJoin([this.workspaceRoot, '.jj', 'working_copy', 'checkout'], platform),
+            );
+            const hex = Array.from(checkoutBytes, (b) => b.toString(16).padStart(2, '0')).join('');
+            return [hex];
+        }
     }
 
     async getChanges(revision: string): Promise<JjFileChangeWithStats[]> {
@@ -1483,7 +2199,10 @@ export class JjService {
             useCachedSnapshot: true,
             label: 'getCommitDetails',
         });
-        const [entry] = this._parseJsonLines(output, COMMIT_DETAILS_SCHEMA, 'getCommitDetails');
+        const schema = this._schemas.logEntry.extend({
+            conflicts: this._schemas.changesAndStatsOutput.shape.conflicts,
+        });
+        const [entry] = this._parseJsonLines(output, schema, 'getCommitDetails');
         if (!entry) {
             return undefined;
         }
@@ -1496,7 +2215,8 @@ export class JjService {
             useCachedSnapshot: true,
             label: 'getChangeStats',
         });
-        const [entry] = this._parseJsonLines(output, DIFF_STATS_SCHEMA, 'getChangeStats');
+        const schema = this._schemas.changesAndStatsOutput.pick({ stats: true });
+        const [entry] = this._parseJsonLines(output, schema, 'getChangeStats');
         return new Map(entry?.stats.map((stat) => [stat.path, stat]));
     }
 
@@ -1519,7 +2239,7 @@ export class JjService {
             useCachedSnapshot: true,
             label: 'getChanges',
         });
-        const entries = this._parseJsonLines(output, ChangesAndStatsOutputSchema, 'getChanges');
+        const entries = this._parseJsonLines(output, this._schemas.changesAndStatsOutput, 'getChanges');
         if (entries.length === 0) {
             return [];
         }
@@ -1573,7 +2293,7 @@ export class JjService {
             label: 'getChangesBetween',
         });
 
-        return this._parseJsonLines(output, JjFileChangeSchema, 'getChangesBetween');
+        return this._parseJsonLines(output, this._schemas.fileChange, 'getChangesBetween');
     }
 
     private _parseJsonLines<T>(output: string, schema: z.ZodType<T>, label: string): T[] {
@@ -1623,8 +2343,10 @@ export class JjService {
     }
 
     async getDiff(revision: string, file: string): Promise<string> {
-        const relativePath = this.toRelative(file);
-        return this.run('diff', ['--git', '-r', revision, relativePath], { useCachedSnapshot: true });
+        const repoRelPath = normalizeRepoSeparators(await this.toRepoRelative(file), this._pathPlatform);
+        return this.run('diff', ['--git', '-r', revision, '--', formatRootFileFileset(repoRelPath)], {
+            useCachedSnapshot: true,
+        });
     }
 
     async upload(revision: string | undefined, command: string, ...args: string[]): Promise<string> {
@@ -1639,10 +2361,35 @@ export class JjService {
         });
     }
 
+    async runExternalMutation(
+        executable: string,
+        args: string[],
+        options: { timeout?: number; cwd?: string; label?: string } = {},
+    ): Promise<string> {
+        return this.runMutation(async () => {
+            const result = await this.execTracked(
+                executable,
+                args,
+                { ...options, isMutation: true, timeout: options.timeout ?? UPLOAD_TIMEOUT_MS },
+                (_allArgs, execOptions) => this.system.process.execFile(executable, args, execOptions),
+            );
+            return result.stdout.trim();
+        });
+    }
+
+    async sync(command: string = 'git', ...args: string[]): Promise<string> {
+        const finalArgs = command === 'git' && args.length === 0 ? ['fetch'] : args;
+        return this.run(command, finalArgs, {
+            isMutation: true,
+            label: 'sync',
+            timeout: UPLOAD_TIMEOUT_MS,
+        });
+    }
+
     /**
      * Squash specific line ranges (selection) from a file to its parent revision.
      *
-     * @param fileRelPath Path relative to the workspace root.
+     * @param filePath Path to the file (absolute or relative to the workspace root).
      * @param ranges 0-indexed line ranges in the 'revision' to move.
      * @param revision The revision to move changes from (default: @).
      */
@@ -1680,25 +2427,39 @@ export class JjService {
     private async runPartialSquash(
         fromRev: string,
         intoRev: string,
-        fileRelPath: string,
+        filePath: string,
         wantedContent: string,
     ): Promise<void> {
-        const tmpDir = await this.system.fs.mkdtemp(path.join(this.system.fs.tempDir, 'jj-partial-squash-'));
-        const tmpFile = path.join(tmpDir, 'wanted_content');
-        await this.system.fs.writeTextFile(tmpFile, wantedContent);
+        const hostPlatform = this.system.platform;
+        const repoRelPath = normalizeRepoSeparators(await this.toRepoRelative(filePath), this._pathPlatform);
+        const tmpDir = await this.system.fs.mkdtemp(
+            pathJoin([this.system.fs.tempDir, 'jj-partial-squash-'], hostPlatform),
+        );
+        const tmpFile = pathJoin([tmpDir, 'wanted_content'], hostPlatform);
 
         try {
+            await this.system.fs.writeTextFile(tmpFile, wantedContent);
             const toolName = 'partial-squash';
             const normalizedScriptPath = await this.system.process.getHelperScriptPath('batch-edit');
             const toolConfig = this.getToolConfigArgs(toolName, normalizedScriptPath, [
                 '$left',
                 '$right',
-                path.normalize(tmpFile),
-                path.normalize(fileRelPath),
+                pathNormalize(tmpFile, hostPlatform),
+                repoRelPath,
             ]);
 
             // squash --from X --into Y --tool ...
-            const args = ['--from', fromRev, '--into', intoRev, '--tool', toolName, ...toolConfig, fileRelPath];
+            const args = [
+                '--from',
+                fromRev,
+                '--into',
+                intoRev,
+                '--tool',
+                toolName,
+                ...toolConfig,
+                '--',
+                formatRootFileFileset(repoRelPath),
+            ];
 
             await this.run('squash', args, { isMutation: true });
         } finally {
@@ -1714,9 +2475,8 @@ export class JjService {
             args.push('--from', fromRevision);
         }
         if (paths && paths.length > 0) {
-            // Check if paths are relative or absolute, assume toRelative handles it
-            const relativePaths = paths.map((p) => this.toRelative(p));
-            args.push(...relativePaths);
+            const filesets = await this.toRepoFilesets(paths, 'prefix');
+            args.push('--', ...filesets);
         }
 
         return this.run('absorb', args, { isMutation: true, label: 'absorb' });
@@ -1755,10 +2515,20 @@ export class JjService {
 
         // We use raw git command because jj doesn't expose ls-tree
         try {
+            const gitRoot = await this.getGitRoot();
             const timeout = 10000; // 10s safety timeout
             const res = await this.system.process.execFile(
                 'git',
-                ['--no-pager', '--no-optional-locks', 'ls-tree', commitId, '--', ...missingPaths],
+                [
+                    '--no-pager',
+                    '--no-optional-locks',
+                    ...(gitRoot ? [`--git-dir=${gitRoot}`] : []),
+                    'ls-tree',
+                    '--full-tree',
+                    commitId,
+                    '--',
+                    ...missingPaths,
+                ],
                 {
                     cwd: this.workspaceRoot,
                     maxBuffer: 10 * 1024 * 1024,
@@ -1803,5 +2573,280 @@ export class JjService {
         }
 
         return resultMap;
+    }
+
+    private _diffHunksCache = new Map<string, DiffHunkRange[] | null>();
+    private static readonly MAX_DIFF_HUNKS_CACHE_KEYS = 500;
+
+    private _setDiffHunksCache(key: string, value: DiffHunkRange[] | null): void {
+        if (this._diffHunksCache.size >= JjService.MAX_DIFF_HUNKS_CACHE_KEYS) {
+            const firstKey = this._diffHunksCache.keys().next().value;
+            if (firstKey !== undefined) {
+                this._diffHunksCache.delete(firstKey);
+            }
+        }
+        this._diffHunksCache.set(key, value);
+    }
+
+    /**
+     * Computes zero-context unified diff hunks (`git diff -U0`) between two commits
+     * for the requested repo-relative file paths. Returns `undefined` if either commit
+     * does not exist in the local git object store.
+     */
+    async getCommitDiffHunks(
+        fromCommitId: string,
+        toCommitId: string,
+        filePaths: readonly string[],
+    ): Promise<Map<string, DiffHunkRange[]> | undefined> {
+        const resultMap = new Map<string, DiffHunkRange[]>();
+        if (filePaths.length === 0) {
+            return resultMap;
+        }
+        if (fromCommitId === toCommitId) {
+            for (const filePath of filePaths) {
+                resultMap.set(filePath, []);
+            }
+            return resultMap;
+        }
+
+        const missingPaths: string[] = [];
+        for (const filePath of filePaths) {
+            const cacheKey = `commit:${fromCommitId}:${toCommitId}:${filePath}`;
+            const cached = this._diffHunksCache.get(cacheKey);
+            if (cached === null) {
+                return undefined;
+            }
+            if (cached !== undefined) {
+                resultMap.set(filePath, cached);
+            } else {
+                missingPaths.push(filePath);
+            }
+        }
+
+        if (missingPaths.length === 0) {
+            return resultMap;
+        }
+
+        try {
+            const filesets = missingPaths.map((p) =>
+                formatRootFileFileset(normalizeRepoSeparators(p, this._pathPlatform)),
+            );
+            const stdout = await this.run(
+                'diff',
+                ['--git', '--context=0', '--from', fromCommitId, '--to', toCommitId, '--', ...filesets],
+                { useCachedSnapshot: true, label: 'getCommitDiffHunks' },
+            );
+
+            const parsedByFile = parseMultiFileDiffHunks(stdout, this._pathPlatform);
+            for (const filePath of missingPaths) {
+                const hunks = parsedByFile.get(filePath) ?? [];
+                this._setDiffHunksCache(`commit:${fromCommitId}:${toCommitId}:${filePath}`, hunks);
+                resultMap.set(filePath, hunks);
+            }
+            return resultMap;
+        } catch {
+            for (const filePath of missingPaths) {
+                this._setDiffHunksCache(`commit:${fromCommitId}:${toCommitId}:${filePath}`, null);
+            }
+            return undefined;
+        }
+    }
+
+    /**
+     * Computes zero-context unified diff hunks (`git diff -U0`) between two git blob
+     * SHAs or `<rev>:<path>` specs. Returns `undefined` if either object is missing
+     * from the local git store.
+     */
+    async getBlobDiffHunks(fromSpec: string, toSpec: string): Promise<DiffHunkRange[] | undefined> {
+        if (fromSpec === toSpec) {
+            return [];
+        }
+        const cacheKey = `blob:${fromSpec}:${toSpec}`;
+        const cached = this._diffHunksCache.get(cacheKey);
+        if (cached !== undefined) {
+            return cached ?? undefined;
+        }
+
+        try {
+            const gitRoot = await this.getGitRoot();
+            const res = await this.system.process.execFile(
+                'git',
+                [
+                    '--no-pager',
+                    '--no-optional-locks',
+                    ...(gitRoot ? [`--git-dir=${gitRoot}`] : []),
+                    'diff',
+                    '-U0',
+                    '--no-ext-diff',
+                    '--no-color',
+                    fromSpec,
+                    toSpec,
+                ],
+                {
+                    cwd: this.workspaceRoot,
+                    maxBuffer: 10 * 1024 * 1024,
+                    timeout: 10000,
+                },
+            );
+
+            const hunks = parseDiffHunks(res.stdout);
+            this._setDiffHunksCache(cacheKey, hunks);
+            return hunks;
+        } catch {
+            this._setDiffHunksCache(cacheKey, null);
+            return undefined;
+        }
+    }
+
+    async getGitBlobContent(blobSha: string): Promise<string | undefined> {
+        if (!blobSha || blobSha === 'none' || /^0{4,64}$/.test(blobSha)) {
+            return '';
+        }
+
+        if (!/^[0-9a-fA-F]{4,64}$/.test(blobSha)) {
+            this.logger.debug(`getGitBlobContent rejected invalid blobSha: ${blobSha}`);
+            return undefined;
+        }
+
+        const cached = this._gitBlobContentCache.get(blobSha);
+        if (cached !== undefined) {
+            return cached;
+        }
+
+        try {
+            const gitRoot = await this.getGitRoot();
+            const timeout = 10000;
+            const res = await this.system.process.execFile(
+                'git',
+                [
+                    '--no-pager',
+                    '--no-optional-locks',
+                    ...(gitRoot ? [`--git-dir=${gitRoot}`] : []),
+                    'cat-file',
+                    '-p',
+                    blobSha,
+                ],
+                {
+                    cwd: this.workspaceRoot,
+                    maxBuffer: 10 * 1024 * 1024,
+                    timeout,
+                },
+            );
+
+            this._gitBlobContentCache.set(blobSha, res.stdout);
+            return res.stdout;
+        } catch (err) {
+            this.logger.debug(`getGitBlobContent failed for ${blobSha}: ${getErrorMessage(err)}`);
+            return undefined;
+        }
+    }
+
+    /**
+     * Reads commit message and first-parent file changes for a git commit present in the local `.git` store.
+     */
+    async getGitCommitDetails(commitId: string): Promise<GitCommitDetails | undefined> {
+        if (!HEX_COMMIT_PATTERN.test(commitId)) {
+            return undefined;
+        }
+
+        const cached = this._gitCommitDetailsCache.get(commitId);
+        if (cached !== undefined) {
+            return cached;
+        }
+
+        const gitRoot = await this.getGitRoot();
+        if (!gitRoot) {
+            return undefined;
+        }
+
+        try {
+            const res = await this.system.process.execFile(
+                'git',
+                [
+                    '--no-pager',
+                    '--no-optional-locks',
+                    `--git-dir=${gitRoot}`,
+                    'diff-tree',
+                    '--always',
+                    '--no-abbrev',
+                    '-r',
+                    '-z',
+                    '-M',
+                    '--first-parent',
+                    '--root',
+                    '--format=%B',
+                    commitId,
+                ],
+                {
+                    cwd: this.workspaceRoot,
+                    maxBuffer: 10 * 1024 * 1024,
+                    timeout: 10000,
+                },
+            );
+
+            const tokens = res.stdout.split('\0');
+            const description = (tokens[0] ?? '').replace(/\r?\n$/, '');
+            const files = parseGitRawFiles(tokens, 1, this._pathPlatform);
+            const details: GitCommitDetails = { description, files };
+            this._gitCommitDetailsCache.set(commitId, details);
+            return details;
+        } catch (err) {
+            this.logger.debug(`getGitCommitDetails failed for ${commitId}: ${getErrorMessage(err)}`);
+            return undefined;
+        }
+    }
+
+    /**
+     * Computes PR/MR range file changes (`baseCommitId...headCommitId`) from the local `.git` store.
+     */
+    async getGitRangeFiles(
+        baseCommitId: string,
+        headCommitId: string,
+    ): Promise<Record<string, UploadedRevisionFile> | undefined> {
+        if (!HEX_COMMIT_PATTERN.test(baseCommitId) || !HEX_COMMIT_PATTERN.test(headCommitId)) {
+            return undefined;
+        }
+
+        const cacheKey = `${baseCommitId}...${headCommitId}`;
+        const cached = this._gitRangeFilesCache.get(cacheKey);
+        if (cached !== undefined) {
+            return cached;
+        }
+
+        const gitRoot = await this.getGitRoot();
+        if (!gitRoot) {
+            return undefined;
+        }
+
+        try {
+            const res = await this.system.process.execFile(
+                'git',
+                [
+                    '--no-pager',
+                    '--no-optional-locks',
+                    `--git-dir=${gitRoot}`,
+                    'diff',
+                    '--raw',
+                    '--no-abbrev',
+                    '-z',
+                    '--no-ext-diff',
+                    '--no-color',
+                    '-M',
+                    `${baseCommitId}...${headCommitId}`,
+                ],
+                {
+                    cwd: this.workspaceRoot,
+                    maxBuffer: 10 * 1024 * 1024,
+                    timeout: 10000,
+                },
+            );
+
+            const files = parseGitRawFiles(res.stdout.split('\0'), 0, this._pathPlatform);
+            this._gitRangeFilesCache.set(cacheKey, files);
+            return files;
+        } catch (err) {
+            this.logger.debug(`getGitRangeFiles failed for ${cacheKey}: ${getErrorMessage(err)}`);
+            return undefined;
+        }
     }
 }

@@ -5,12 +5,32 @@
 
 import path from 'pathe';
 import { describe, expect, it, vi } from 'vitest';
+import type { HostFs } from '../core/host/host-system';
+import { createJjOutputSchemas } from '../core/jj-schemas';
 import type { JjStatusEntry } from '../core/jj-types';
+import {
+    isFilesystemRootPath,
+    normalizeRepoSeparators,
+    pathBasename,
+    pathDirname,
+    pathExtname,
+    pathIsAbsolute,
+    pathJoin,
+    pathNormalize,
+    pathRelative,
+    pathResolve,
+    stripLeadingSeparators,
+    toFsComparisonKey,
+    unquoteGitPath,
+} from '../core/path-utils';
 import {
     clearCanonicalRootCache,
     createCommitDetailsUri,
     createDiffUris,
+    createRepoFileUri,
     createRevisionUri,
+    createTextContentUri,
+    createUploadedFileUri,
     decodeJjViewQuery,
     encodeJjViewQuery,
     fnv1aHash,
@@ -18,15 +38,19 @@ import {
     getOriginalResourceUri,
     getRepoRelativePath,
     getRevisionFromUri,
+    isInsideRelativePath,
     isJjScheme,
     isWorkingCopyRevision,
     parseCommitDetailsUri,
+    resolveInsideRealRootAsync,
+    resolvePathAgainstRealRootAsync,
     toAbsoluteEditorUri,
     toFileUri,
     toForwardSlash,
     Uri,
 } from '../core/uri-utils';
 import './vitest-utils';
+import { createMock } from './test-utils';
 import { createVscodeMock } from './vscode-mock';
 
 describe('absolute editor URI paths', () => {
@@ -99,19 +123,20 @@ describe('createDiffUris', () => {
         const { leftUri, rightUri } = createDiffUris(entry, revision, root);
 
         expect(leftUri.scheme).toBe('jj-view');
-        expect(leftUri.path).toBe('/file.txt');
+        expect(leftUri.path).toBe('/root/file.txt');
         expect(leftUri.fragment).toContain('root=%2Froot');
         expect(leftUri.fragment).toContain('base=rev1');
         expect(leftUri.fragment).toContain('side=left');
 
         expect(rightUri.scheme).toBe('jj-view');
-        expect(rightUri.path).toBe('/file.txt');
+        expect(rightUri.path).toBe('/root/file.txt');
+        expect(rightUri.path).toBe(leftUri.path);
         expect(rightUri.fragment).toContain('root=%2Froot');
         expect(rightUri.fragment).toContain('base=rev1');
         expect(rightUri.fragment).toContain('side=right');
     });
 
-    it('creates correct URIs for working copy (rev=@)', () => {
+    it('creates correct URIs for working copy (rev=@) with matching paths', () => {
         const entry: JjStatusEntry = {
             path: 'file.txt',
             status: 'modified',
@@ -121,12 +146,13 @@ describe('createDiffUris', () => {
         const { leftUri, rightUri } = createDiffUris(entry, revision, root);
 
         expect(leftUri.scheme).toBe('jj-view');
-        expect(leftUri.path).toBe('/file.txt');
+        expect(leftUri.path).toBe('/root/file.txt');
         expect(leftUri.fragment).toContain(`base=${ENCODED_AT}`);
         expect(leftUri.fragment).toContain('side=left');
 
-        // Working copy should use file scheme for right side
+        // Working copy should use file scheme for right side and match leftUri.path
         expect(rightUri.scheme).toBe('file');
+        expect(rightUri.path).toBe(leftUri.path);
         expect(rightUri.fsPath).toBeSameFsPath('/root/file.txt');
     });
 
@@ -141,12 +167,12 @@ describe('createDiffUris', () => {
         const { leftUri, rightUri } = createDiffUris(entry, revision, root);
 
         // Left side should use old path
-        expect(leftUri.path).toBe('/old.txt');
+        expect(leftUri.path).toBe('/root/old.txt');
         expect(leftUri.fragment).toContain('base=rev1');
         expect(leftUri.fragment).toContain('side=left');
 
         // Right side should use new path
-        expect(rightUri.path).toBe('/new.txt');
+        expect(rightUri.path).toBe('/root/new.txt');
         expect(rightUri.fragment).toContain('base=rev1');
         expect(rightUri.fragment).toContain('side=right');
     });
@@ -161,14 +187,14 @@ describe('createDiffUris', () => {
         const { leftUri, rightUri } = createDiffUris(entry, revision, root);
 
         expect(leftUri.scheme).toBe('jj-view');
-        expect(leftUri.path).toBe('/deleted.txt');
+        expect(leftUri.path).toBe('/root/deleted.txt');
         expect(leftUri.fragment).toContain(`base=${ENCODED_AT}`);
         expect(leftUri.fragment).toContain('side=left');
 
         // Removed files in working copy should use jj-view scheme for right side
         // to avoid "File not found" errors in VS Code.
         expect(rightUri.scheme).toBe('jj-view');
-        expect(rightUri.path).toBe('/deleted.txt');
+        expect(rightUri.path).toBe('/root/deleted.txt');
         expect(rightUri.fragment).toContain(`base=${ENCODED_AT}`);
         expect(rightUri.fragment).toContain('side=right');
     });
@@ -212,8 +238,8 @@ describe('createDiffUris', () => {
 
         const { leftUri, rightUri } = createDiffUris(entry, revision, root);
 
-        expect(leftUri.path).toBe('/original.txt');
-        expect(rightUri.path).toBe('/copy.txt');
+        expect(leftUri.path).toBe('/root/original.txt');
+        expect(rightUri.path).toBe('/root/copy.txt');
     });
 
     it('detects working copy via options.workingCopyChangeId', () => {
@@ -223,11 +249,12 @@ describe('createDiffUris', () => {
         };
         // Revision is a commit ID, but it matches the working copy change ID
         const revision = 'commit-123';
-        const { rightUri } = createDiffUris(entry, revision, root, {
+        const { leftUri, rightUri } = createDiffUris(entry, revision, root, {
             workingCopyChangeId: 'commit-123',
         });
 
         expect(rightUri.scheme).toBe('file');
+        expect(rightUri.path).toBe(leftUri.path);
         expect(rightUri.fsPath).toBeSameFsPath('/root/file.txt');
     });
 
@@ -237,10 +264,11 @@ describe('createDiffUris', () => {
             status: 'modified',
         };
         const revision = 'rev1';
-        const { rightUri } = createDiffUris(entry, revision, root, { editable: true });
+        const { leftUri, rightUri } = createDiffUris(entry, revision, root, { editable: true });
 
         expect(rightUri.scheme).toBe('jj-edit');
-        expect(rightUri.path).toBe('/file.txt');
+        expect(rightUri.path).toBe('/root/file.txt');
+        expect(rightUri.path).toBe(leftUri.path);
         expect(rightUri.fragment).toContain('root=%2Froot');
         expect(rightUri.fragment).toContain('revision=rev1');
     });
@@ -291,18 +319,18 @@ describe('isWorkingCopyRevision', () => {
 describe('createRevisionUri', () => {
     const root = '/workspace/repo';
 
-    it('creates relative path URI with fragment root from absolute path', () => {
+    it('creates full repository path URI with fragment root from absolute path', () => {
         const uri = createRevisionUri(root, '/workspace/repo/src/sub/file.ts', 'main');
         expect(uri.scheme).toBe('jj-view');
-        expect(uri.path).toBe('/src/sub/file.ts');
+        expect(uri.path).toBe('/workspace/repo/src/sub/file.ts');
         expect(uri.fragment).toContain('root=%2Fworkspace%2Frepo');
         expect(uri.fragment).toContain('revision=main');
     });
 
-    it('creates relative path URI from relative path input', () => {
+    it('creates full repository path URI from relative path input', () => {
         const uri = createRevisionUri(root, 'src/sub/file.ts', 'main');
         expect(uri.scheme).toBe('jj-view');
-        expect(uri.path).toBe('/src/sub/file.ts');
+        expect(uri.path).toBe('/workspace/repo/src/sub/file.ts');
         expect(uri.fragment).toContain('root=%2Fworkspace%2Frepo');
         expect(uri.fragment).toContain('revision=main');
     });
@@ -314,7 +342,7 @@ describe('createRevisionUri', () => {
         const uri = createRevisionUri(windowsRoot, windowsPath, 'main');
 
         expect(uri.scheme).toBe('jj-view');
-        expect(uri.path).toBe('/src/sub/file.ts');
+        expect(uri.path).toBe('/C:/workspace/repo/src/sub/file.ts');
         expect(uri.fragment).toContain(encodeURIComponent(windowsRoot));
         expect(uri.fragment).toContain('revision=main');
     });
@@ -535,12 +563,13 @@ describe('isJjScheme', () => {
 describe('getOriginalResourceUri and getRepoRelativePath', () => {
     const root = '/workspace/repo';
 
-    it('generates original resource URI with jj-view scheme for diff left side', () => {
+    it('generates original resource URI with jj-view scheme matching file URI path', () => {
         const fileUri = Uri.file('/workspace/repo/src/index.ts');
         const origUri = getOriginalResourceUri(root, fileUri);
 
         expect(origUri.scheme).toBe('jj-view');
-        expect(origUri.path).toBe('/src/index.ts');
+        expect(origUri.path).toBe('/workspace/repo/src/index.ts');
+        expect(origUri.path).toBe(fileUri.path);
         expect(origUri.fragment).toContain('side=left');
         expect(origUri.fragment).toContain('base=%40');
     });
@@ -554,6 +583,9 @@ describe('getOriginalResourceUri and getRepoRelativePath', () => {
             path: '/src/nested/file.ts',
         });
         expect(getRepoRelativePath(viewUri, root)).toBe('/src/nested/file.ts');
+
+        const fullViewUri = createRevisionUri(root, 'src/nested/file.ts', '@-');
+        expect(getRepoRelativePath(fullViewUri, root)).toBe('/src/nested/file.ts');
     });
 
     it('computes repo relative path for non-existent/deleted files without throwing', () => {
@@ -571,7 +603,7 @@ describe('getOriginalResourceUri and getRepoRelativePath', () => {
         expect(getRepoRelativePath(scmUri, root)).toBe('/src/nested/file.ts');
         expect(toFileUri(scmUri)).toEqual(fileUri);
         expect(getRevisionFromUri(scmUri)).toBe('rev1');
-        expect(getOriginalResourceUri(root, scmUri).path).toBe('/src/nested/file.ts');
+        expect(getOriginalResourceUri(root, scmUri).path).toBe(fileUri.path);
     });
 
     it('returns root slash for repo root URI itself', () => {
@@ -697,5 +729,363 @@ describe('pathe cross-platform contract', () => {
         expect(path.relative('/a/b/c', '/a/b/d')).toBe('../d');
         expect(path.relative('/a/b', '/a/b')).toBe('');
         expect(path.relative('C:/workspace/repo', 'C:/workspace/repo/src/file.ts')).toBe('src/file.ts');
+    });
+
+    describe('createUploadedFileUri and createTextContentUri', () => {
+        it('creates and decodes uploaded file URI with full parameters', () => {
+            const uri = createUploadedFileUri('/repo/root', 'src/file.ts', {
+                changeId: 'I12345678',
+                commitId: 'rev-commit-id',
+                blobSha: 'blob123',
+                remoteRevision: 'remote-rev-456',
+                changeNumber: 12345,
+            });
+
+            expect(uri.scheme).toBe('jj-view');
+            expect(uri.path).toBe('/repo/root/src/file.ts');
+
+            const query = decodeJjViewQuery(uri);
+            expect(query.mode).toBe('uploaded');
+            if (query.mode === 'uploaded') {
+                expect(query.changeId).toBe('I12345678');
+                expect(query.commitId).toBe('rev-commit-id');
+                expect(query.blobSha).toBe('blob123');
+                expect(query.remoteRevision).toBe('remote-rev-456');
+                expect(query.changeNumber).toBe(12345);
+            }
+        });
+
+        it('treats non-numeric changeNumber as undefined instead of NaN', () => {
+            const uri = Uri.parse('jj-view:///src/file.ts#mode=uploaded&changeId=I123&changeNumber=notanumber');
+            const query = decodeJjViewQuery(uri);
+            expect(query.mode).toBe('uploaded');
+            if (query.mode === 'uploaded') {
+                expect(query.changeNumber).toBeUndefined();
+            }
+        });
+
+        it('creates and decodes text content URI', () => {
+            const uri = createTextContentUri('/repo/root', 'COMMIT_MSG', 'Title\n\nBody message');
+            expect(uri.scheme).toBe('jj-view');
+            expect(uri.path).toBe('/COMMIT_MSG');
+
+            const query = decodeJjViewQuery(uri);
+            expect(query.mode).toBe('text');
+            if (query.mode === 'text') {
+                expect(query.text).toBe('Title\n\nBody message');
+            }
+        });
+    });
+});
+
+describe('resolvePathAgainstRealRootAsync and resolveInsideRealRootAsync', () => {
+    it('performs a single ancestor walk for an outside-root missing path', async () => {
+        const calls: string[] = [];
+        const realMap = new Map<string, string>([
+            ['/outside', '/real/outside'],
+            ['/real/repo', '/real/repo'],
+        ]);
+        const stubFs = createMock<HostFs>({
+            realpath: async (targetPath: string) => {
+                calls.push(targetPath);
+                const resolved = realMap.get(path.normalize(targetPath));
+                if (resolved !== undefined) {
+                    return resolved;
+                }
+                throw Object.assign(new Error(`ENOENT: ${targetPath}`), { code: 'ENOENT' });
+            },
+        });
+
+        const target = '/outside/missing-a/missing-b/ghost.txt';
+        const res = await resolvePathAgainstRealRootAsync(target, '/real/repo', stubFs);
+        expect(res).toEqual({
+            inside: false,
+            resolvedPath: '/real/outside/missing-a/missing-b/ghost.txt',
+        });
+
+        expect(calls).toEqual([
+            '/outside/missing-a/missing-b',
+            '/outside/missing-a',
+            '/outside',
+            '/outside/missing-a/missing-b/ghost.txt',
+        ]);
+
+        calls.length = 0;
+        expect(await resolveInsideRealRootAsync(target, '/real/repo', stubFs)).toBeUndefined();
+        expect(calls).toEqual([
+            '/outside/missing-a/missing-b',
+            '/outside/missing-a',
+            '/outside',
+            '/outside/missing-a/missing-b/ghost.txt',
+        ]);
+    });
+
+    it('preserves tracked leaf symlinks inside realRoot without dereferencing the leaf', async () => {
+        const calls: string[] = [];
+        const realMap = new Map<string, string>([
+            ['/ws-link/sub', '/real/repo/sub'],
+            ['/ws-link/sub/leaf-link.txt', '/outside/external.txt'],
+        ]);
+        const stubFs = createMock<HostFs>({
+            realpath: async (targetPath: string) => {
+                calls.push(targetPath);
+                const resolved = realMap.get(path.normalize(targetPath));
+                if (resolved !== undefined) {
+                    return resolved;
+                }
+                throw Object.assign(new Error(`ENOENT: ${targetPath}`), { code: 'ENOENT' });
+            },
+        });
+
+        const res = await resolvePathAgainstRealRootAsync('/ws-link/sub/leaf-link.txt', '/real/repo', stubFs);
+        expect(res).toEqual({ inside: true, relativePath: 'sub/leaf-link.txt' });
+        expect(calls).toEqual(['/ws-link/sub']);
+    });
+
+    it('resolves an outside symlink whose target lands inside realRoot', async () => {
+        const realMap = new Map<string, string>([
+            ['/outside', '/outside'],
+            ['/outside/link.txt', '/real/repo/nested/target.txt'],
+        ]);
+        const stubFs = createMock<HostFs>({
+            realpath: async (targetPath: string) => {
+                const resolved = realMap.get(path.normalize(targetPath));
+                if (resolved !== undefined) {
+                    return resolved;
+                }
+                throw Object.assign(new Error(`ENOENT: ${targetPath}`), { code: 'ENOENT' });
+            },
+        });
+
+        const res = await resolvePathAgainstRealRootAsync('/outside/link.txt', '/real/repo', stubFs);
+        expect(res).toEqual({ inside: true, relativePath: 'nested/target.txt' });
+        expect(await resolveInsideRealRootAsync('/outside/link.txt', '/real/repo', stubFs)).toBe('nested/target.txt');
+    });
+
+    it('handles unresolvable roots and Windows drive-letter casing cleanly', async () => {
+        const stubFs = createMock<HostFs>({
+            realpath: async (targetPath: string) => {
+                if (targetPath === 'C:/repo/sub') {
+                    return 'c:/repo/sub';
+                }
+                throw Object.assign(new Error(`ENOENT: ${targetPath}`), { code: 'ENOENT' });
+            },
+        });
+
+        expect(await resolvePathAgainstRealRootAsync('/unmapped/a/b.txt', '/real/repo', stubFs)).toBeUndefined();
+        expect(await resolvePathAgainstRealRootAsync('C:\\repo\\sub\\file.ts', 'C:\\repo', stubFs)).toEqual({
+            inside: true,
+            relativePath: 'sub/file.ts',
+        });
+    });
+
+    it('getRepoRelativePath handles empty root and external embedded root safely', () => {
+        const embeddedUri = Uri.from({
+            scheme: 'jj-view',
+            path: '/repo/src/index.ts',
+            fragment: encodeJjViewQuery({ mode: 'diff', root: '/repo', base: 'abc', side: 'left' }),
+        });
+        expect(getRepoRelativePath(embeddedUri, '')).toBe('/src/index.ts');
+
+        const virtualNoRootUri = Uri.from({
+            scheme: 'jj-view',
+            path: '/src/plain.ts',
+        });
+        expect(getRepoRelativePath(virtualNoRootUri, '')).toBe('/src/plain.ts');
+
+        const otherRepoUri = Uri.from({
+            scheme: 'jj-view',
+            path: '/other-repo/src/foreign.ts',
+            fragment: encodeJjViewQuery({ mode: 'diff', root: '/other-repo', base: 'abc', side: 'left' }),
+        });
+        expect(getRepoRelativePath(otherRepoUri, '/repo')).toBe('/../other-repo/src/foreign.ts');
+    });
+});
+
+describe('platform-aware backslash filename handling (POSIX vs win32)', () => {
+    it('preserves literal backslashes in path helpers on POSIX while normalizing separators on win32', () => {
+        expect(normalizeRepoSeparators('foo\\bar.txt', 'linux')).toBe('foo\\bar.txt');
+        expect(normalizeRepoSeparators('sub/a\\b.txt', 'darwin')).toBe('sub/a\\b.txt');
+        expect(normalizeRepoSeparators('sub\\a\\b.txt', 'win32')).toBe('sub/a/b.txt');
+
+        expect(stripLeadingSeparators('\\foo.txt', 'linux')).toBe('\\foo.txt');
+        expect(stripLeadingSeparators('/\\foo.txt', 'linux')).toBe('\\foo.txt');
+        expect(stripLeadingSeparators('\\foo.txt', 'win32')).toBe('foo.txt');
+
+        expect(isInsideRelativePath('..\\foo.txt', 'linux')).toBe(true);
+        expect(isInsideRelativePath('..\\foo.txt', 'win32')).toBe(false);
+        expect(isInsideRelativePath('C:\\foo.txt', 'linux')).toBe(true);
+        expect(isInsideRelativePath('C:\\foo.txt', 'win32')).toBe(false);
+
+        expect(pathNormalize('foo\\bar.txt', 'linux')).toBe('foo\\bar.txt');
+        expect(pathNormalize('sub\\bar.txt', 'win32')).toBe('sub/bar.txt');
+
+        expect(pathJoin(['/workspace/repo', 'foo\\bar.txt'], 'linux')).toBe('/workspace/repo/foo\\bar.txt');
+        expect(pathJoin(['C:\\workspace\\repo', 'sub\\bar.txt'], 'win32')).toBe('C:/workspace/repo/sub/bar.txt');
+
+        expect(pathResolve(['/workspace/repo', 'sub/a\\b.txt'], 'linux')).toBe('/workspace/repo/sub/a\\b.txt');
+        expect(pathRelative('/workspace/repo', '/workspace/repo/foo\\bar.txt', 'linux')).toBe('foo\\bar.txt');
+        expect(pathRelative('/workspace/repo', '/workspace/repo/sub/a\\b.txt', 'linux')).toBe('sub/a\\b.txt');
+
+        expect(pathDirname('foo\\bar.txt', 'linux')).toBe('.');
+        expect(pathDirname('sub/a\\b.txt', 'linux')).toBe('sub');
+        expect(pathDirname('sub\\a\\b.txt', 'win32')).toBe('sub/a');
+
+        expect(pathBasename('foo\\bar.txt', 'linux')).toBe('foo\\bar.txt');
+        expect(pathBasename('sub/a\\b.txt', 'linux')).toBe('a\\b.txt');
+        expect(pathBasename('sub\\a\\b.txt', 'win32')).toBe('b.txt');
+
+        expect(pathExtname('a\\b.txt', 'linux')).toBe('.txt');
+        expect(pathExtname('foo.d\\bar', 'linux')).toBe('.d\\bar');
+        expect(pathExtname('foo.d\\bar', 'win32')).toBe('');
+
+        expect(pathIsAbsolute('C:\\repo\\file.txt', 'linux')).toBe(false);
+        expect(pathIsAbsolute('C:\\repo\\file.txt', 'win32')).toBe(true);
+    });
+
+    it('preserves literal backslashes in URIs and Zod schemas on POSIX', () => {
+        const root = '/workspace/repo';
+        const entry: JjStatusEntry = { path: 'sub/a\\b.txt', status: 'modified' };
+        const diffUris = createDiffUris(entry, 'rev1', root, { editable: true, platform: 'linux' });
+        expect(diffUris.leftUri.path).toBe('/workspace/repo/sub/a\\b.txt');
+        expect(diffUris.rightUri.scheme).toBe('jj-edit');
+        expect(diffUris.rightUri.path).toBe('/workspace/repo/sub/a\\b.txt');
+        expect(getRepoRelativePath(diffUris.leftUri, root, 'linux')).toBe('/sub/a\\b.txt');
+        expect(getFsPathFromUri(diffUris.leftUri, 'linux')).toBe('/workspace/repo/sub/a\\b.txt');
+
+        const wcUris = createDiffUris({ path: 'foo\\bar.txt', status: 'modified' }, '@', root, {
+            platform: 'linux',
+        });
+        expect(wcUris.resourceUri.scheme).toBe('file');
+        expect(wcUris.resourceUri.path).toBe('/workspace/repo/foo\\bar.txt');
+        if (process.platform !== 'win32') {
+            expect(wcUris.resourceUri.fsPath).toBeSameFsPath('/workspace/repo/foo\\bar.txt');
+        }
+        expect(getFsPathFromUri(wcUris.resourceUri, 'linux')).toBe('/workspace/repo/foo\\bar.txt');
+        expect(getRepoRelativePath(wcUris.resourceUri, root, 'linux')).toBe('/foo\\bar.txt');
+        expect(getOriginalResourceUri(root, wcUris.resourceUri, 'linux').path).toBe('/workspace/repo/foo\\bar.txt');
+
+        const revUri = createRevisionUri(root, '/workspace/repo/foo\\bar.txt', 'rev1', 'linux');
+        expect(revUri.path).toBe('/workspace/repo/foo\\bar.txt');
+        expect(getRepoRelativePath(revUri, root, 'linux')).toBe('/foo\\bar.txt');
+
+        const uploadedUri = createUploadedFileUri(root, 'foo\\bar.txt', { changeId: 'I123', platform: 'linux' });
+        expect(uploadedUri.path).toBe('/workspace/repo/foo\\bar.txt');
+        expect(getRepoRelativePath(uploadedUri, root, 'linux')).toBe('/foo\\bar.txt');
+
+        const textUri = createTextContentUri(root, 'foo\\bar.txt', 'hello', 'linux');
+        expect(textUri.path).toBe('/foo\\bar.txt');
+
+        const posixSchemas = createJjOutputSchemas('linux');
+        expect(posixSchemas.fileChange.parse({ path: 'foo\\bar.txt', status: 'added' })).toEqual({
+            path: 'foo\\bar.txt',
+            status: 'added',
+        });
+
+        const winSchemas = createJjOutputSchemas('win32');
+        expect(winSchemas.fileChange.parse({ path: 'sub\\bar.txt', status: 'added' })).toEqual({
+            path: 'sub/bar.txt',
+            status: 'added',
+        });
+    });
+
+    it('normalizes backslashes to forward slashes in URIs when targeting win32', () => {
+        const winRoot = 'C:\\workspace\\repo';
+        const winEntry: JjStatusEntry = { path: 'sub\\file.txt', status: 'modified' };
+        const diffUris = createDiffUris(winEntry, 'rev1', winRoot, { editable: false, platform: 'win32' });
+        expect(diffUris.leftUri.path).toBe('/C:/workspace/repo/sub/file.txt');
+        expect(diffUris.rightUri.path).toBe('/C:/workspace/repo/sub/file.txt');
+        expect(getRepoRelativePath(diffUris.leftUri, winRoot, 'win32')).toBe('/sub/file.txt');
+    });
+
+    it('handles Windows UNC shares, drive-relative escapes, mixed-case Linux roots, inferRootPlatform, and unquoteGitPath', () => {
+        expect(isFilesystemRootPath('//server/share', 'win32')).toBe(true);
+        expect(isFilesystemRootPath('//server/share/', 'win32')).toBe(true);
+        expect(pathNormalize('//server/share', 'win32')).toBe('//server/share');
+        expect(pathNormalize('//server/share/..', 'win32')).toBe('//server/share');
+        expect(pathJoin(['//server/share', 'sub\\file.txt'], 'win32')).toBe('//server/share/sub/file.txt');
+        expect(pathResolve(['//server/share', 'sub', '..', '..', 'outside.txt'], 'win32')).toBe(
+            '//server/share/outside.txt',
+        );
+        expect(pathRelative('//server/share/a', '//server/other/b', 'win32')).toBe('//server/other/b');
+        expect(pathDirname('//server/share', 'win32')).toBe('//server/share');
+        expect(pathBasename('//server/share', 'win32')).toBe('');
+        expect(pathBasename('//server/share/file.txt', 'win32')).toBe('file.txt');
+
+        // Drive-relative escapes must be blocked on win32, preserved on POSIX
+        expect(isInsideRelativePath('C:..\\secret.txt', 'win32')).toBe(false);
+        expect(isInsideRelativePath('C:foo.txt', 'win32')).toBe(false);
+        expect(isInsideRelativePath('C:..\\secret.txt', 'linux')).toBe(true);
+
+        // createRevisionUri respects case sensitivity per OS, normalizes .., and infers platform from root
+        const linuxMismatch = createRevisionUri('/Repo', '/repo/foo\\bar.txt', 'rev1', 'linux');
+        expect(linuxMismatch.path).toBe('/repo/foo\\bar.txt');
+        const lowerRepoUri = createRevisionUri('/repo', '/repo/foo\\bar.txt', 'rev1', 'linux');
+        expect(getRepoRelativePath(lowerRepoUri, '/Repo', 'linux')).toBe('/../repo/foo\\bar.txt');
+        const linuxInsideTraversal = createRevisionUri('/repo', '/repo/sub/../inside.txt', 'rev1', 'linux');
+        expect(linuxInsideTraversal.path).toBe('/repo/inside.txt');
+        const linuxOutsideTraversal = createRevisionUri('/repo', '/repo/sub/../../outside.txt', 'rev1', 'linux');
+        expect(linuxOutsideTraversal.path).toBe('/outside.txt');
+        expect(getRepoRelativePath(Uri.file('/outside.txt'), '/repo', 'linux')).toBe('/../outside.txt');
+        const darwinMatch = createRevisionUri('/Repo', '/repo/foo\\bar.txt', 'rev1', 'darwin');
+        expect(darwinMatch.path).toBe('/Repo/foo\\bar.txt');
+
+        const uploadedInferredWin = createUploadedFileUri('C:\\repo', 'sub\\file.txt', { changeId: 'I1' });
+        expect(uploadedInferredWin.path).toBe('/C:/repo/sub/file.txt');
+        expect(getRepoRelativePath(uploadedInferredWin, 'C:\\repo')).toBe('/sub/file.txt');
+        const textInferredWin = createTextContentUri('C:\\repo', 'sub\\note.txt', 'hello');
+        expect(textInferredWin.path).toBe('/sub/note.txt');
+        if (process.platform !== 'win32') {
+            const revInferredPosix = createRevisionUri('/repo', 'C:\\foo.txt', 'rev1');
+            expect(revInferredPosix.path).toBe('/repo/C:\\foo.txt');
+            expect(getRepoRelativePath(revInferredPosix, '/repo')).toBe('/C:\\foo.txt');
+        }
+
+        // getFsPathFromUri preserves POSIX C:\foo.txt inside POSIX root without triggering Windows drive heuristics
+        const posixColonUri = createUploadedFileUri('/repo', 'C:\\foo.txt', { changeId: 'I1', platform: 'linux' });
+        expect(getFsPathFromUri(posixColonUri, 'linux')).toBe('/repo/C:\\foo.txt');
+
+        // unquoteGitPath preserves literal backslashes and decodes UTF-8 octal sequences
+        expect(unquoteGitPath('"foo\\\\bar.txt"')).toBe('foo\\bar.txt');
+        expect(unquoteGitPath('"caf\\303\\251\\\\latte.txt"')).toBe('café\\latte.txt');
+        expect(unquoteGitPath('"line\\t\\n\\\\end"')).toBe('line\t\n\\end');
+    });
+
+    it('round-trips UNC custom URIs, mixed-case roots, options objects, and leading slashes across platforms (#435)', () => {
+        for (const uncRoot of ['//server/share/repo', '\\\\server\\share\\repo']) {
+            const diffUris = createDiffUris({ path: 'sub\\file.txt', status: 'modified' }, 'rev1', uncRoot, {
+                editable: true,
+                platform: 'win32',
+            });
+            expect(diffUris.leftUri.authority).toBe('server');
+            expect(diffUris.rightUri.authority).toBe('server');
+            expect(getFsPathFromUri(diffUris.leftUri, 'win32')).toBe('\\\\server\\share\\repo\\sub\\file.txt');
+            expect(getFsPathFromUri(diffUris.rightUri, 'win32')).toBe('\\\\server\\share\\repo\\sub\\file.txt');
+            expect(getRepoRelativePath(diffUris.leftUri, uncRoot, 'win32')).toBe('/sub/file.txt');
+            expect(getRepoRelativePath(diffUris.rightUri, uncRoot, 'win32')).toBe('/sub/file.txt');
+
+            const inferredView = createRepoFileUri(uncRoot, 'sub\\other.txt', 'jj-view');
+            expect(inferredView.authority).toBe('server');
+            expect(getRepoRelativePath(inferredView, uncRoot)).toBe('/sub/other.txt');
+        }
+
+        // Mixed-case roots match case-insensitively on win32/darwin while preserving case sensitivity on linux
+        const winUpperRoot = 'C:\\Workspace\\Repo';
+        const winLowerUri = Uri.file('c:\\workspace\\repo\\src\\File.ts');
+        expect(getRepoRelativePath(winLowerUri, winUpperRoot, 'win32')).toBe('/src/File.ts');
+
+        const darwinUpperRoot = '/Repo';
+        const darwinLowerUri = Uri.from({ scheme: 'file', path: '/repo/foo\\bar.txt' });
+        expect(getRepoRelativePath(darwinLowerUri, darwinUpperRoot, 'darwin')).toBe('/foo\\bar.txt');
+        expect(getRepoRelativePath(darwinLowerUri, darwinUpperRoot, 'linux')).toBe('/../repo/foo\\bar.txt');
+
+        // Explicit POSIX platform keeps toFsComparisonKey case-sensitive and preserves literal backslashes / drive-like dirs
+        expect(toFsComparisonKey('C:\\Foo.txt', 'linux')).toBe('C:\\Foo.txt');
+        const optionsUri = createRepoFileUri('/repo', 'foo\\bar.txt', 'file', { platform: 'linux' });
+        expect(optionsUri.path).toBe('/repo/foo\\bar.txt');
+        expect(optionsUri.fragment).toBe('');
+
+        expect(createTextContentUri('/repo', '//leading/path.txt', 'hi', 'linux').path).toBe('/leading/path.txt');
+        expect(getFsPathFromUri(Uri.from({ scheme: 'file', path: '/C:/foo.txt' }), 'linux')).toBe('/C:/foo.txt');
     });
 });

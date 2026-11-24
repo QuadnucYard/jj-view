@@ -14,7 +14,7 @@ import type { JjService } from '../../core/jj-service';
 import type { JjStatusEntry } from '../../core/jj-types';
 import { ScmModel, type ScmSnapshot } from '../../core/scm-model';
 import { createJjResourceState, type JjResourceState } from '../../core/scm-resource-state';
-import { getRepoRelativePath, toAbsoluteEditorUri, Uri } from '../../core/uri-utils';
+import { getFsPathFromUri, getRepoRelativePath, toAbsoluteEditorUri, Uri } from '../../core/uri-utils';
 import type { LoggerChannel } from '../../utils/output-channel';
 import { VsCodeDecorationProvider } from './vscode-decoration-provider';
 import type { VsCodeEditFsProvider } from './vscode-edit-fs-provider';
@@ -29,7 +29,7 @@ export class VsCodeScmProvider implements vscode.Disposable {
     private readonly _parentGroups: vscode.SourceControlResourceGroup[] = [];
     private readonly _conflictGroup: vscode.SourceControlResourceGroup;
     private _lastKnownDescription = '';
-    private _lastKnownCommitId = '';
+    private _lastKnownChangeId = '';
     private readonly _diffTabCleaner: DiffTabCleaner;
 
     public readonly scmModel: ScmModel;
@@ -131,6 +131,18 @@ export class VsCodeScmProvider implements vscode.Disposable {
             }),
         );
 
+        const configChangeSub = this.repo.host.config.onDidChangeConfiguration?.((e) => {
+            if (e.affectsConfiguration('jj-view.editableMutableDiffs') && this.scmModel.snapshot) {
+                void this.renderSnapshot({
+                    ...this.scmModel.snapshot,
+                    reason: 'editableMutableDiffs config change',
+                });
+            }
+        });
+        if (configChangeSub) {
+            this.disposables.push(configChangeSub);
+        }
+
         // Initial refresh
         this.ready = this.scmModel.snapshot
             ? this.renderSnapshot(this.scmModel.snapshot)
@@ -166,20 +178,26 @@ export class VsCodeScmProvider implements vscode.Disposable {
         }
 
         const openDiffOnClick = this.repo.host.config.get<boolean>('openDiffOnClick', true) ?? true;
+        const editableMutableDiffs = this.repo.host.config.get<boolean>('editableMutableDiffs', true) ?? true;
         const currentEntry = snapshot.currentEntry;
 
         if (currentEntry) {
             const desc = snapshot.description;
-            const commitId = currentEntry.commit_id;
+            const changeId = currentEntry.change_id;
+            const reasons = snapshot.reason?.split(', ') ?? [];
+            const describedWorkingCopy = reasons.some(
+                (r) => r === 'after describe' || r === `after describe:${changeId}`,
+            );
 
             if (
-                this._sourceControl.inputBox.value === '' ||
-                this._lastKnownCommitId !== commitId ||
+                this._lastKnownChangeId !== changeId ||
+                desc !== this._lastKnownDescription ||
+                describedWorkingCopy ||
                 this._sourceControl.inputBox.value === this._lastKnownDescription
             ) {
                 this._sourceControl.inputBox.value = desc;
                 this._lastKnownDescription = desc;
-                this._lastKnownCommitId = commitId;
+                this._lastKnownChangeId = changeId;
             }
         }
 
@@ -195,15 +213,17 @@ export class VsCodeScmProvider implements vscode.Disposable {
             : snapshot.workingCopyLabel;
         this._workingCopyGroup.contextValue = snapshot.workingCopyContextValue;
 
+        const platform = this.jj.system.platform;
         this._workingCopyGroup.resourceStates = snapshot.workingCopyChanges.map((c) => {
             const state = this.toResourceState(c, currentEntry?.change_id || '@', {
                 squashable: snapshot.parentMutable,
                 multipleAncestors: snapshot.ancestors.length > 1,
                 openDiffOnClick,
                 hasChild: snapshot.hasChild,
+                mutableCommit: !(currentEntry?.is_immutable ?? false),
             });
             decorationMap.set(state.resourceUri.toString(), c);
-            decorationMap.set(getRepoRelativePath(state.resourceUri, this.jj.workspaceRoot), c);
+            decorationMap.set(getRepoRelativePath(state.resourceUri, this.jj.workspaceRoot, platform), c);
             return state;
         });
 
@@ -212,9 +232,10 @@ export class VsCodeScmProvider implements vscode.Disposable {
             const state = this.toResourceState(entry, currentEntry?.change_id || '@', {
                 openDiffOnClick,
                 inConflictGroup: true,
+                mutableCommit: !(currentEntry?.is_immutable ?? false),
             });
             decorationMap.set(state.resourceUri.toString(), entry);
-            decorationMap.set(getRepoRelativePath(state.resourceUri, this.jj.workspaceRoot), entry);
+            decorationMap.set(getRepoRelativePath(state.resourceUri, this.jj.workspaceRoot, platform), entry);
             return state;
         });
 
@@ -242,10 +263,11 @@ export class VsCodeScmProvider implements vscode.Disposable {
             const remainingAncestors = snapshot.ancestors.length - 1 - i;
             group.resourceStates = ancestor.changes.map((c: JjStatusEntry) => {
                 const state = this.toResourceState(c, ancestor.entry.change_id, {
-                    editable: ancestor.isMutable,
+                    editable: ancestor.isMutable && editableMutableDiffs,
                     squashable: ancestor.canSquash,
                     multipleAncestors: remainingAncestors > 0,
                     openDiffOnClick,
+                    mutableCommit: ancestor.isMutable,
                 });
                 decorationMap.set(state.resourceUri.toString(), c);
                 return state;
@@ -282,6 +304,7 @@ export class VsCodeScmProvider implements vscode.Disposable {
             ...options,
             resourceUri,
             workingCopyChangeId: this.scmModel.currentEntry?.change_id,
+            platform: this.jj.system.platform,
         });
         // Relative virtual editor paths also collide with SCM tree keys. Use the
         // physical absolute path for every diff side, including deleted files.
@@ -308,7 +331,14 @@ export class VsCodeScmProvider implements vscode.Disposable {
             return undefined;
         }
         const originalUri = await this.scmModel.getOriginalResourceUri(uri);
-        return originalUri ? toAbsoluteEditorUri(originalUri) : undefined;
+        if (!originalUri) {
+            return undefined;
+        }
+        const platform = this.jj.system.platform;
+        if (getFsPathFromUri(originalUri, platform) === getFsPathFromUri(uri, platform)) {
+            return originalUri.with({ authority: uri.authority, path: uri.path });
+        }
+        return toAbsoluteEditorUri(originalUri);
     }
 
     dispose(): void {

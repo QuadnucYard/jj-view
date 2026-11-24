@@ -6,6 +6,7 @@
 import { CoalescingQueue } from '../../utils/coalescing-queue';
 import { toError } from '../../utils/error-utils';
 import type { LoggerChannel } from '../../utils/output-channel';
+import { computeUnuploadedComparison } from '../commands/compare-with-uploaded';
 import { type Disposable, type Event, EventEmitter } from '../host/events';
 import type { HostEnvironment } from '../host/host-environment';
 import {
@@ -57,6 +58,9 @@ export class CommitDetailsController implements Disposable {
     private _pendingUpdate?: { newText: string; newSelection: { start: number; end: number } };
     private _currentSavePromise?: Promise<boolean>;
     private _nextSavePromise?: Promise<boolean>;
+    private _descriptionModifiedFromRemote?: boolean;
+    private _unuploadedFilePaths?: string[];
+    private _activeComparison?: Promise<void>;
 
     private readonly _onDidUpdate = new EventEmitter<JjLogEntry>();
     public readonly onDidUpdate: Event<JjLogEntry> = this._onDidUpdate.event;
@@ -78,6 +82,16 @@ export class CommitDetailsController implements Disposable {
         this._refreshQueue = new CoalescingQueue(async () => {
             await this._refreshDetails();
         });
+
+        if (this.repo?.codeForge) {
+            this._disposables.push(
+                this.repo.codeForge.onDidUpdate(() => {
+                    if (!this._disposed) {
+                        void this.load();
+                    }
+                }),
+            );
+        }
     }
 
     public get isDisposed(): boolean {
@@ -86,6 +100,10 @@ export class CommitDetailsController implements Disposable {
 
     public get logEntry(): JjLogEntry | undefined {
         return this._logEntry;
+    }
+
+    public get activeComparison(): Promise<void> | undefined {
+        return this._activeComparison;
     }
 
     public get changes(): readonly JjStatusEntry[] | undefined {
@@ -98,6 +116,11 @@ export class CommitDetailsController implements Disposable {
 
     public get persistedDescription(): string | undefined {
         return this._persistedDescription;
+    }
+
+    /** True while the draft differs from the last known persisted description. */
+    public get hasUnsavedDraft(): boolean {
+        return this._draftDescription !== undefined && this._draftDescription !== this._persistedDescription;
     }
 
     public async getInitialPayload(): Promise<CommitDetailsPayload | undefined> {
@@ -149,6 +172,12 @@ export class CommitDetailsController implements Disposable {
         if (!this._logEntry) {
             return undefined;
         }
+        const activeProvider = this.repo?.codeForge?.activeProvider;
+        const isManaged = activeProvider?.isManagedBookmark;
+        const rawBookmarks = this._logEntry.bookmarks || [];
+        const bookmarks = isManaged
+            ? rawBookmarks.filter((b) => !isManaged.call(activeProvider, b.name))
+            : rawBookmarks;
         return {
             changeId: this.changeId,
             changeIdShortest: this._logEntry.change_id_shortest,
@@ -156,11 +185,12 @@ export class CommitDetailsController implements Disposable {
             changeIdOffset: this._logEntry.change_id_offset,
             commitId: this._logEntry.commit_id,
             description: (this._persistedDescription ?? this._logEntry.description ?? '').trim(),
+            unsavedDraft: this.hasUnsavedDraft ? this._draftDescription : undefined,
             files: this._changes ? [...this._changes] : [],
             isImmutable: this._logEntry.is_immutable,
             author: this._logEntry.author,
             committer: this._logEntry.committer,
-            bookmarks: this._logEntry.bookmarks || [],
+            bookmarks,
             tags: this._logEntry.tags || [],
             isEmpty: this._logEntry.is_empty,
             isConflict: this._logEntry.conflict,
@@ -170,6 +200,10 @@ export class CommitDetailsController implements Disposable {
             bodyWidthRuler: this._host.config.get<number | undefined>('commit.bodyWidthRuler'),
             formatDescriptionOnSave: this._host.config.get<boolean>('commit.formatDescriptionOnSave', false),
             isLoadingFiles: this._changes === undefined,
+            codeForgeChange: this._logEntry.codeForgeChange,
+            codeForgeNeedsUpload: this._logEntry.codeForgeNeedsUpload,
+            descriptionModifiedFromRemote: this._descriptionModifiedFromRemote,
+            unuploadedFilePaths: this._unuploadedFilePaths,
         };
     }
 
@@ -295,7 +329,9 @@ export class CommitDetailsController implements Disposable {
         }
 
         const start = performance.now();
-        this._loadId++;
+        const currentLoadId = ++this._loadId;
+        this._descriptionModifiedFromRemote = undefined;
+        this._unuploadedFilePaths = undefined;
 
         let log: JjLogEntry | undefined;
         try {
@@ -325,7 +361,13 @@ export class CommitDetailsController implements Disposable {
             return;
         }
 
+        repo.codeForge?.populateCodeForgeInfo([log]);
         this._setLogEntry(log);
+        const uploadedChange = log.codeForgeChange;
+        if (uploadedChange?.status === 'NEW' && uploadedChange.currentRevision && uploadedChange.contentSynced) {
+            this._descriptionModifiedFromRemote = false;
+            this._unuploadedFilePaths = [];
+        }
         this._onDidUpdate.fire(log);
 
         const initialState = this.getState();
@@ -334,6 +376,15 @@ export class CommitDetailsController implements Disposable {
         }
 
         const changes = this._changes ?? [];
+        if (uploadedChange?.status === 'NEW' && uploadedChange.currentRevision && !uploadedChange.contentSynced) {
+            const comparison = this._refreshUnuploadedComparison(currentLoadId, log, changes);
+            this._activeComparison = comparison;
+            void comparison.finally(() => {
+                if (this._activeComparison === comparison) {
+                    this._activeComparison = undefined;
+                }
+            });
+        }
         const duration = performance.now() - start;
         this._logger?.info?.(`[timing] [CommitDetails] files took ${duration.toFixed(0)}ms (${changes.length} files)`);
         const commitId = log.commit_id;
@@ -394,6 +445,35 @@ export class CommitDetailsController implements Disposable {
         if (!wasDirty) {
             this._draftDescription = this._persistedDescription;
             this._lastPushedText = this._persistedDescription;
+        }
+    }
+
+    private async _refreshUnuploadedComparison(
+        loadId: number,
+        logEntry: JjLogEntry,
+        changes: readonly JjStatusEntry[],
+    ): Promise<void> {
+        if (!this.repo || this._disposed || loadId !== this._loadId) {
+            return;
+        }
+        try {
+            const comparison = await computeUnuploadedComparison(this.repo, this.changeId, {
+                logEntry,
+                localChanges: changes,
+            });
+            if (this._disposed || loadId !== this._loadId) {
+                return;
+            }
+            this._descriptionModifiedFromRemote = comparison.descriptionModified;
+            this._unuploadedFilePaths = comparison.unuploadedFilePaths;
+            const updatedState = this.getState();
+            if (updatedState) {
+                this._receiver.sender.update(updatedState);
+            }
+        } catch (err: unknown) {
+            this._logger?.debug?.(
+                `[CommitDetailsController] Unuploaded comparison skipped for ${this.changeId}: ${toError(err).message}`,
+            );
         }
     }
 
@@ -467,31 +547,70 @@ export class CommitDetailsController implements Disposable {
         });
     }
 
-    public async save(finalDescription?: string): Promise<boolean> {
+    public save(finalDescription?: string): Promise<boolean> {
         if (this._disposed || !this._logEntry) {
-            return false;
+            return Promise.resolve(false);
         }
 
         if (finalDescription !== undefined) {
             this._draftDescription = finalDescription;
         }
 
-        if (this._currentSavePromise) {
-            if (!this._nextSavePromise) {
-                this._nextSavePromise = this._currentSavePromise
-                    .catch(() => false)
-                    .then(async () => {
-                        this._nextSavePromise = undefined;
-                        return this._executeSave();
-                    });
-            }
+        if (this._nextSavePromise) {
             return this._nextSavePromise;
         }
 
-        this._currentSavePromise = this._executeSave().finally(() => {
-            this._currentSavePromise = undefined;
+        if (this._currentSavePromise) {
+            this._nextSavePromise = this._currentSavePromise
+                .catch(() => false)
+                .then(() => {
+                    this._nextSavePromise = undefined;
+                    // Promote the queued run to _currentSavePromise before executing so
+                    // flushPendingSave() always observes in-flight queued saves.
+                    const run = this._executeSave().finally(() => {
+                        if (this._currentSavePromise === run) {
+                            this._currentSavePromise = undefined;
+                        }
+                    });
+                    this._currentSavePromise = run;
+                    return run;
+                });
+            return this._nextSavePromise;
+        }
+
+        const initial = this._executeSave().finally(() => {
+            if (this._currentSavePromise === initial) {
+                this._currentSavePromise = undefined;
+            }
         });
-        return this._currentSavePromise;
+        this._currentSavePromise = initial;
+        return initial;
+    }
+
+    /**
+     * Flushes any pending debounced description edit and awaits completion of any in-flight
+     * or unsaved description change before a history-mutating operation runs on this commit.
+     */
+    public async flushPendingSave(): Promise<boolean> {
+        if (this._disposed) {
+            return false;
+        }
+        this.flushDebounce();
+        while (this._currentSavePromise || this._nextSavePromise) {
+            const pending = this._nextSavePromise ?? this._currentSavePromise;
+            if (!pending) {
+                break;
+            }
+            const ok = await pending.catch(() => false);
+            if (!ok || this._disposed) {
+                return false;
+            }
+        }
+        this.flushDebounce();
+        if (!this._disposed && this._logEntry && !this._logEntry.is_immutable && this.hasUnsavedDraft) {
+            return await this.save();
+        }
+        return true;
     }
 
     private async _executeSave(): Promise<boolean> {
@@ -505,11 +624,11 @@ export class CommitDetailsController implements Disposable {
         try {
             let savedDescription = descriptionToSave;
             if (!isSoftSave) {
-                const res = await this._host.commands.executeCommand(
-                    'jj-view.setDescription',
-                    descriptionToSave,
-                    this.changeId,
-                );
+                const commandArgs: unknown[] = [descriptionToSave, this.changeId];
+                if (this.repo) {
+                    commandArgs.push({ revision: this.changeId, rootUri: this.repo.rootUri });
+                }
+                const res = await this._host.commands.executeCommand('jj-view.setDescription', ...commandArgs);
                 if (typeof res === 'string') {
                     savedDescription = res;
                 } else if (res === false) {
@@ -603,12 +722,52 @@ export class CommitDetailsController implements Disposable {
                 openMultiDiff: async (payload) => {
                     await this._host.commands.executeCommand('jj-view.showMultiFileDiff', payload.changeId);
                 },
+                openCompareWithUploaded: async (payload) => {
+                    await this._host.commands.executeCommand('jj-view.compareWithUploaded', payload.changeId);
+                },
+                splitFiles: async (payload) => {
+                    const flushed = await this.flushPendingSave();
+                    if (!flushed || this._disposed) {
+                        return;
+                    }
+                    const commandId =
+                        payload.placement === 'before' ? 'jj-view.splitFilesBefore' : 'jj-view.splitFilesAfter';
+                    await this._host.commands.executeCommand(commandId, {
+                        paths: payload.paths,
+                        revision: payload.changeId || this.changeId,
+                        ...(this.repo ? { rootUri: this.repo.rootUri } : {}),
+                    });
+                },
+                openFileOnRemote: async (payload) => {
+                    await this._executeRemoteFileCommand('jj-view.openFileOnRemote', payload);
+                },
+                copyRemoteFileUrl: async (payload) => {
+                    await this._executeRemoteFileCommand('jj-view.copyRemoteFileUrl', payload);
+                },
             },
             {
                 logger: this._logger,
                 getState: () => this.getState(),
             },
         );
+    }
+
+    private async _executeRemoteFileCommand(
+        commandId: 'jj-view.openFileOnRemote' | 'jj-view.copyRemoteFileUrl',
+        payload: { changeId: string; path: string; status?: string },
+    ): Promise<void> {
+        if (this._disposed) {
+            return;
+        }
+        const revision = this._logEntry?.commit_id || payload.changeId || this.changeId;
+        await this._host.commands.executeCommand(commandId, {
+            filePath: payload.path,
+            isRepoRelative: true,
+            revision,
+            fileStatus: payload.status,
+            skipActiveSelection: true,
+            ...(this.repo ? { rootUri: this.repo.rootUri } : {}),
+        });
     }
 
     public dispose(): void {

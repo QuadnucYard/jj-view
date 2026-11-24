@@ -1,0 +1,293 @@
+---
+name: code-review
+description: Performs multi-agent code reviews on jj-view commits using the repository's review rubric (strict TypeScript, theme-defined CSS variables, TestRepo/E2E standards, and component lifecycle invariants) and continuously updates the rubric as new codebase-wide positive or negative patterns are discovered.
+---
+
+# JJ View Code Review Rubric & Self-Improving Review Protocol
+
+## When to use this skill
+
+Use this skill before completing any feature, bugfix, refactoring, or
+multi-commit Jujutsu stack in `jj-view`, or whenever asked to review local
+changes or commits in the `jj-view` repository.
+
+## How to use it
+
+### Step 1: Audit the Commit Stack Structure
+
+1.  Inspect `jj log -r 'main..@' --stat` (always with `--no-pager`).
+2.  Ensure `@` is an empty working-copy commit on top of the stack and every
+    non-empty commit in `main..@-` is atomic, logically scoped, and has a clean
+    conventional commit message (`feat(...)`, `fix(...)`, `test(...)`,
+    `docs(...)`, etc.) free of internal codenames, prototype labels, or
+    temporary notes.
+
+### Step 2: Spawn 2 Independent Review Subagents Per Commit
+
+For **every** non-empty commit in the stack, launch **2 independent read-only
+review subagents** in parallel so each commit gets two orthogonal perspectives:
+
+-   **Reviewer A (Correctness, Algorithms, Lifecycle & Tests)**: Audits business
+    logic, parser/state-machine edge cases, external library callback contracts,
+    DOM/Shadow DOM lifecycle, resource cleanup (`try / finally`), and unit + E2E
+    test coverage.
+-   **Reviewer B (Architecture, Strict TypeScript & Theme Fidelity)**: Audits
+    strict TypeScript rules, parameter signatures, component boundaries, and
+    strict adherence to `jj-view`'s configured theme CSS variables
+    (`var(--vscode-...)`).
+
+Instruct both reviewers to read this skill
+(`.agents/skills/code-review/SKILL.md`) and `GEMINI.md`, inspect the full diff
+(`jj show -r <rev> --git --no-pager`) and full source of touched files, and end
+their report with a `### Candidate Rubric Patterns (Positive & Negative)`
+section.
+
+--------------------------------------------------------------------------------
+
+## The `jj-view` Code Review Rubric
+
+Every commit in `jj-view` MUST be evaluated against the following four
+categories:
+
+### 1. Theme Color & Styling Fidelity (CRITICAL for Web UI & CSS)
+
+-   **Zero Hardcoded Hex or RGB Colors**: Component styles (`.svelte` `<style>`
+    blocks, `.css` files outside theme palette definitions, and CSS strings
+    injected into Web Component Shadow DOMs) MUST NEVER hardcode hex (`#...`) or
+    `rgb()`/`rgba()` values, and MUST NEVER borrow hardcoded theme palettes
+    (e.g. orange `#ff7849` or fixed slate backgrounds) from external prototypes.
+    Always sweep `<style>` blocks of touched `.svelte` files for residual hex or
+    rgba fallbacks.
+-   **Configured `jj-view` Theme Variables Only**: All backgrounds, recessed
+    surfaces, borders, text, badges, accents, focus rings, and hover states must
+    reference `var(--vscode-...)` tokens (populated dynamically by
+    `applyAppTheme` in `web/src/diff/highlighter-setup.ts` and
+    `web/src/styles/vscode-theme.css` for the user's selected `jj-view` theme):
+    -   **Surfaces & Borders**: `var(--vscode-editor-background)`,
+        `var(--vscode-sideBar-background)`, `var(--vscode-widget-border)`,
+        `var(--vscode-widget-shadow, var(--vscode-foreground))`. (Note: always
+        provide a sensible fallback like `var(--vscode-foreground)` for
+        `widget-shadow` since it may evaluate to transparent or empty in custom
+        web themes).
+    -   **Headers & Dividers**:
+        `var(--vscode-editorGroupHeader-tabsBackground)`,
+        `var(--vscode-editorGroupHeader-tabsBorder)`.
+    -   **Inputs, Accents & Focus**: `var(--vscode-input-background)`,
+        `var(--vscode-input-border)`, `var(--vscode-input-foreground)`,
+        `var(--vscode-focusBorder)`, `var(--vscode-button-background)`,
+        `var(--vscode-textLink-foreground)`.
+    -   **Lists & Selection**: `var(--vscode-list-activeSelectionBackground)`,
+        `var(--vscode-list-activeSelectionForeground)`,
+        `var(--vscode-list-hoverBackground)`.
+    -   **Typography**: `var(--vscode-foreground)`,
+        `var(--vscode-descriptionForeground)`, `var(--vscode-font-family)`,
+        `var(--vscode-font-size)`.
+-   **Theme-Adaptive Translucent Tints (`color-mix`)**: When deriving subtle
+    tints, recessed channels, or accent borders that must work across all dark
+    and light `jj-view` themes (`pierre-dark-soft`, `pierre-light-soft`,
+    `github-light`, `dracula`, `catppuccin-mocha`, etc.), combine
+    `var(--vscode-...)` variables with `color-mix(in srgb, ...)`. For small text
+    or badge foregrounds over light surfaces, verify WCAG contrast in both dark
+    and light themes by mixing accent tokens with foreground (e.g.,
+    `color-mix(in srgb, var(--vscode-charts-orange, var(--vscode-editorWarning-foreground)) 55%, var(--vscode-foreground))`)
+    and avoiding color collisions with `.status-modified`:
+
+    ```css
+    /* GOOD: Adapts automatically to any configured dark or light jj-view theme */
+    --accent-primary: var(--vscode-focusBorder, var(--vscode-button-background));
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent-primary) 50%, var(--vscode-input-border));
+
+    /* BAD (Forbidden): Borrowed or hardcoded colors */
+    --accent-primary: #ff7849;
+    background: rgba(255, 120, 73, 0.12);
+    ```
+-   **Light & Dark Theme Reactivity**: Components that wrap external renderers
+    (such as `@pierre/diffs` `FileDiff` or `CodeView`) must use
+    `isLightTheme(effectiveTheme)` consistently and reactively re-apply theme
+    styles when the configured theme changes at runtime.
+-   **Presentation Hygiene**: Maintain `35px` header heights and `6px`/`4px`
+    border radii; never prefix standalone labels with `"JJ View: ..."`, never
+    expose raw `jj-view.*` command IDs in user-facing rows, and use crisp inline
+    `<svg>` vector icons instead of Unicode emoji or dingbats.
+
+### 2. Strict TypeScript & Code Style (`GEMINI.md`)
+
+-   **Zero `any` / Zero Suppressions / Zero Double Casts**:
+    -   Forbidden: `any`, `// @ts-ignore`, `// @ts-expect-error`,
+        `// eslint-disable-line`, `// biome-ignore`, `as unknown as Type`.
+    -   Required: Use proper type guards, narrowed interfaces, or
+        `createMock<T>` / `createVscodeMock` in tests.
+    -   Avoid redundant `as Record<string, unknown>` casts after `'prop' in obj`
+        checks; rely on direct `'prop' in obj` type narrowing instead, and declare global `Window` test properties (`declare global { interface Window { ... } }`) rather than double-casting `window as unknown as ...` in Playwright `evaluate`/`addInitScript` probes.
+-   **No Omnibus Union Parameters (`GEMINI.md:15`)**:
+    -   Forbidden: Polymorphic parameter unions
+        (`target: Locator | { x: number; y: number }`,
+        `optionsOrAction?: Options | string`) that branch on runtime type checks
+        (`'x' in target`, `typeof arg === 'string'`).
+    -   Required: Split into explicit, single-purpose methods
+        (`moveTo(target: Locator)` and `moveToPoint(x: number, y: number)`),
+        separate parameters, or a structural interface
+        (`event: SeamPointerEventLike` that both `PointerEvent` and `MouseEvent`
+        satisfy structurally without a union).
+-   **Early Returns & Top-of-File Imports**:
+    -   Check error/boundary conditions first and return early rather than
+        nesting 4–5 levels of `if` statements.
+    -   Place all imports at the top of the file.
+-   **Share Host-Agnostic Payload Extraction in `src/core/commands/command-utils.ts`**: Extract pure helpers taking `readonly string[]` (e.g. `extractSelectedOrArgRevisions`) so VS Code and Web payload adapters share identical single-commit, multi-selection, SCM group, and Command Palette behavior without duplication.
+
+### 3. Component Lifecycle, Shadow DOM & Virtualized Rendering
+
+-   **Shadow DOM Root Resolution**: Web Components like `@pierre/diffs`'s
+    `<diffs-container>` render internal rows and separators inside
+    `element.shadowRoot`, while light-DOM test stubs may omit a shadow root.
+    Host adapters must resolve `container.shadowRoot ?? container` rather than
+    returning the outer light-DOM host element when `shadowRoot` is present.
+-   **Library Callback Signatures**: Always verify callback parameter positions
+    against `.d.ts` definitions in `node_modules` rather than assuming
+    2-argument signatures (for example, `@pierre/diffs`
+    `CodeViewOptions.onPostRender` passes `(node, instance, phase, context)`
+    where the diff item context is the **4th** argument and
+    `phase === 'unmount'` must be ignored).
+-   **Pooled / Recycled DOM Node Cleanup**: Virtualized views (`CodeView`) pool
+    and recycle `<diffs-container>` elements across different files during
+    scrolling. Host controllers attached via `WeakMap<HTMLElement, Host>` must
+    clear cached per-file state when `diffItem.item.fileDiff` changes and remove
+    custom child elements when a separator or row becomes inactive.
+-   **Shadow DOM `adoptedStyleSheets` Without `!important`**: Inject custom Shadow DOM styles via `shadowRoot.adoptedStyleSheets` so unlayered rules win by standard cascade order with zero `!important`.
+-   **Deterministic Pointer & Subprocess Cleanup**:
+    -   Always pair `pointermove`/`pointerup`/`pointercancel` and Playwright
+        `page.mouse.down()` with `try { ... } finally { ... }` cleanup so
+        aborted gestures or lost captures never leak global listeners, `body`
+        classes, or pressed mouse state. Global window drag listeners must
+        subscribe to `'pointercancel'` in addition to `'pointerup'`.
+    -   In Playwright helpers (`recordGifFlow`, `recordInteractionFlow`), wrap
+        post-flow `page.evaluate(...)` teardown in `try { ... } catch {}`
+        *before* `fs.rmSync(tempDir)` so a closed/crashed page never leaks
+        temporary directories or masks the test failure.
+    -   Invoke external binaries (`ffmpeg`) via
+        `cp.execFileSync(bin, argsArray)` rather than shell string interpolation
+        (`cp.execSync`).
+-   **Deduplicate Dual RPC + SSE Broadcast Notifications**: When a backend RPC handler both broadcasts an SSE notification and returns the same payload to the caller, frontend handlers must deduplicate or dismiss existing toasts for the same state before pushing a new notification.
+-   **Preserve Cleared Controlled Inputs & Scope Refresh Reasons**: Never use `input.value === ''` as an overwrite trigger on controlled inputs (a cleared draft must stay empty across background refreshes once `_lastKnownChangeId` is initialized), and scope command refresh reasons by target revision (e.g., `revision === '@' ? 'after describe' : \`after describe:${revision}\``) so ancestor mutations never clobber working-copy drafts.
+-   **Close Listeners & Mark Shutdown Before Draining Server Clients**: Acquire `mu.Lock()`, enforce idempotent `closed = true`, and close a `onceCloseListener`-wrapped `net.Listener` (so `Start()`/`Listen()` return `http.ErrServerClosed` cleanly and `http.Server.Shutdown(ctx)` does not abort on a second-close `net.ErrClosed`) at the very top of server `Close()` *before* canceling background contexts or draining SSE/WebSocket clients (`handleEvents` must also select on `<-bgDone`).
+-   **Guard Marker Directory Probing With `lstat` & `EvalSymlinks` Containment**: Probe non-VCS-reserved workspace marker directories (such as `.citc` and `.citc/modified`) with `lstat` (`os.Lstat` / `fs.lstat`, never `stat`) and verify `filepath.EvalSymlinks` containment before walking so committed symlinks cannot redirect discovery or indexing walks outside the sandbox.
+-   **Do Not `await` Actionless Info/Warning Notifications in Core Commands**: In standalone web mode, `NotificationService.showInformation`/`showWarning` without action buttons resolves only after the 5s/8s auto-dismiss timer, stalling `registerWithPayload`'s post-handler `repo.refresh()`; fire confirmations with `void ctx.host.ui.showInformation(...)` and test non-blocking resolution.
+-   **Preserve `QuickPick` Item Shapes & Avoid `WeakMap` Across `$state` Boundaries**: In `QuickInputService`, never key a `WeakMap` by `QuickPickItem` objects stored in Svelte 5 `$state` (client mode wraps them in `Proxy`, breaking reference equality); use `$state.raw` for opaque session objects, expose explicit `acceptCustomValue(...)` / `isCustom` tags so picking list items returns the full item `T` while custom inputs preserve `{ label, value, detail, customValue }`, and in VS Code SCM group payloads fall back to `scmProvider.scmModel.snapshot?.ancestors[index]` when `extractRevision` returns `undefined` for an empty `ancestor-<index>` group.
+-   **Bound & Guard Single-Target Revision Lookups With `limit: 2`**: Always pass `limit: 2` and reject `entries.length > 1` when resolving user-supplied revision expressions via `jj.getLog`, so multi-commit revsets (`all()`, `::@`) and bare divergent change IDs fail clearly instead of fetching unbounded history or silently selecting `entries[0]`.
+-   **Resolve `$(icon)` Classes Exclusively via `resolveIconClass` (Anti-Pattern: Inline `codicon-${name}` Parsing)**: Any standalone web surface rendering `contributes.commands` icons (including `web/src/app/command-palette.ts` and `MenuRegistry`) must use `resolveIconClass` from `web/src/menu/menu-registry.ts` so custom `$(jj-icon-*)` font glyphs resolve properly instead of rendering blank.
+-   **Never Fall Back to `'@'` on Unresolved `ancestor-*` `SourceControlResourceGroup` Payloads (Anti-Pattern)**: Empty `ancestor-<index>` `SourceControlResourceGroup` objects (`hideWhenEmpty = false`, `resourceStates = []`) carry no `revision` property; SCM payload creators must look up `isParentResourceGroup` against `scmModel.snapshot.ancestors[index]` and throw if unresolved rather than silently targeting `@`.
+-   **Resolve Mutable Revsets Before `saveIfDirty`**: Commands accepting user-supplied revsets (`@`, `@+`, branch names) must resolve and validate uniqueness (`getLog({ revision, limit: 2, omitChanges: true })`) to an immutable `commit_id` *before* flushing dirty buffers (`saveIfDirty`), preventing working-copy snapshots or auto-rebases from shifting the target mid-command.
+-   **Return Resolved Relative Paths, Guard `..` / Drive Roots, Use Canonical `HostFs` Paths & Escape Filesets**: Return resolved workspace-relative paths from `HostFs.realpath` containment checks (instead of passing raw `uri.fsPath` to `JjService.toRelative`), check `rel !== '..' && !rel.startsWith('../') && !/^[a-zA-Z]:(?:$|[/\\])/.test(rel)` while halting `realpath` climbs at `/^[a-zA-Z]:([/\\])?$/`, pass `path.join(workspaceRoot, relPath)` to subsequent `HostFs` calls (`stat`/`lstat`) so `RemoteHostFs` sandbox checks operate on canonical paths, and escape exact file targets as `root-file:"..."` (with `--` after flags in `JjService.restore`).
+-   **File-Command Payload Active-Document Parity & `explorer/context` Folder Guards**: Web payload creators (`web/src/commands/payloads/`) exposed in `commandPalette` must fall back to `host?.documents.getActiveDocumentUri?.()`, VS Code payload helpers (`src/vscode/payloads/payload-helpers.ts`) must share `tabGroups?.activeTabGroup?.activeTab` resolution (`TabInputTextDiff.modified` / `TabInputCustom.uri`) before `activeTextEditor?.document.uri`, and file-mutating `explorer/context` items must include `!explorerResourceIsFolder` (plus handler directory guards) because `jj` treats bare directory paths as recursive prefix-globs.
+-   **Sync External Dirty Clears, Reset Undo/Redo & Isolate Per-Tab Reloads**: Sync `initialDirty: true -> false` in `PierreDiffViewer`/`PierreFileViewer` only when `!isSaving` (re-asserting `onDirtyChange`/`onContentChange` and re-arming `scheduleAutoSave()` if `currentContent !== savingContent` after `onSave`), reset `canUndo`/`canRedo` inside `cleanupInstances()`, and isolate `reloadOpenDocumentTabs()` with `Promise.allSettled` (checking structured `err.code === 'ENOENT'` before OS-locale message substrings).
+-   **Stop `onkeydown` Propagation on Nested Action Buttons**: Nested `<button>` elements inside `onkeydown`-handling row containers (`CommitNode.svelte`) must stop `onkeydown` propagation on `Enter`/`Space` alongside `onclick` so parent row selection never hijacks keyboard button activation.
+-   **Differentiate `404` vs Transient Errors in `AsyncCache` & Regenerate Schema Files**: Return `undefined` only on confirmed `404`/not-found responses and throw on transient HTTP/process errors so `AsyncCache` (`keepStaleOnError: true`) does not negatively cache failures; regenerate tracked generated files (`web/src/settings/package-settings.generated.ts` via `node tooling/generate-settings-schema.ts`) whenever `package.json` configuration changes.
+-   **Resolve Parent Dir Before Leaf `realpath` & Delegate Workspace Path Mapping to `JjService`**: Pass `getFsPathFromUri(uri)` directly to `JjService` (and reuse `normalizeDriveLetter`/`isInsideRelativePath`/`resolveNearestRealPathAsync` in `src/core/uri-utils.ts`) instead of raw `path.relative(workspaceRoot, ...)` in commands; inside `JjService`, check lexical `workspaceRoot` containment first and canonicalize `path.dirname(filePath)` before falling back to `realpath(filePath)` so tracked leaf symlinks are never dereferenced inconsistently.
+-   **Identity-Guarded Rejection Cleanup & TOCTOU-Safe Retention for Memoized Discovery Caches**: Clear in-flight discovery/realpath promises (`_workspaceRealPromise`, `_realRootsPromise`, `LruCache` entries via `cache.peek(key) === promise`) on rejection/settlement using identity comparison so transient failures never poison future calls or race with eviction; retain static repo/workspace root caches across `clearCache()` while never gating composite cache insertion on a post-`await` field check over an earlier fallback result.
+-   **Route `NodeHostProcess` Scratch Ops Through Injected `HostFs` Inside Cleanup Guards**: Perform scratch-directory `tempDir`/`mkdtemp`/`mkdir`/`exists`/`rm` calls through the injected `HostFs` shared from `NodeHostSystem` (resolving helper scripts before `mkdtemp` and wrapping setup+exec+marker checks inside `try / catch` cleanup).
+-   **Single-Pass Discriminated Containment Helpers & Bounded `LruCache` Host Caches**: Return discriminated results (`RealRootResolution`) from `resolvePathAgainstRealRootAsync` so outside-root paths perform at most one ancestor `realpath` walk, and bound unbounded remote metadata caches (such as `RemoteHostFs._realpathCache`) with `LruCache` cleared in `dispose()`.
+-   **Keep Queued Save Promises Tracked & Flush Pending Drafts With `rootUri` Before History Mutations**: When chaining serialized async saves (`_currentSavePromise` / `_nextSavePromise`), check `if (this._nextSavePromise) return this._nextSavePromise;` before checking `_currentSavePromise` and promote the queued execution back into `_currentSavePromise` *before* clearing `_nextSavePromise` so neither microtask `.then()` callers nor `flushPendingSave()` ever race past an active queued run; pass `{ revision, rootUri }` from controller save/mutation commands so multi-repo standalone web tabs resolve the owning repo instead of `focusedRepository`, and re-resolve `commit_id` after flushing `jj-edit://` buffers.
+-   **Validate Uniform Revisions Across Multi-Selected SCM Resource States Before Path Deduplication**: Inspect raw `JjResourceState` entries before `fsPath` deduplication in multi-file SCM payload extractors and reject mixed `revision` / `getRevisionFromUri` selections instead of collapsing identical filenames across groups or splitting files from adjacent revisions.
+-   **Defer Unsettled Webview Updates & Guard Repo Identity/Version Across Async Refreshes**: Return `undefined` from `WebviewRpcReceiver` `getState` until an attached repository's initial refresh settles (`hasSettledState`), set `maxQueueSize: 0` on `WebviewRpcReceiver` so detached prior-repo `_outboundQueue` snapshots cannot flush before unsettled `getState()` checks, skip `sender.update` (in config/theme setters) and visibility-triggered `setCommits` calls while unsettled, and guard async validation/fetch continuations by both repository object identity and a monotonic `_repoChangeVersion` counter (`this._repo !== targetRepo || this._repoChangeVersion !== targetRepoVersion`, bypassing cached `isValid({ force: true })` on explicit refreshes) rather than filesystem path strings alone.
+-   **Scope Root Overflow Clamping to Per-Webview Entry CSS & Size Shared Containers Without `100vh`**: Keep `html, body, #root { height: 100%; overflow: hidden; }` inside per-webview entrypoint stylesheets (such as `log-webview.css`, never shared `media/main.css` or `vscode-webview-html.ts` when sibling webviews rely on `body` scrolling), and size shared Svelte flex scroll regions with `flex: 1 1 0; height: 100%; min-height: 0;` rather than `min-height: 100vh` so parent hosts never need `:global(... !important)` overrides.
+-   **Buffer Early Host Context Keys & Share URI/Context Extraction Without Forge Leakage**: Buffer `WebHostCommands.setContextKey` values until `App.svelte` binds `ContextKeyService` (gating `HasRepository` on `repoManager ? scmRepositories.length > 0 : ...`), check `contextMenu.file` identity (not `selectedPaths`) when closing stale single-file menus, gate forge-specific path stripping (`/a/`) and global host overrides by forge applicability, and use `::remote_bookmarks()` + deterministic single-parent queries alongside `mode=uploaded` / `revision=none` / deleted `side=right` checks in revision resolution.
+-   **Lexical Fast-Path Symlink Fallback & Monotonic Revalidation Guards**: When checking tracked/containment status across workspace entries, query lexical workspace-relative paths first (zero `realpath` calls for normal files/tracked symlinks) and run `resolvePathAgainstRealRootAsync` only on misses; guard overlapping fire-and-forget revalidations with a dedicated monotonic revalidation counter alongside identity-guarded `.then`/`.catch` map cleanup.
+-   **Platform-Gated Path Helpers Over Unconditional `pathe` / Backslash Normalization (`Anti-Pattern`)**: Because `\` is valid inside POSIX filenames while `pathe` and `.replace(/\\/g, '/')` unconditionally convert `\` to `/`, use platform-aware helpers in `src/core/path-utils.ts` (handling UNC `//server/share` roots cleanly) and `runtime.GOOS == "windows"` in Go, threading `HostPlatform` into browser components where `process.platform` is `undefined`.
+-   **Boundary-Checked URI Prefixes & Exact Fileset Restoration**: Prefix-based workspace/URI mappers (`createRevisionUri`, `getWorkspaceRelativePath`) must normalize `..` segments, gate case-insensitive matching on `win32`/`darwin`, and enforce a separator boundary after the root, while single-file commands (`restore`, `hasFileAtRevision`) must pass `'--'` plus `root-file:"..."` exact filesets rather than prefix globs.
+
+### 4. Testing & Visual Verification Quality
+
+-   **Never Mock `JjService`**: Always use a real `TestRepo` and a real
+    `JjService` instance in unit and integration tests.
+-   **No Arbitrary Sleeps in Playwright Specs**: Use web-first Playwright
+    assertions (`await expect(locator).toBeVisible()`,
+    `await expect(locator).toHaveCount(0)`) instead of
+    `page.waitForTimeout(...)`.
+-   **Deterministic Frame Capture**: Avoid wall-clock CSS transitions on virtual
+    cursor overlays during frame-by-frame screenshot recording
+    (`recordInteractionFlow`) so `page.screenshot()` captures exact
+    deterministic states on every frame.
+-   **Domain-Neutral Test Fixtures**: Use self-contained, generic code fixtures
+    in tests (never project-external codenames or unrelated proprietary
+    symbols).
+-   **No Hardcoded Absolute Paths in Tests**: Never hardcode developer home
+    paths or personal directories in test specs or fixtures; always import and
+    use `ARTIFACT_DIR` from `./standalone-fixture` (or
+    `process.env.SCREENSHOT_OUT_DIR`).
+-   **Visual Artifact Freshness**: Whenever styling or theme variables change,
+    re-capture all screenshots, GIFs, and MP4s and visually inspect them (both
+    dark and light themes) before finishing.
+-   **Await Process Exit Before Deleting Temp Directories (Anti-Pattern)**: Never gate teardown cleanup on `proc.killed` (Node sets it synchronously when sending a signal, before the child exits); check `proc.exitCode !== null || proc.signalCode !== null` and await `'exit'`.
+-   **No Non-Idempotent Actions in `.toPass()` Retries (Anti-Pattern)**: Never put additive actions like `pressSequentially` inside a `.toPass()` retry loop; retry only idempotent state/focus checks.
+-   **Isolate Binaries for Self-Mutating E2E Tests**: When testing self-updating or binary-mutating daemon workflows in Playwright E2E specs (`StandaloneServer`), always set `copyBinaryToTemp: true` so the test spawns, overwrites, and reloads an isolated binary copy rather than mutating the shared `dist/bin/jj-view` workspace binary.
+-   **Disable Live Watchers & Drain Constructor Refreshes in Repository Unit Tests**: Inject a no-op `HostWatcher` via `NodeHostSystem`, `await repo.watcher.dispose()`, and `await repo.activeRefresh` after constructing `JjRepository`/`VsCodeScmProvider` so live `@parcel/watcher` events, 5s `Poller` ticks, and constructor-kicked refreshes never coalesce with test assertions.
+-   **Isolate Subprocess Env Vars & Fake Timers in Watcher/Daemon Tests**: Strip ambient `JJ_VIEW_*`, `ANTIGRAVITY_*`, and proxy env vars (with isolated `HOME`/`USERPROFILE` and `--user-data-dir`) when spawning daemon binaries in Go tests, and test deferred timer logic under `vi.useFakeTimers()` (`vi.advanceTimersByTimeAsync`) rather than real wall-clock waits.
+-   **Pin `host.system.platform` in `FakeHostEnvironment` Unit Tests**: Explicitly set `host.system = { ...host.system, platform: 'linux' }` when unit-testing POSIX-specific host logic (such as `.citc` discovery) so `windows-latest` CI runners do not inherit `process.platform === 'win32'` and fail or pass vacuously.
+-   **Never Compare `fs.realpathSync(uri.fsPath) === fs.realpathSync(rawPath)` Directly (Anti-Pattern)**: On Windows, `Uri.file(...).fsPath` lowercases the drive letter (`c:\...`) while `os.tmpdir()`/`ScopedTestRepo` returns uppercase (`C:\...`), and Node's JS `fs.realpathSync` preserves input drive-letter case (`'c:\...' !== 'C:\...'`). Always use `.toBeSameFsPath(...)` / `expect.toBeSameFsPath(...)` or `fs.realpathSync.native` + lowercase normalization on `win32` inside mock predicates.
+-   **Dispose `TestRepo` and Clear Web Notifications in `afterEach`/`finally`**: Call `await repo.dispose()` (and `hostEnvironment?.notifications.clearAll(); hostEnvironment?.dispose()` for `WebHostEnvironment`) in `afterEach`/`finally`—entering `try` immediately after `new TestRepo()` before `init()`/`buildGraph()`—so temp repos, `~/.config/jj/repos/*` entries, and 5s/8s notification timers never leak on setup errors or across tests.
+-   **Verify `QuickInput` Custom-Value Flows Through `QuickInputService` (Anti-Pattern: Spy-Only `showQuickPick` Mocks)**: Never rely solely on mocking `ui.showQuickPick` to `undefined` when testing prompt-based commands; drive `QuickInputService` (`accept(...)`) directly so `pickItems` wrapping/unwrapping and `acceptCustomValue` contracts are exercised end-to-end.
+-   **Attach Node Error Codes via `Object.assign` in Tests**: Prefer `Object.assign(new Error(...), { code: 'ENOENT' })` over `as Error & { code: string }` type assertions when constructing synthetic filesystem/process errors in tests.
+-   **Subclass `NodeHostProcess` Instead of Object-Spreading & Delete Restored `undefined` Env Vars**: When stubbing single host commands in tests, subclass `NodeHostProcess` (avoiding `{ ...baseSystem.process }`, which drops prototype methods like `execFileInScratchDir`); when restoring `process.env.KEY` in `afterEach`, `delete process.env.KEY` if the saved original value was `undefined` instead of assigning `"undefined"`.
+-   **Never Inspect `@pierre/diffs` Shadow DOM via One-Shot `locator.evaluate` (Anti-Pattern)**: Async Shiki worker highlights and `Editor.edit()` trigger `FileDiff.rerender()`, detaching separator/line nodes between `ElementHandle` resolution and evaluation (`el.getRootNode()` then returns the detached subtree instead of `ShadowRoot`); query live `diffs-container` `shadowRoot` state inside `page.evaluate()` wrapped in `expect(...).toPass()`.
+-   **Use Reactive Polling Instead of Fixed `setTimeout` Sleeps in Component Tests**: Drive `happy-dom` Svelte component assertions with `expect.poll(...)` or `flushSync()` (and deferred promise latches inside `NodeHostProcess` subclasses for in-flight state checks) rather than fixed `setTimeout` sleep helpers.
+-   **Run `svelte-check` and Assert Zero `pageerror` Events for Touched `.svelte` Components (Anti-Pattern: Relying Only on `tsc --noEmit` & SSR Tests)**: `tsc --noEmit` ignores `.svelte` `<script>` blocks and `svelte/server` SSR tests do not execute `$effect()` blocks or client mount listeners; verify modified Svelte components with `pnpm exec svelte-check --tsconfig web/tsconfig.json` and assert zero `pageerror` events in Playwright E2E tests.
+-   **Isolate Temp-Dir Leak Tests With `ScopedTempDir` + `NodeHostFs(tempDir)` & Guard `expect.poll` File Reads Against `ENOENT`**: Never scan shared `os.tmpdir()` in Vitest leak checks; inject an isolated `ScopedTempDir` via `NodeHostFs(scratchRoot.path)` and assert non-vacuous `mkdtemp` placement with `.toBeSameFsPath`, and use `TestRepo.readFileIfExists` (backed by `isNodeErrorWithCode(err, 'ENOENT')`) inside Playwright `expect.poll` so transient unlink+rename windows retry cleanly instead of aborting.
+-   **Restore Shared Worker Viewport/Pane/Theme State & Walk Dynamic Ancestors in Scroll E2E Tests**: In worker-scoped VS Code E2E tests (`vscodeWorker`), save and restore `page.viewportSize()`, collapsed workbench panes, and `workbench.colorTheme` inside `try / finally`, verify light-theme invariants unconditionally in CI without ad-hoc recording flags, and check scroll containment across all dynamically walked DOM ancestors (including `SplitPane` wrappers) rather than a static selector subset.
+-   **Escape OS Paths in Playwright CSS Attribute Selectors**: Escape `\` and `"` before interpolating `path.join(...)` / `fsPath` strings into CSS attribute selectors (`[aria-label="..."]`) so Windows backslashes are not parsed as CSS escape sequences.
+-   **Keep All Custom-Scheme URI Builders Aligned on Full Repository Paths**: Whenever constructing `jj-view://` or `jj-edit://` URIs (including `ScmModel.getOriginalResourceUri` for QuickDiff as well as `uri-utils.ts` and command handlers), build `.path` via `createRepoFileUri` so `leftUri.path === rightUri.path` against `file://` URIs and VS Code's `MultiDiffEditor` never misclassifies modified files as renamed; pass explicit `oldLabel`/`status` metadata for genuine renames, and guard `JjDecorationModel.getWorkspaceRelativePath` against mismatched embedded `root` params or escaping relative paths.
+-   **Never Override Explicit `fileStatus` With Empty-Content Diff Heuristics**: In `@pierre/diffs` viewers (`PierreMultiDiffViewer`), only fall back to content-based `added`/`deleted` inference when `file.fileStatus` is omitted; overriding `'renamed'`, `'copied'`, or `'modified'` passes `null` to `parseDiffFromFile` and strips `prevName` or mislabels files on empty↔non-empty transitions.
+-   **Preserve Custom-Scheme UNC Authorities and POSIX Backslashes Against `vscode-uri` Normalization**: `vscode-uri`'s `uri.fsPath` getter drops `//${uri.authority}` for non-`file` schemes (`jj-view://`, `jj-edit://`), and `Uri.file(...)` unconditionally converts `\` to `/` when running on Windows; reconstruct UNC `authority` for `isJjScheme(uri)` in `getUriFsPathForPlatform`, gate `Uri.file(...)` behind `isWindowsPlatform(platform)`, and resolve URIs via `getPathForUri` rather than raw `.fsPath`.
+-   **Avoid Consecutive Optional `string`-Compatible Positional Parameters**: Prefer an options object (`{ fragment?: string; platform?: HostPlatform | string }`) over adjacent optional string arguments (`createRepoFileUri`); omitting a middle argument silently shifts `platform` into `fragment` without a TypeScript error.
+
+--------------------------------------------------------------------------------
+
+## Continuous Self-Improvement Directive (Positive & Negative Patterns)
+
+This skill is a **living document** for the `jj-view` codebase. After every code
+review cycle (whether conducted by review subagents or triggered by user
+feedback):
+
+1.  **Evaluate Newly Discovered Patterns for Codebase-Wide Generalizability**:
+    -   Ask: *"Does this bug class, anti-pattern, or clean solution apply across
+        the `jj-view` codebase beyond the single file just edited?"*
+    -   **Negative Patterns (Anti-Patterns & Defect Classes)**: When a review
+        catches a generalizable trap in `jj-view` (e.g., hardcoded/borrowed
+        colors bypassing `var(--vscode-...)`, polymorphic union parameters,
+        Shadow DOM vs. light DOM mismatches, virtualizer DOM recycling leaks,
+        string/comment order-of-operations bugs, or flaky E2E patterns), add a
+        concise rule and counter-example to the rubric above.
+    -   **Positive Patterns (Exemplars & Idioms)**: When a review identifies a
+        clean architectural pattern worth standardizing across `jj-view` (e.g.,
+        `color-mix(in srgb, var(--vscode-...) ..., ...)` for theme-adaptive
+        surfaces, structural event interfaces that avoid union types,
+        optimistic + async renderer `Math.max` state reconciliation, or
+        `recordInteractionFlow` for 24fps E2E captures), codify it in the rubric
+        above so future features adopt it from the start.
+2.  **Update `.agents/skills/code-review/SKILL.md` Before Closing the Task**:
+    -   Whenever 1 or more generalizable `jj-view` patterns (positive or
+        negative) are identified during a review cycle, edit
+        `.agents/skills/code-review/SKILL.md` (and `GEMINI.md` if it establishes
+        a top-level repo invariant) to record the pattern as part of completing
+        the review. Only add patterns that generalize across multiple components,
+        services, or test suites. Never add feature-specific CSS geometry,
+        parser algorithm details, or one-off bug post-mortems, and keep each
+        entry to 1–2 concise lines.
+
+--------------------------------------------------------------------------------
+
+## Checklist
+
+-   [ ] Were **2 independent review subagents** spawned for **each** commit in
+    `main..@-`?
+-   [ ] Are **100% of component and Shadow DOM styles** using
+    `var(--vscode-...)` tokens (and `color-mix`) with **zero** hardcoded or
+    borrowed hex/rgba colors?
+-   [ ] Were both **dark and light `jj-view` themes** verified visually?
+-   [ ] Are there **zero** `any` types, type suppressions, double casts
+    (`as unknown as`), or omnibus union parameters?
+-   [ ] Were all P0–P3 findings fixed and squashed into their target commits via
+    the Bottom-Up JJ Squash Workflow (`jj new <rev>`, test,
+    `jj squash --into <rev> -u`, leaving `@` empty)?
+-   [ ] Were any newly discovered codebase-wide **positive or negative
+    patterns** added to `.agents/skills/code-review/SKILL.md`?

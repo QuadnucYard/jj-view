@@ -21,6 +21,8 @@ const initialKeys: PressedKeysState = {
     s: false,
     d: false,
     m: false,
+    a: false,
+    b: false,
 };
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -33,6 +35,8 @@ function isEditableElement(target: EventTarget | null): boolean {
     return !!target.closest('input, textarea, select, [contenteditable="true"]');
 }
 
+const LETTER_KEYS = new Set<string>(['r', 's', 'd', 'm', 'a', 'b']);
+
 function getPressedKeyProperty(e: KeyboardEvent, isPressed: boolean): keyof PressedKeysState | null {
     if (isPressed && isEditableElement(e.target)) {
         return null;
@@ -44,17 +48,8 @@ function getPressedKeyProperty(e: KeyboardEvent, isPressed: boolean): keyof Pres
         return null;
     }
     const lower = e.key.toLowerCase();
-    if (lower === 'r') {
-        return 'r';
-    }
-    if (lower === 's') {
-        return 's';
-    }
-    if (lower === 'd') {
-        return 'd';
-    }
-    if (lower === 'm') {
-        return 'm';
+    if (LETTER_KEYS.has(lower)) {
+        return lower as keyof PressedKeysState;
     }
     return null;
 }
@@ -98,7 +93,9 @@ export class DragManager {
     };
 
     handleWindowBlur = () => {
-        this.resetKeys();
+        if (!this.cancelDrag()) {
+            this.resetKeys();
+        }
     };
 
     cancelDrag(): boolean {
@@ -168,8 +165,8 @@ export class DragManager {
             if (e.button !== 0 || this.stopPointerTracking) {
                 return;
             }
-            const target = e.target as HTMLElement | null;
-            if (target?.closest('button, a, input, textarea, select')) {
+            const target = e.target instanceof HTMLElement ? e.target : null;
+            if (target?.closest('button, a, input, textarea, select, [contenteditable="true"]')) {
                 return;
             }
             const nearestDraggable = target?.closest('[data-draggable="true"]');
@@ -181,6 +178,8 @@ export class DragManager {
             if (!item) {
                 return;
             }
+
+            this.pressedKeys.shift = e.shiftKey;
 
             startX = e.clientX;
             startY = e.clientY;
@@ -195,9 +194,11 @@ export class DragManager {
         node.addEventListener('pointerdown', handlePointerDown);
 
         return {
-            destroy() {
+            destroy: () => {
                 node.removeEventListener('pointerdown', handlePointerDown);
-                cleanup();
+                if (this.stopPointerTracking === cleanup) {
+                    cleanup();
+                }
             },
         };
     };

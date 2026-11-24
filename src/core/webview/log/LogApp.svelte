@@ -10,6 +10,7 @@ import {
     type CommitAction,
     type LogViewHostToWebviewMessage,
     LogViewHostToWebviewMessageSchema,
+    type LogViewPayload,
     type LogViewToHostMessage,
     LogViewToHostMessageSchema,
 } from '../../host/ipc/log-view-schemas';
@@ -23,20 +24,39 @@ import { DragManager } from './drag-manager.svelte';
 import { findMatchingCommit } from './utils/commit-utils';
 import { calculateNextSelection, hasImmutableSelection } from './utils/selection-utils';
 
-let commits = $state<JjLogEntry[]>([]);
-let workspaces = $state<JjWorkspace[]>([]);
-let minChangeIdLength = $state(1);
-let theme = $state('default');
-let graphLabelAlignment = $state('aligned');
-let graphShowCommitId = $state(false);
-let loading = $state(true);
+interface Props {
+    initialState?: LogViewPayload;
+}
+
+let { initialState }: Props = $props();
+
+// svelte-ignore state_referenced_locally
+let commits = $state<JjLogEntry[]>(initialState?.commits ?? []);
+// svelte-ignore state_referenced_locally
+let workspaces = $state<JjWorkspace[]>(initialState?.workspaces ?? []);
+// svelte-ignore state_referenced_locally
+let graphShowCommitId = $state(initialState?.graphShowCommitId ?? false);
+// svelte-ignore state_referenced_locally
+let minChangeIdLength = $state(initialState?.minChangeIdLength ?? 1);
+// svelte-ignore state_referenced_locally
+let theme = $state(initialState?.theme ?? 'default');
+// svelte-ignore state_referenced_locally
+let graphLabelAlignment = $state(initialState?.graphLabelAlignment ?? 'aligned');
+// svelte-ignore state_referenced_locally
+let loading = $state(initialState?.loading ?? initialState === undefined);
+// svelte-ignore state_referenced_locally
+let hasRepository = $state(initialState?.hasRepository ?? true);
+// svelte-ignore state_referenced_locally
+let errorMessage = $state<string | undefined>(initialState?.errorMessage);
 let selectedCommitIds = $state<Set<string>>(new Set());
 let rawHighlightQuery = $state<string | undefined>(undefined);
 const highlightedCommit = $derived(findMatchingCommit(commits, rawHighlightQuery));
 const highlightedCommitId = $derived(highlightedCommit?.change_id);
-let hiddenActions = $state<Set<CommitAction>>(new Set());
+// svelte-ignore state_referenced_locally
+let hiddenActions = $state<Set<CommitAction>>(new Set(initialState?.hiddenActions ?? []));
 let repositoryFocus = $state<Extract<LogViewHostToWebviewMessage, { type: 'repositoryFocus' }>['payload']>();
-let repositoryPath = $state<string | undefined>();
+// svelte-ignore state_referenced_locally
+let repositoryPath = $state(initialState?.repositoryPath);
 let scrollContainer: HTMLDivElement | undefined;
 const scrollPositions = new LruCache<string, number>({ maxEntries: 50 });
 let pendingScrollRestore = false;
@@ -53,6 +73,42 @@ function scrollToCommit(changeId: string) {
 }
 
 const sender = useRpcSender<LogViewToHostMessage>(LogViewToHostMessageSchema);
+
+let overlayEl = $state<HTMLElement | null>(null);
+
+const overlayPos = $derived.by(() => {
+    if (!dragManager.activeDragItem) {
+        return { left: 0, top: 0 };
+    }
+    // Track modifier and pressed key changes so clamping recalculates when card dimension changes in place
+    void dragManager.activeModifier;
+    void dragManager.pressedKeys;
+
+    const isCommit = dragManager.activeDragItem.type === 'commit';
+    const offsetX = isCommit ? -5 : -10;
+    const offsetY = isCommit ? -24 : -11;
+    let x = dragManager.pointerPos.x + offsetX;
+    let y = dragManager.pointerPos.y + offsetY;
+
+    if (overlayEl && typeof window !== 'undefined') {
+        const rect = overlayEl.getBoundingClientRect();
+        const maxX = window.innerWidth - rect.width - 8;
+        const maxY = window.innerHeight - rect.height - 8;
+        if (x > maxX) {
+            x = Math.max(8, maxX);
+        }
+        if (y > maxY) {
+            y = Math.max(8, maxY);
+        }
+        if (x < 8) {
+            x = 8;
+        }
+        if (y < 8) {
+            y = 8;
+        }
+    }
+    return { left: x, top: y };
+});
 
 const dragManager = new DragManager((item, target, modifier) => {
     if (item.type === 'tag') {
@@ -114,12 +170,13 @@ const dragManager = new DragManager((item, target, modifier) => {
 });
 
 $effect(() => {
-    if (dragManager.isDragging) {
-        document.body.style.userSelect = 'none';
-        return () => {
-            document.body.style.userSelect = '';
-        };
+    if (!dragManager.isDragging) {
+        return;
     }
+    document.body.style.userSelect = 'none';
+    return () => {
+        document.body.style.userSelect = '';
+    };
 });
 
 useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
@@ -137,6 +194,8 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
         repositoryPath: nextPath,
         selectedCommitIds: selection,
         loading: isLoading,
+        hasRepository: hasRepo,
+        errorMessage: errMsg,
     }) => {
         if (nextPath !== repositoryPath) {
             if (repositoryPath && scrollContainer) {
@@ -151,6 +210,8 @@ useRpcReceiver<LogViewHostToWebviewMessage>(LogViewHostToWebviewMessageSchema, {
         }
         commits = newCommits;
         workspaces = newWorkspaces ?? [];
+        hasRepository = hasRepo ?? true;
+        errorMessage = errMsg;
         if (minLen !== undefined) {
             minChangeIdLength = minLen;
         }
@@ -296,6 +357,10 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         void sender.upload(payload);
         return;
     }
+    if (action === 'compareWithUploaded') {
+        void sender.compareWithUploaded(payload);
+        return;
+    }
     if (action === 'openCodeForge' && payload.url) {
         void sender.openCodeForge({ url: payload.url });
     }
@@ -331,11 +396,26 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         onSetFollowEditor={(enabled) => { void sender.setFollowEditor({ enabled }); }}
     />
 {/if}
-{#if repositoryFocus && !repositoryFocus.focusedPath}
+{#if repositoryFocus?.repositories.length && !repositoryFocus.focusedPath}
     <div class="loading-state">Choose repositories above to display the graph.</div>
 {:else if loading}
-    <div class="loading-state">
+    <div class="loading-state" role="status" aria-live="polite">
         Loading changes...
+    </div>
+{:else if !hasRepository}
+    <div class="status-scroll-container">
+        <div class="log-status-state log-no-repo-state" data-testid="log-no-repo-state" role="status">
+            <span class="codicon codicon-repo log-status-icon" aria-hidden="true"></span>
+            <p class="log-status-title">No Jujutsu repository found in this workspace.</p>
+        </div>
+    </div>
+{:else if errorMessage && commits.length === 0}
+    <div class="status-scroll-container">
+        <div class="log-status-state log-error-state" data-testid="log-error-state" role="alert">
+            <span class="codicon codicon-error log-status-icon" aria-hidden="true"></span>
+            <p class="log-status-title">Unable to load Jujutsu log</p>
+            <p class="log-status-detail">{errorMessage}</p>
+        </div>
     </div>
 {:else}
     <div
@@ -375,13 +455,10 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         <!-- Floating Drag Preview Overlay -->
         {#if dragManager.activeDragItem}
             <div
+                bind:this={overlayEl}
                 class="drag-preview-overlay"
-                style:left={dragManager.activeDragItem.type === 'commit'
-                    ? `${dragManager.pointerPos.x - 5}px`
-                    : `${dragManager.pointerPos.x - 10}px`}
-                style:top={dragManager.activeDragItem.type === 'commit'
-                    ? `${dragManager.pointerPos.y - 24}px`
-                    : `${dragManager.pointerPos.y - 11}px`}
+                style:left={`${overlayPos.left}px`}
+                style:top={`${overlayPos.top}px`}
             >
                 {#if dragManager.activeDragItem.type === 'bookmark'}
                     <div class="bookmark-preview-wrapper">
@@ -417,14 +494,79 @@ function handleGraphAction(action: string, payload: ActionPayload) {
         height: 100%;
         overflow: hidden;
     }
-    .app-container { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .loading-state {
         padding: 20px;
         color: var(--vscode-descriptionForeground);
     }
 
+    .status-scroll-container {
+        flex: 1 1 0;
+        min-height: 0;
+        height: 100%;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    .log-status-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 20px 16px;
+        margin: 0;
+        text-align: center;
+        color: var(--vscode-descriptionForeground);
+        font-family: var(--vscode-font-family);
+        font-size: var(--vscode-font-size);
+        line-height: 1.4;
+    }
+
+    .log-status-icon.codicon {
+        font-size: 24px;
+        color: var(--vscode-icon-foreground, var(--vscode-descriptionForeground));
+        opacity: 0.85;
+    }
+
+    .log-status-title {
+        margin: 0;
+        color: var(--vscode-descriptionForeground);
+        font-size: var(--vscode-font-size);
+    }
+
+    .log-error-state .log-status-icon.codicon {
+        color: var(--vscode-errorForeground, var(--vscode-descriptionForeground));
+        opacity: 1;
+    }
+
+    .log-error-state .log-status-title {
+        color: var(--vscode-errorForeground, var(--vscode-descriptionForeground));
+        font-weight: 600;
+    }
+
+    .log-status-detail {
+        margin: 0;
+        max-width: 100%;
+        color: var(--vscode-descriptionForeground);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .app-container {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0;
+        height: 100%;
+        width: 100%;
+        min-height: 0;
+        overflow: hidden;
+    }
+
     .scroll-container {
-        flex: 1;
+        flex: 1 1 0;
+        min-height: 0;
+        height: 100%;
         overflow: auto;
         min-height: 0;
     }
@@ -439,6 +581,6 @@ function handleGraphAction(action: string, payload: ActionPayload) {
     .bookmark-preview-wrapper {
         cursor: grabbing;
         opacity: 1;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 4px 8px color-mix(in srgb, var(--vscode-widget-shadow, var(--vscode-foreground)) 20%, transparent);
     }
 </style>

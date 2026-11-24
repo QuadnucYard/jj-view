@@ -85,7 +85,7 @@ test.describe('Quick Diff E2E', () => {
             },
         ]);
 
-        const { page } = await vscode.openWorkspace(repo);
+        const { page } = await vscode.openWorkspace(repo, { 'git.enabled': false });
 
         // 1. Open the file
         const editor = await openFileInEditor(vscode, page, fileName);

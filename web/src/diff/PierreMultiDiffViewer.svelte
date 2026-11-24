@@ -3,31 +3,138 @@
   SPDX-License-Identifier: Apache-2.0
 -->
 <script lang="ts">
-import { CodeView, type CodeViewDiffItem, type CodeViewFileItem, parseDiffFromFile } from '@pierre/diffs';
+import {
+    CodeView,
+    type CodeViewDiffItem,
+    type CodeViewFileItem,
+    type CodeViewOptions,
+    type DiffLineAnnotation,
+    type LineAnnotation,
+    parseDiffFromFile,
+} from '@pierre/diffs';
 import { onDestroy, onMount, untrack } from 'svelte';
+import type { HostPlatform } from '../../../src/core/host/host-system';
+import { stripLeadingSeparators } from '../../../src/core/path-utils';
+import type { CommentThreadHandle } from '../comments/comments-store.svelte';
+import { ThreadAnnotationMounts } from '../comments/thread-annotation-mounts';
 import type { MultiDiffFileEntry } from '../tabs/tab-types';
-import { isBinaryFile } from './binary-detection';
+import { isBinaryFile, isImageByExtension } from './binary-detection';
+import {
+    buildEditorContextJson,
+    cleanViewerFilename,
+    type EditorChatContextSelection,
+    resolveMultiDiffSelection,
+} from './chat-context-selection';
+import { handleEditorKeyDown } from './editor-shortcuts';
 import { ensureHighlighterRegistered, isLightTheme } from './highlighter-setup';
+import {
+    adoptDiffCustomStyles,
+    DEFAULT_COLLAPSED_CONTEXT_THRESHOLD,
+    enhanceCodeViewDiffItemSeparators,
+    HUNK_EXPANSION_CSS,
+} from './hunk-expansion';
+import ImageDiffViewer from './ImageDiffViewer.svelte';
 
 interface Props {
     title: string;
     files: MultiDiffFileEntry[];
+    platform?: HostPlatform | string;
     theme?: string;
     onSave?: (filename: string, newContent: string) => Promise<void> | void;
-    onDiscard?: (filename: string) => Promise<void> | void;
+    onDiscard?: (filename: string, newContent?: string) => Promise<void> | void;
+    /** Review threads per entry, keyed by {@link MultiDiffFileEntry.filename}. */
+    commentThreads?: ReadonlyMap<string, readonly CommentThreadHandle[]>;
+    onReplyToThread?: (handle: CommentThreadHandle, text: string, resolve: boolean) => Promise<void>;
+    onSetThreadResolved?: (handle: CommentThreadHandle, resolved: boolean) => Promise<void>;
+    onAddSelectionToChat?: () => Promise<void> | void;
 }
 
-let { title, files, theme: themeProp = '', onSave: _onSave, onDiscard: _onDiscard }: Props = $props();
+let {
+    title,
+    files,
+    platform,
+    theme: themeProp = '',
+    onSave: _onSave,
+    onDiscard: _onDiscard,
+    commentThreads,
+    onReplyToThread,
+    onSetThreadResolved,
+    onAddSelectionToChat,
+}: Props = $props();
 
 let containerEl: HTMLDivElement | null = $state(null);
 let diffStyle: 'split' | 'unified' = $state('split');
-let codeView: CodeView | null = null;
+let codeView: CodeView<CommentThreadHandle> | null = null;
+const threadMounts = new ThreadAnnotationMounts({
+    onReply: (handle, text, resolve) => onReplyToThread?.(handle, text, resolve) ?? Promise.resolve(),
+    onSetResolved: (handle, resolved) => onSetThreadResolved?.(handle, resolved) ?? Promise.resolve(),
+});
+
+/**
+ * Which threads are anchored where. Mounted thread views track edits to a
+ * thread on their own (the handle is reactive), so the view only needs to be
+ * rebuilt when threads appear or disappear, not on every comments poll.
+ */
+const threadLayoutKey = $derived(
+    files
+        .map((file) =>
+            (commentThreads?.get(file.filename) ?? [])
+                .map((handle) => `${handle.id}@${handle.thread.line ?? 0}`)
+                .join(','),
+        )
+        .join('|'),
+);
+
+const imageFiles = $derived(files.filter((file) => isImageByExtension(file.filename, platform)));
+
+function threadsFor(file: MultiDiffFileEntry): readonly CommentThreadHandle[] {
+    return commentThreads?.get(file.filename) ?? [];
+}
+
+function fileAnnotations(file: MultiDiffFileEntry): LineAnnotation<CommentThreadHandle>[] {
+    return threadsFor(file).map((handle) => ({ lineNumber: Math.max(0, handle.thread.line ?? 0), metadata: handle }));
+}
+
+function diffAnnotations(file: MultiDiffFileEntry, isDeleted: boolean): DiffLineAnnotation<CommentThreadHandle>[] {
+    return threadsFor(file).map((handle) => ({
+        side: isDeleted ? 'deletions' : 'additions',
+        lineNumber: Math.max(0, handle.thread.line ?? 0),
+        metadata: handle,
+    }));
+}
 
 function cleanup(): void {
+    threadMounts.unmountAll();
     if (codeView) {
         codeView.cleanUp();
         codeView = null;
     }
+}
+
+function buildCodeViewOptions(
+    effectiveTheme: string,
+    themeType: 'light' | 'dark',
+): CodeViewOptions<CommentThreadHandle, undefined> {
+    return {
+        diffStyle,
+        expandUnchanged: false,
+        disableFileHeader: false,
+        enableLineSelection: true,
+        collapsedContextThreshold: DEFAULT_COLLAPSED_CONTEXT_THRESHOLD,
+        expansionLineCount: 10,
+        hunkSeparators: 'line-info',
+        unsafeCSS: HUNK_EXPANSION_CSS,
+        theme: effectiveTheme,
+        themeType,
+        renderAnnotation: (annotation: LineAnnotation<CommentThreadHandle> | DiffLineAnnotation<CommentThreadHandle>) =>
+            threadMounts.render(annotation.metadata),
+        onPostRender: (node, _instance, phase, context) => {
+            if (phase !== 'unmount') {
+                adoptDiffCustomStyles(node);
+                enhanceCodeViewDiffItemSeparators(node, context);
+            }
+        },
+    };
 }
 
 function renderMultiDiff(): void {
@@ -47,54 +154,63 @@ function renderMultiDiff(): void {
     const isLight = isLightTheme(effectiveTheme);
     const themeType = isLight ? 'light' : 'dark';
 
-    codeView = new CodeView({
-        diffStyle,
-        expandUnchanged: false,
-        disableFileHeader: false,
-        theme: effectiveTheme,
-        themeType,
-    });
+    codeView = new CodeView<CommentThreadHandle>(buildCodeViewOptions(effectiveTheme, themeType));
 
     codeView.setup(containerEl);
 
-    const items: (CodeViewDiffItem | CodeViewFileItem)[] = [];
+    const items: (CodeViewDiffItem<CommentThreadHandle> | CodeViewFileItem<CommentThreadHandle>)[] = [];
     const currentFiles = untrack(() => files);
 
     for (const file of currentFiles) {
-        const cleanName = file.filename.replace(/\s*\([^)]*\)$/, '').trim();
+        const cleanName = stripLeadingSeparators(cleanViewerFilename(file.filename), platform);
+        const cleanOldName = file.oldFilename
+            ? stripLeadingSeparators(cleanViewerFilename(file.oldFilename), platform)
+            : undefined;
         const orig = file.originalContent ?? '';
         const mod = file.modifiedContent ?? '';
 
-        if (isBinaryFile(cleanName, mod) || isBinaryFile(cleanName, orig)) {
+        if (isBinaryFile(cleanName, mod, platform) || isBinaryFile(cleanName, orig, platform)) {
             continue;
         }
 
-        const isAdded = file.fileStatus === 'added' || (!orig && Boolean(mod));
-        const isDeleted = file.fileStatus === 'deleted' || (Boolean(orig) && !mod);
-        const oldFile = isAdded ? null : { name: cleanName, contents: orig };
+        const isRenamed =
+            (file.fileStatus === 'renamed' || file.fileStatus === 'copied') &&
+            Boolean(cleanOldName) &&
+            cleanOldName !== cleanName;
+        const isAdded = file.fileStatus ? file.fileStatus === 'added' : !orig && Boolean(mod);
+        const isDeleted = file.fileStatus ? file.fileStatus === 'deleted' : Boolean(orig) && !mod;
+        const oldFile = isAdded ? null : { name: isRenamed && cleanOldName ? cleanOldName : cleanName, contents: orig };
         const newFile = isDeleted ? null : { name: cleanName, contents: mod };
 
-        if (orig === mod && !isAdded && !isDeleted) {
+        if (orig === mod && !isAdded && !isDeleted && !isRenamed) {
             items.push({
                 id: cleanName,
                 type: 'file',
                 file: { name: cleanName, contents: mod },
+                annotations: fileAnnotations(file),
             });
             continue;
         }
 
         try {
             const fileDiff = parseDiffFromFile(oldFile, newFile);
+            if (isRenamed) {
+                fileDiff.type = orig === mod ? 'rename-pure' : 'rename-changed';
+            } else if (file.fileStatus === 'modified') {
+                fileDiff.type = 'change';
+            }
             items.push({
                 id: cleanName,
                 type: 'diff',
                 fileDiff,
+                annotations: diffAnnotations(file, isDeleted),
             });
         } catch {
             items.push({
                 id: cleanName,
                 type: 'file',
                 file: { name: cleanName, contents: mod || orig },
+                annotations: fileAnnotations(file),
             });
         }
     }
@@ -108,30 +224,48 @@ function setDiffStyle(style: 'split' | 'unified'): void {
     }
     diffStyle = style;
 
-    const isLight =
-        typeof document !== 'undefined' &&
-        (document.body.classList.contains('vscode-light') || themeProp.includes('light'));
     const effectiveTheme =
         themeProp ||
         (typeof document !== 'undefined' ? document.documentElement.getAttribute('data-theme') : null) ||
-        (isLight ? 'pierre-light-soft' : 'pierre-dark-soft');
-    const themeType = effectiveTheme.includes('light') ? 'light' : 'dark';
+        'pierre-dark-soft';
+    const isLight = isLightTheme(effectiveTheme);
+    const themeType = isLight ? 'light' : 'dark';
 
     if (codeView) {
-        codeView.setOptions({
-            diffStyle,
-            expandUnchanged: false,
-            disableFileHeader: false,
-            theme: effectiveTheme,
-            themeType,
-        });
+        codeView.setOptions(buildCodeViewOptions(effectiveTheme, themeType));
         codeView.render(true);
         return;
     }
     renderMultiDiff();
 }
 
+export function getChatContextSelection(): EditorChatContextSelection | null {
+    return (
+        resolveMultiDiffSelection({
+            files,
+            platform,
+            containerEl,
+            codeView,
+        }) ?? null
+    );
+}
+
+function handleKeyDown(e: KeyboardEvent): void {
+    handleEditorKeyDown(e, {
+        isWorkingCopy: false,
+        canUndo: false,
+        canRedo: false,
+        onSave: () => {},
+        onUndo: () => {},
+        onRedo: () => {},
+        onAddSelectionToChat,
+    });
+}
+
 onMount(() => {
+    if (typeof window !== 'undefined') {
+        window.addEventListener('keydown', handleKeyDown, true);
+    }
     renderMultiDiff();
     return () => {
         cleanup();
@@ -139,17 +273,33 @@ onMount(() => {
 });
 
 onDestroy(() => {
+    if (typeof window !== 'undefined') {
+        window.removeEventListener('keydown', handleKeyDown, true);
+    }
     cleanup();
 });
 
 $effect(() => {
-    // Re-render if files list or theme changes
+    // Re-render if the files list, theme, or the set of anchored threads changes.
     const _f = files;
     const _t = themeProp;
+    const _k = threadLayoutKey;
     untrack(() => {
         if (containerEl) {
             renderMultiDiff();
         }
+    });
+});
+
+const multiDiffContextJson = $derived.by(() => {
+    const firstEntry = files[0];
+    const primaryUri = firstEntry ? (firstEntry.rightUri ?? firstEntry.leftUri) : undefined;
+    return buildEditorContextJson({
+        isInDiffEditor: true,
+        resourceUri: primaryUri,
+        isWorkingCopy: firstEntry?.isWorkingCopy,
+        filename: firstEntry?.filename,
+        fileStatus: firstEntry?.fileStatus,
     });
 });
 </script>
@@ -180,11 +330,30 @@ $effect(() => {
         </button>
     </div>
 
-    <div
-        class="diff-content-container"
-        data-testid="multi-diff-content-container"
-        bind:this={containerEl}
-    ></div>
+    <div class="multi-diff-scroll-area">
+        <div
+            class="diff-content-container"
+            data-testid="multi-diff-content-container"
+            bind:this={containerEl}
+            data-vscode-context={multiDiffContextJson}
+        ></div>
+
+        {#if imageFiles.length > 0}
+            <div class="multi-diff-image-list" data-testid="multi-diff-image-list">
+                {#each imageFiles as imgFile (imgFile.filename)}
+                    <div class="multi-diff-image-card" data-testid="multi-diff-image-card">
+                        <ImageDiffViewer
+                            filename={imgFile.filename}
+                            originalContent={imgFile.originalContent ?? ''}
+                            modifiedContent={imgFile.modifiedContent ?? ''}
+                            fileStatus={imgFile.fileStatus}
+                            showHeader={true}
+                        />
+                    </div>
+                {/each}
+            </div>
+        {/if}
+    </div>
 </div>
 
 <style>
@@ -208,10 +377,10 @@ $effect(() => {
     display: inline-flex;
     align-items: center;
     border-radius: 4px;
-    border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, #454545));
+    border: 1px solid var(--vscode-widget-border, var(--vscode-input-border));
     background: var(--vscode-editor-background);
     padding: 2px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--vscode-widget-shadow, var(--vscode-foreground)) 20%, transparent);
 }
 
 .toggle-btn {
@@ -235,7 +404,7 @@ $effect(() => {
 }
 
 .toggle-btn:hover:not(.active) {
-    background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.06));
+    background: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 8%, transparent));
     color: var(--vscode-foreground);
 }
 
@@ -245,7 +414,7 @@ $effect(() => {
     font-weight: 600;
 }
 
-.diff-content-container {
+.multi-diff-scroll-area {
     flex: 1 1 0;
     min-height: 0;
     min-width: 0;
@@ -254,5 +423,23 @@ $effect(() => {
     position: relative;
     width: 100%;
     height: 100%;
+}
+
+.diff-content-container {
+    position: relative;
+    width: 100%;
+}
+
+.multi-diff-image-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 12px;
+}
+
+.multi-diff-image-card {
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px;
+    overflow: hidden;
 }
 </style>

@@ -21,8 +21,11 @@ function ensurePrerequisites(): void {
         stdio: 'inherit',
     });
 
-    // 2. Generate settings schema
+    // 2. Generate settings schema and Go version
     cp.execFileSync(process.execPath, [path.join(rootDir, 'tooling/generate-settings-schema.ts')], {
+        stdio: 'inherit',
+    });
+    cp.execFileSync(process.execPath, [path.join(rootDir, 'tooling/generate-version.ts')], {
         stdio: 'inherit',
     });
 
@@ -104,7 +107,7 @@ async function main(): Promise<void> {
     const binaryPath = ensureGoBinary();
 
     console.log('[dev] Starting JJ View Go daemon...');
-    const goProc = cp.spawn(binaryPath, ['-host', '127.0.0.1', '-port', '0', '-repo', '.', '-no-open'], {
+    const goProc = cp.spawn(binaryPath, ['--host', '127.0.0.1', '--port', '0', '--repo', '.', '--no-open'], {
         cwd: rootDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,

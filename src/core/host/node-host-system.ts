@@ -9,9 +9,11 @@ import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import { type BackendType, subscribe } from '@parcel/watcher';
 import path from 'pathe';
+import { isNodeErrorWithCode } from '../../utils/error-utils';
 import { setRealpathSyncResolver } from '../uri-utils';
 import {
     type FileStat,
+    HELPER_SCRIPT_TOKEN,
     type HelperScriptName,
     type HostFs,
     type HostPlatform,
@@ -21,12 +23,17 @@ import {
     type ProcessExecOptions,
     ProcessExitError,
     type ProcessResult,
+    SCRATCH_DIR_TOKEN,
+    type ScratchExecRequest,
+    type ScratchExecResult,
     type WatchEvent,
     type WatcherSubscription,
     type WatchOptions,
 } from './host-system';
 
 export class NodeHostProcess implements HostProcess {
+    constructor(private readonly fs: HostFs = new NodeHostFs()) {}
+
     async execFile(file: string, args: readonly string[], options?: ProcessExecOptions): Promise<ProcessResult> {
         return new Promise<ProcessResult>((resolve, reject) => {
             const cpOptions: cp.ExecFileOptions = {
@@ -37,7 +44,11 @@ export class NodeHostProcess implements HostProcess {
                 maxBuffer: options?.maxBuffer ?? 100 * 1024 * 1024,
             };
 
-            const child = cp.execFile(file, [...args], cpOptions, (err, stdout, stderr) => {
+            const isWinJsScript = process.platform === 'win32' && /\.(?:m|c)?js$/i.test(file);
+            const execTarget = isWinJsScript ? process.execPath : file;
+            const execArgs = isWinJsScript ? [file, ...args] : [...args];
+
+            const child = cp.execFile(execTarget, execArgs, cpOptions, (err, stdout, stderr) => {
                 const stdoutStr = stdout?.toString() ?? '';
                 const stderrStr = stderr?.toString() ?? '';
                 if (err) {
@@ -56,6 +67,38 @@ export class NodeHostProcess implements HostProcess {
                 options.onSpawn(child);
             }
         });
+    }
+
+    async execFileInScratchDir(request: ScratchExecRequest): Promise<ScratchExecResult> {
+        const helperScriptPath = request.helperScript ? await this.getHelperScriptPath(request.helperScript) : '';
+        const scratchDir = await this.fs.mkdtemp(path.join(this.fs.tempDir, request.scratchPrefix));
+
+        try {
+            for (const subdir of request.subdirs) {
+                await this.fs.mkdir(path.join(scratchDir, subdir), { recursive: true });
+            }
+            const args = request.args.map((arg) =>
+                arg.replaceAll(SCRATCH_DIR_TOKEN, scratchDir).replaceAll(HELPER_SCRIPT_TOKEN, helperScriptPath),
+            );
+
+            let result: ProcessResult;
+            try {
+                result = await this.execFile(request.file, args, request.options);
+            } catch (err) {
+                if (!(err instanceof ProcessExitError)) {
+                    throw err;
+                }
+                result = { stdout: err.stdout, stderr: err.stderr, exitCode: err.exitCode };
+            }
+
+            const markerPresent = request.completionMarker
+                ? await this.fs.exists(path.join(scratchDir, request.completionMarker))
+                : false;
+            return { ...result, scratchDir, markerPresent };
+        } catch (err) {
+            await this.fs.rm(scratchDir, { recursive: true, force: true }).catch(() => {});
+            throw err;
+        }
     }
 
     async getHelperScriptPath(scriptName: HelperScriptName): Promise<string> {
@@ -79,10 +122,25 @@ export class NodeHostProcess implements HostProcess {
 }
 
 export class NodeHostFs implements HostFs {
-    public readonly tempDir: string = os.tmpdir();
+    constructor(public readonly tempDir: string = os.tmpdir()) {}
 
     async readTextFile(filePath: string): Promise<string> {
         return fsPromises.readFile(filePath, 'utf8');
+    }
+
+    async readTextFiles(paths: readonly string[]): Promise<(string | null)[]> {
+        return Promise.all(
+            paths.map(async (filePath) => {
+                try {
+                    return await fsPromises.readFile(filePath, 'utf8');
+                } catch (err) {
+                    if (isNodeErrorWithCode(err, 'ENOENT')) {
+                        return null;
+                    }
+                    throw err;
+                }
+            }),
+        );
     }
 
     async readBinaryFile(filePath: string): Promise<Uint8Array> {
@@ -223,8 +281,8 @@ export class NodeHostSystem implements HostSystem {
         fs?: HostFs;
         watcher?: HostWatcher;
     }) {
-        this.process = options?.process ?? new NodeHostProcess();
         this.fs = options?.fs ?? new NodeHostFs();
+        this.process = options?.process ?? new NodeHostProcess(this.fs);
         this.watcher = options?.watcher ?? new NodeHostWatcher();
         const rawPlatform = process.platform;
         this.platform = rawPlatform === 'win32' || rawPlatform === 'darwin' ? rawPlatform : 'linux';
