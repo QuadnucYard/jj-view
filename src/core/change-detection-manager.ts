@@ -123,6 +123,11 @@ export class ChangeDetectionManager implements HostDisposable {
             );
         }
 
+        if (this.host.forceFilePolling) {
+            this.updatePollingState();
+            return;
+        }
+
         // Listen for configuration changes
         if (this.host.config.onDidChangeConfiguration) {
             this.disposables.push(

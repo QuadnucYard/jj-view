@@ -207,4 +207,5 @@ export interface HostEnvironment {
     readonly workspace: HostWorkspace;
     readonly extensions?: HostExtensions;
     readonly system?: HostSystem;
+    readonly forceFilePolling?: boolean;
 }

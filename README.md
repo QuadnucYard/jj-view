@@ -178,7 +178,7 @@ Customize **JJ View** behavior in VS Code settings.
 | `jj-view.readTimeoutSeconds`           | `120`         | Timeout in seconds for read operations executed by the jj service.                                                                                                                                                                                                                                   |
 | `jj-view.showProcessMonitorPanel`      | `false`       | Controls whether the JJ Process Monitor diagnostic view is displayed in the bottom panel.                                                                                                                                                                                                            |
 | `jj-view.refreshDebounceMaxMultiplier` | `4`           | Maximum multiplier for the debounce timeout when events continue to occur.                                                                                                                                                                                                                           |
-| `jj-view.fileWatcherMode`              | `"polling"`   | Controls how the extension detects external file changes. `"polling"` uses periodic status checks. `"watch"` uses a native file watcher ([parcel-watcher](https://github.com/parcel-bundler/watcher)) for more efficient, event-driven updates. Falls back to polling if the watcher fails to start. |
+| `jj-view.fileWatcherMode`              | `"polling"`   | Controls how JJ View detects external file changes. VS Code on Linux, including WSL, always uses polling. |
 | `jj-view.codeForge.provider`           | `null`        | Force the active Code Forge provider to a specific service. Options: `github`, `gitlab`, `gerrit`. If not set, it is auto-detected from git remotes. |
 | `jj-view.gerrit.host`                  | `null`        | Gerrit host URL (e.g., https://gerrit-review.googlesource.com). If not set, extension attempts to detect it from .gitreview or git remotes.                                                                                                                                                      |
 | `jj-view.gerrit.project`               | `null`        | Gerrit project name. If not set, extension attempts to detect it from git remotes.                                                                                                                                                                                                                   |
@@ -215,11 +215,13 @@ log = "trunk().." # Or any other revset you prefer for the graph view
 
 ### File Watcher Mode
 
-The `"watch"` mode uses [parcel-watcher](https://github.com/parcel-bundler/watcher) for native, event-driven file change detection instead of periodic polling. This is more efficient for large repos, but may require additional setup depending on your platform.
+On Linux, including WSL, the VS Code extension checks for external changes about every five seconds while the window is active. In-editor saves still trigger a refresh.
 
-#### Linux — Increasing inotify watch limits
+On Windows and macOS, the VS Code extension can use `"watch"` for event-driven updates through [parcel-watcher](https://github.com/parcel-bundler/watcher). It falls back to polling if the watcher fails to start.
 
-The default `inotify` backend on Linux is limited by the system's max watch count. If you hit the limit, increase it:
+#### Standalone web on Linux — Increasing inotify watch limits
+
+The standalone web server's Linux watcher is limited by the system's max watch count. If you hit the limit, increase it:
 
 ```bash
 # Check the current limit
@@ -233,9 +235,9 @@ echo 'fs.inotify.max_user_watches=524288' | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 ```
 
-#### Linux & Windows — Using Watchman (recommended)
+#### Windows — Using Watchman
 
-On non-macOS platforms, we recommend installing [Watchman](https://facebook.github.io/watchman/) for a more robust and scalable file watching backend. (macOS uses the native `fs-events` backend by default). When Watchman is installed and available on your `PATH`, parcel-watcher will automatically use it instead of `inotify` (Linux) or the default Windows backend. Watchman handles large repositories more gracefully and avoids inotify watch limit issues entirely.
+On Windows, the VS Code extension uses [Watchman](https://facebook.github.io/watchman/) when it is installed and available on your `PATH`.
 
 - [Watchman Installation Guide](https://facebook.github.io/watchman/docs/install)
 

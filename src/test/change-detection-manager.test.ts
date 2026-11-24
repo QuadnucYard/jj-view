@@ -113,6 +113,23 @@ describe('ChangeDetectionManager', () => {
             expect(triggerRefreshSpy).toHaveBeenCalledTimes(2); // Now it should have called again
         });
 
+        it('only polls when the host requires polling, even when watch mode is configured', async () => {
+            const pollingHost = Object.assign(host, { forceFilePolling: true });
+            host.config.set('fileWatcherMode', 'watch');
+            changeManager = new ChangeDetectionManager(repo.path, jj, outputChannel, triggerRefreshSpy, pollingHost);
+
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(triggerRefreshSpy).toHaveBeenCalledWith({ forceSnapshot: true, reason: 'poll' });
+            await changeManager.awaitWatchersReady();
+            expect(watcherStartSpy).not.toHaveBeenCalled();
+
+            host.config.set('fileWatcherMode', 'polling');
+            host.config.set('fileWatcherMode', 'watch');
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(triggerRefreshSpy).toHaveBeenCalledTimes(2);
+            expect(watcherStartSpy).not.toHaveBeenCalled();
+        });
+
         it('pauses polling when inactive and resumes when active', async () => {
             changeManager = new ChangeDetectionManager(repo.path, jj, outputChannel, triggerRefreshSpy, host);
 

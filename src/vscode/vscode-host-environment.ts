@@ -737,6 +737,8 @@ export class VsCodeHostEnvironment implements HostEnvironment, HostDisposable {
     readonly workspace: HostWorkspace;
     readonly extensions: HostExtensions;
     readonly system: HostSystem;
+    // https://github.com/parcel-bundler/watcher/issues/273
+    readonly forceFilePolling = process.platform === 'linux';
 
     constructor(options: {
         context: vscode.ExtensionContext;

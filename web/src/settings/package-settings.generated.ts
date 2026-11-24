@@ -62,7 +62,8 @@ export const PACKAGE_SETTINGS: readonly SettingDefinition[] = [
     {
         key: 'fileWatcherMode',
         title: 'File Watcher Mode',
-        description: 'Controls how the extension detects external file changes.',
+        description:
+            'Controls how the extension detects external file changes. VS Code on Linux, including WSL, always uses polling.',
         category: 'General',
         type: 'string',
         default: 'polling',
