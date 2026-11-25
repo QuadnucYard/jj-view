@@ -208,6 +208,8 @@ categories:
     cursor overlays during frame-by-frame screenshot recording
     (`recordInteractionFlow`) so `page.screenshot()` captures exact
     deterministic states on every frame.
+-   **Deterministic Timestamp Tests**: Pin the browser locale, time zone, and
+    clock. Assert localized text and compare machine-readable timestamps by instant.
 -   **Domain-Neutral Test Fixtures**: Use self-contained, generic code fixtures
     in tests (never project-external codenames or unrelated proprietary
     symbols).

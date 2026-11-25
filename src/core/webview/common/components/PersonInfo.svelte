@@ -4,10 +4,12 @@
 -->
 <script lang="ts">
 import { getPersonDisplayStrings, type PersonInfoProps } from '../utils/person-utils';
+import { formatCommitTimestamp } from '../utils/time-utils';
 
 let { person, label }: PersonInfoProps = $props();
 
 let displayStrings = $derived(person ? getPersonDisplayStrings(person) : null);
+let timestamp = $derived(person ? formatCommitTimestamp(person.timestamp) : '');
 </script>
 
 {#if person && displayStrings}
@@ -21,14 +23,18 @@ let displayStrings = $derived(person ? getPersonDisplayStrings(person) : null);
         >
             &lt;{displayStrings.emailToDisplay}&gt;
         </span>
-        <span aria-hidden="true" class="dot-separator">•</span>
-        <time
-            dateTime={person.timestamp}
-            class="time"
-            title={displayStrings.fullTime}
-        >
-            {displayStrings.relTime}
-        </time>
+        {#if timestamp}
+            <span class="timestamp">
+                <span aria-hidden="true" class="dot-separator">•</span>
+                <time
+                    dateTime={person.timestamp}
+                    class="time"
+                    title={displayStrings.relTime === person.timestamp ? undefined : displayStrings.relTime}
+                >
+                    {timestamp}
+                </time>
+            </span>
+        {/if}
     </div>
 {/if}
 
@@ -80,9 +86,13 @@ let displayStrings = $derived(person ? getPersonDisplayStrings(person) : null);
         flex-shrink: 0;
     }
 
+    .timestamp {
+        display: flex;
+        min-width: 0;
+    }
+
     .time {
         color: var(--vscode-descriptionForeground);
-        white-space: nowrap;
-        flex-shrink: 0;
+        overflow-wrap: anywhere;
     }
 </style>

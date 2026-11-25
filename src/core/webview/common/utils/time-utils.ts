@@ -3,6 +3,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+const commitTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'shortOffset',
+});
+
+export function formatCommitTimestamp(timestamp: string): string {
+    const date = new Date(timestamp);
+    return Number.isNaN(date.getTime()) ? timestamp : commitTimestampFormatter.format(date);
+}
+
 export function getRelativeTimeString(timestamp: string | number, now: number = Date.now()): string {
     const time = typeof timestamp === 'number' ? timestamp : new Date(timestamp).getTime();
     if (Number.isNaN(time)) {
