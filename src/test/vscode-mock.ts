@@ -281,6 +281,9 @@ export function createVscodeMock(overrides: Record<string, unknown> = {}): Recor
             ) {}
         },
         env: {
+            get language() {
+                return 'en';
+            },
             openExternal: vi.fn(),
             clipboard: {
                 writeText: vi.fn().mockResolvedValue(undefined),

@@ -7,9 +7,13 @@ import * as path from 'node:path';
 import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
 
 test.describe('Commit Details timestamps', () => {
-    test.use({ locale: 'en-US', timezoneId: 'Asia/Shanghai' });
+    test.use({ locale: 'zh-CN', timezoneId: 'Asia/Shanghai' });
 
-    test('shows exact local author and committer times', async ({ page, server, testRepo }) => {
+    test('shows localized author and committer times and adapts relative ages to pane width', async ({
+        page,
+        server,
+        testRepo,
+    }) => {
         const authorTime = '2024-06-15T07:08:09Z';
         const commitTime = '2024-06-15T07:08:42Z';
         testRepo.config('debug.commit-timestamp', authorTime);
@@ -33,8 +37,12 @@ test.describe('Commit Details timestamps', () => {
 
         const commit = page.getByTestId('log-content').getByText('Add timestamp example', { exact: true });
         const people = page.getByTestId('commit-details-view').locator('.people-rows');
-        const author = people.locator('.person-info').filter({ hasText: 'Author:' }).locator('time');
-        const committer = people.locator('.person-info').filter({ hasText: 'Committer:' }).locator('time');
+        const authorRow = people.locator('.person-info').filter({ hasText: 'Author:' });
+        const committerRow = people.locator('.person-info').filter({ hasText: 'Committer:' });
+        const author = authorRow.locator('time');
+        const committer = committerRow.locator('time');
+        const authorAge = authorRow.getByText('(3天前)', { exact: true });
+        const committerAge = committerRow.getByText('(3天前)', { exact: true });
 
         await recordGifFlow(
             page,
@@ -43,12 +51,12 @@ test.describe('Commit Details timestamps', () => {
                 await page.screenshot({ path: path.join(ARTIFACT_DIR, 'commit-details-timestamps-log.png') });
                 await capture();
                 await commit.click();
-                await expect(author).toHaveText('Jun 15, 2024, 3:08:09 PM GMT+8');
-                await expect(committer).toHaveText('Jun 15, 2024, 3:08:42 PM GMT+8');
+                await expect(author).toHaveText('2024年6月15日 GMT+8 15:08:09');
+                await expect(committer).toHaveText('2024年6月15日 GMT+8 15:08:42');
                 expect(Date.parse((await author.getAttribute('datetime')) ?? '')).toBe(Date.parse(authorTime));
                 expect(Date.parse((await committer.getAttribute('datetime')) ?? '')).toBe(Date.parse(commitTime));
-                await expect(author).toHaveAttribute('title', '3 days ago');
-                await expect(committer).toHaveAttribute('title', '3 days ago');
+                await expect(authorAge).toBeVisible();
+                await expect(committerAge).toBeVisible();
                 await expect(page.locator('html')).toHaveAttribute('data-theme', 'pierre-dark-soft');
                 await page.screenshot({ path: path.join(ARTIFACT_DIR, 'commit-details-timestamps-dark.png') });
                 await capture();
@@ -57,11 +65,19 @@ test.describe('Commit Details timestamps', () => {
                     await window.__JJ_VIEW_ENV__?.config.update?.('appearance.theme', 'pierre-light');
                 });
                 await expect(page.locator('html')).toHaveAttribute('data-theme', 'pierre-light');
-                await page.setViewportSize({ width: 650, height: 680 });
+                await page.setViewportSize({ width: 560, height: 680 });
                 await expect(author).toBeInViewport({ ratio: 1 });
                 await expect(committer).toBeInViewport({ ratio: 1 });
+                await expect(authorAge).toBeHidden();
+                await expect(committerAge).toBeHidden();
+                await expect(author).toHaveAttribute('title', '3天前');
+                await expect(committer).toHaveAttribute('title', '3天前');
                 expect(await people.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
                 await page.screenshot({ path: path.join(ARTIFACT_DIR, 'commit-details-timestamps-light.png') });
+
+                await page.setViewportSize({ width: 1280, height: 720 });
+                await expect(authorAge).toBeVisible();
+                await expect(committerAge).toBeVisible();
             },
             { outputPath: path.join(ARTIFACT_DIR, 'commit-details-timestamps.gif') },
         );

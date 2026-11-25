@@ -32,6 +32,7 @@ interface Props {
     isConflict?: boolean;
     author?: { name: string; email: string; timestamp: string };
     committer?: { name: string; email: string; timestamp: string };
+    timestampLocale?: string;
     bookmarks?: JjBookmark[];
     tags?: JjTag[];
     titleWidthRuler?: number;
@@ -68,6 +69,7 @@ let {
     isConflict = false,
     author,
     committer,
+    timestampLocale,
     bookmarks = [],
     tags = [],
     titleWidthRuler = 50,
@@ -817,8 +819,8 @@ function handleWindowKeydown(e: KeyboardEvent): void {
 
             {#if author || committer}
                 <div class="people-rows">
-                    <PersonInfo person={author} label="Author" />
-                    <PersonInfo person={committer} label="Committer" />
+                    <PersonInfo person={author} label="Author" locale={timestampLocale} />
+                    <PersonInfo person={committer} label="Committer" locale={timestampLocale} />
                 </div>
             {/if}
         </div>

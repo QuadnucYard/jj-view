@@ -6,10 +6,40 @@
 import { getPersonDisplayStrings, type PersonInfoProps } from '../utils/person-utils';
 import { formatCommitTimestamp } from '../utils/time-utils';
 
-let { person, label }: PersonInfoProps = $props();
+let { person, label, locale }: PersonInfoProps = $props();
 
-let displayStrings = $derived(person ? getPersonDisplayStrings(person) : null);
-let timestamp = $derived(person ? formatCommitTimestamp(person.timestamp) : '');
+const relativeTimeFormatter = $derived(new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }));
+const displayStrings = $derived(person ? getPersonDisplayStrings(person, relativeTimeFormatter) : null);
+const timestamp = $derived(person ? formatCommitTimestamp(person.timestamp, locale) : '');
+const relativeTime = $derived(displayStrings?.relTime === person?.timestamp ? undefined : displayStrings?.relTime);
+
+let timestampRow = $state<HTMLSpanElement>();
+let timeValue = $state<HTMLSpanElement>();
+let age = $state<HTMLSpanElement>();
+let showAge = $state(false);
+
+$effect(() => {
+    const row = timestampRow;
+    const value = timeValue;
+    const relative = age;
+    if (!row || !value || !relative) {
+        showAge = false;
+        return;
+    }
+
+    const measure = () => {
+        const rowWidth = row.getBoundingClientRect().width;
+        const valueWidth = value.getBoundingClientRect().width;
+        const relativeWidth = relative.getBoundingClientRect().width;
+        showAge = valueWidth + relativeWidth <= rowWidth;
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    observer.observe(value);
+    observer.observe(relative);
+    measure();
+    return () => observer.disconnect();
+});
 </script>
 
 {#if person && displayStrings}
@@ -24,15 +54,20 @@ let timestamp = $derived(person ? formatCommitTimestamp(person.timestamp) : '');
             &lt;{displayStrings.emailToDisplay}&gt;
         </span>
         {#if timestamp}
-            <span class="timestamp">
+            <span class="timestamp" lang={relativeTimeFormatter.resolvedOptions().locale}>
                 <span aria-hidden="true" class="dot-separator">•</span>
-                <time
-                    dateTime={person.timestamp}
-                    class="time"
-                    title={displayStrings.relTime === person.timestamp ? undefined : displayStrings.relTime}
-                >
-                    {timestamp}
-                </time>
+                <span class="time-row" bind:this={timestampRow}>
+                    <span class="time-value" bind:this={timeValue}>
+                        <time dateTime={person.timestamp} class="time" dir="auto" title={showAge ? undefined : relativeTime}>
+                            {timestamp}
+                        </time>
+                        {#if relativeTime}
+                            <span class="relative-time" class:visible={showAge} bind:this={age}>
+                                <bdi>({relativeTime})</bdi>
+                            </span>
+                        {/if}
+                    </span>
+                </span>
             </span>
         {/if}
     </div>
@@ -88,11 +123,39 @@ let timestamp = $derived(person ? formatCommitTimestamp(person.timestamp) : '');
 
     .timestamp {
         display: flex;
+        flex-grow: 1;
+        min-width: 0;
+    }
+
+    .time-row {
+        display: flex;
+        flex: 1;
+        min-width: 0;
+        overflow: clip;
+    }
+
+    .time-value {
+        position: relative;
         min-width: 0;
     }
 
     .time {
         color: var(--vscode-descriptionForeground);
         overflow-wrap: anywhere;
+    }
+
+    .relative-time {
+        position: absolute;
+        inset-block-start: 0;
+        inset-inline-start: 100%;
+        inline-size: max-content;
+        visibility: hidden;
+        color: var(--vscode-descriptionForeground);
+        padding-inline-start: 5px;
+        white-space: nowrap;
+    }
+
+    .relative-time.visible {
+        visibility: visible;
     }
 </style>

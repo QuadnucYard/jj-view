@@ -16,9 +16,10 @@ import CommitDetails from './CommitDetails.svelte';
 
 interface Props {
     initialCommit?: CommitDetailsPayload;
+    timestampLocale?: string;
 }
 
-let { initialCommit }: Props = $props();
+let { initialCommit, timestampLocale }: Props = $props();
 
 function getInitialCommit(): CommitDetailsPayload | null {
     if (typeof document === 'undefined') {
@@ -88,6 +89,7 @@ $effect(() => {
         isConflict={detailsCommit.isConflict}
         author={detailsCommit.author}
         committer={detailsCommit.committer}
+        {timestampLocale}
         bookmarks={detailsCommit.bookmarks}
         tags={detailsCommit.tags}
         titleWidthRuler={detailsCommit.titleWidthRuler}

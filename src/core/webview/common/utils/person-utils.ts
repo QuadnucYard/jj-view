@@ -7,6 +7,7 @@ import { getRelativeTimeString } from './time-utils';
 export interface PersonInfoProps {
     person?: { name: string; email: string; timestamp: string };
     label: string;
+    locale?: string;
 }
 
 export interface PersonDisplayStrings {
@@ -17,11 +18,10 @@ export interface PersonDisplayStrings {
     hasEmail: boolean;
 }
 
-export function getPersonDisplayStrings(person: {
-    name: string;
-    email: string;
-    timestamp: string;
-}): PersonDisplayStrings {
+export function getPersonDisplayStrings(
+    person: { name: string; email: string; timestamp: string },
+    relativeTimeFormatter?: Intl.RelativeTimeFormat,
+): PersonDisplayStrings {
     const hasName = !!person.name && person.name !== '•';
     const hasEmail = !!person.email;
 
@@ -31,7 +31,7 @@ export function getPersonDisplayStrings(person: {
     const fullTime = new Date(person.timestamp).toLocaleString();
     let relTime = person.timestamp;
     try {
-        relTime = getRelativeTimeString(person.timestamp);
+        relTime = getRelativeTimeString(person.timestamp, undefined, relativeTimeFormatter);
     } catch {
         // fallback to just rendering the timestamp string
     }

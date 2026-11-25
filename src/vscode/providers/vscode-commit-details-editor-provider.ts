@@ -14,6 +14,19 @@ import CommitDetailsApp from '../../core/webview/commit-details/CommitDetailsApp
 import { VsCodeHostEnvironment } from '../vscode-host-environment';
 import { getWebviewHtml } from '../vscode-webview-html';
 
+function getTimestampLocale(): string | undefined {
+    const language = vscode.env.language;
+    // Preserve the system's regional format for VS Code's default English locale.
+    if (!language || language === 'en') {
+        return undefined;
+    }
+    try {
+        return Intl.DateTimeFormat.supportedLocalesOf(language)[0];
+    } catch {
+        return undefined;
+    }
+}
+
 export class JjCommitDocument implements vscode.CustomDocument {
     public readonly uri: vscode.Uri;
     public readonly changeId: string;
@@ -243,11 +256,12 @@ export class VsCodeCommitDetailsEditorProvider
             return;
         }
 
+        const timestampLocale = getTimestampLocale();
         let initialHtml: string | undefined;
         if (initialData) {
             try {
                 const rendered = this._renderer(CommitDetailsApp, {
-                    props: { initialCommit: initialData },
+                    props: { initialCommit: initialData, timestampLocale },
                 });
                 initialHtml = rendered.body;
             } catch (err) {
@@ -264,6 +278,7 @@ export class VsCodeCommitDetailsEditorProvider
             title: 'Commit Details',
             initialData,
             initialHtml,
+            timestampLocale,
         });
 
         panel.webview.html = html;

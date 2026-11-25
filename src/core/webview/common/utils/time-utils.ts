@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-const commitTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+const commitTimestampOptions: Intl.DateTimeFormatOptions = {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -11,14 +11,23 @@ const commitTimestampFormatter = new Intl.DateTimeFormat(undefined, {
     minute: '2-digit',
     second: '2-digit',
     timeZoneName: 'shortOffset',
-});
+};
+const commitTimestampFormatter = new Intl.DateTimeFormat(undefined, commitTimestampOptions);
 
-export function formatCommitTimestamp(timestamp: string): string {
+export function formatCommitTimestamp(timestamp: string, locale?: string): string {
     const date = new Date(timestamp);
-    return Number.isNaN(date.getTime()) ? timestamp : commitTimestampFormatter.format(date);
+    if (Number.isNaN(date.getTime())) {
+        return timestamp;
+    }
+    const formatter = locale ? new Intl.DateTimeFormat(locale, commitTimestampOptions) : commitTimestampFormatter;
+    return formatter.format(date);
 }
 
-export function getRelativeTimeString(timestamp: string | number, now: number = Date.now()): string {
+export function getRelativeTimeString(
+    timestamp: string | number,
+    now: number = Date.now(),
+    formatter?: Intl.RelativeTimeFormat,
+): string {
     const time = typeof timestamp === 'number' ? timestamp : new Date(timestamp).getTime();
     if (Number.isNaN(time)) {
         return String(timestamp);
@@ -30,9 +39,6 @@ export function getRelativeTimeString(timestamp: string | number, now: number = 
 
     const diffMs = now - time;
     // This function only works for timestamps in the past.
-    if (diffMs > -5000 && diffMs < 0) {
-        return 'just now';
-    }
     if (diffMs <= -5000) {
         return typeof timestamp === 'number' ? new Date(timestamp).toLocaleString() : timestamp;
     }
@@ -53,10 +59,10 @@ export function getRelativeTimeString(timestamp: string | number, now: number = 
         [hours, 'hour'],
         [minutes, 'minute'],
         [seconds, 'second'],
-    ] satisfies Array<[number, string]>) {
+    ] satisfies Array<[number, Intl.RelativeTimeFormatUnit]>) {
         if (x > 0) {
-            return `${x} ${unit}${x > 1 ? 's' : ''} ago`;
+            return formatter?.format(-x, unit) ?? `${x} ${unit}${x > 1 ? 's' : ''} ago`;
         }
     }
-    return 'just now';
+    return formatter?.format(0, 'second') ?? 'just now';
 }

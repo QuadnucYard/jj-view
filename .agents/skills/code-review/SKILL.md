@@ -210,6 +210,7 @@ categories:
     deterministic states on every frame.
 -   **Deterministic Timestamp Tests**: Pin the browser locale, time zone, and
     clock. Assert localized text and compare machine-readable timestamps by instant.
+-   **Fit Optional Inline Content Without Changing Layout**: Measure it outside normal flow so hiding or revealing it cannot rewrap primary content. Verify both resize directions.
 -   **Domain-Neutral Test Fixtures**: Use self-contained, generic code fixtures
     in tests (never project-external codenames or unrelated proprietary
     symbols).

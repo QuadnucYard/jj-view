@@ -336,7 +336,12 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         const errorSpy = vi.spyOn(repositoryManager.outputChannel, 'error');
 
         const client = createCommitDetailsClient();
-        await provider.resolveCustomEditor(document, client.panel, cancellationToken);
+        const localeSpy = vi.spyOn(vscode.env, 'language', 'get').mockReturnValue('zh-cn');
+        try {
+            await provider.resolveCustomEditor(document, client.panel, cancellationToken);
+        } finally {
+            localeSpy.mockRestore();
+        }
 
         // SSR MUST complete successfully without any warnings or errors
         expect(warnSpy).not.toHaveBeenCalled();
@@ -348,8 +353,8 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         // 2. Inlined critical base CSS in <head>
         expect(client.panel.webview.html).toContain('--vscode-editor-background');
 
-        // 3. Strict verification: <div id="root"> MUST contain the rendered SSR HTML
-        const rootStart = client.panel.webview.html.indexOf('<div id="root">');
+        // 3. The rendered metadata and the hydration root use the same locale.
+        const rootStart = client.panel.webview.html.indexOf('<div id="root" data-timestamp-locale="zh-CN">');
         const stateStart = client.panel.webview.html.indexOf('<script type="application/json" id="__INITIAL_STATE__"');
         expect(rootStart).toBeGreaterThanOrEqual(0);
         expect(stateStart).toBeGreaterThan(rootStart);
@@ -359,6 +364,7 @@ describe('VsCodeCommitDetailsEditorProvider Unit & Concurrency Tests', () => {
         expect(rootBlock).toContain('preview commit');
         expect(rootBlock).toContain(changeId);
         expect(rootBlock).toContain('Loading changed files');
+        expect(rootBlock).toMatch(/<time[^>]*>\s*\d{4}年\d{1,2}月\d{1,2}日/);
 
         await vi.waitFor(
             () => {

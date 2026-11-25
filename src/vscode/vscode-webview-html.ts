@@ -59,6 +59,7 @@ export interface WebviewHtmlOptions {
     title: string;
     initialData?: unknown;
     initialHtml?: string;
+    timestampLocale?: string;
 }
 
 export function safeJsonStringify(data: unknown): string {
@@ -83,7 +84,7 @@ export function safeJsonStringify(data: unknown): string {
 }
 
 export function getWebviewHtml(options: WebviewHtmlOptions): string {
-    const { webview, extensionUri, scriptPath, title, initialData, initialHtml } = options;
+    const { webview, extensionUri, scriptPath, title, initialData, initialHtml, timestampLocale } = options;
     const scriptUri = webview.asWebviewUri(Uri.joinPath(extensionUri, ...scriptPath));
     const codiconTtfUri = webview.asWebviewUri(Uri.joinPath(extensionUri, 'media', 'codicons', 'codicon.ttf'));
 
@@ -107,6 +108,9 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
         initialData !== undefined
             ? `<script type="application/json" id="__INITIAL_STATE__" nonce="${nonce}">${safeJsonStringify(initialData)}</script>`
             : '';
+    const timestampLocaleAttribute = timestampLocale
+        ? ` data-timestamp-locale="${encodeURIComponent(timestampLocale)}"`
+        : '';
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -141,7 +145,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
             <title>${title}</title>
         </head>
         <body>
-            <div id="root">${initialHtml ?? ''}</div>
+            <div id="root"${timestampLocaleAttribute}>${initialHtml ?? ''}</div>
             ${initialStateScript}
             <script nonce="${nonce}" src="${scriptUri}" defer></script>
         </body>
