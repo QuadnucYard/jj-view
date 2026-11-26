@@ -111,6 +111,7 @@ let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
 let textareaRef = $state<HTMLTextAreaElement | null>(null);
 let backdropRef = $state<HTMLDivElement | null>(null);
+let backdropContentRef = $state<HTMLDivElement | null>(null);
 let containerRef = $state<HTMLDivElement | null>(null);
 let menuEl = $state<HTMLDivElement | null>(null);
 
@@ -343,11 +344,27 @@ function handleInput() {
 }
 
 function handleScroll() {
-    if (backdropRef && textareaRef) {
-        backdropRef.scrollTop = textareaRef.scrollTop;
-        backdropRef.scrollLeft = textareaRef.scrollLeft;
+    if (backdropContentRef && textareaRef) {
+        backdropContentRef.style.transform = `translate(${-textareaRef.scrollLeft}px, ${-textareaRef.scrollTop}px)`;
     }
 }
+
+$effect(() => {
+    const textarea = textareaRef;
+    const backdrop = backdropRef;
+    if (!textarea || !backdrop) {
+        return;
+    }
+
+    handleScroll();
+    // Observe the content box so changes to native scrollbars also update the clip.
+    const observer = new ResizeObserver(() => {
+        backdrop.style.width = `${textarea.clientWidth}px`;
+        backdrop.style.height = `${textarea.clientHeight}px`;
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+});
 
 function handleKeydown(e: KeyboardEvent) {
     const isMac =
@@ -894,8 +911,8 @@ function handleWindowKeydown(e: KeyboardEvent): void {
             class="editor-wrapper"
             class:is-immutable={isImmutable}
         >
-            <div bind:this={backdropRef} class="editor-backdrop">
-                <div class="backdrop-content">
+            <div bind:this={backdropRef} class="editor-backdrop" aria-hidden="true">
+                <div bind:this={backdropContentRef} class="backdrop-content">
                     <div
                         class="ruler title-ruler"
                         style:left={`calc(12px + ${titleWidthRuler}ch)`}
@@ -1440,8 +1457,9 @@ function handleWindowKeydown(e: KeyboardEvent): void {
         left: 0;
         right: 0;
         bottom: 0;
-        overflow: hidden;
+        overflow: clip;
         pointer-events: none;
+        user-select: none;
         z-index: 1;
     }
 
