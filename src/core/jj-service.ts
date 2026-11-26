@@ -1685,6 +1685,13 @@ export class JjService {
         return this.run('duplicate', args, { isMutation: true, label: 'duplicate' });
     }
 
+    async revert(revision: string, options: { onto: string }): Promise<string> {
+        return this.run('revert', ['--revision', revision, '--onto', options.onto], {
+            isMutation: true,
+            label: 'revert',
+        });
+    }
+
     async abandon(revisions: string | string[]): Promise<string> {
         const revs = Array.isArray(revisions) ? revisions : [revisions];
         return this.run('abandon', revs, { isMutation: true, label: 'abandon' });

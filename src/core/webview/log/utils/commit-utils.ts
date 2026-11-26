@@ -58,10 +58,11 @@ export function computeCommitActions(
             commit.codeForgeChange?.currentRevision && (!isSelected || selectionCount <= 1),
         ),
 
-        // Edit, Duplicate, and Absorb restricted to single-item context (or unselected item)
+        // Edit, Duplicate, Revert, and New Child apply to a single commit
         'jj.canEdit':
             isMutableCommit(commit) && !commit.is_current_working_copy && (!isSelected || selectionCount <= 1),
         'jj.canDuplicate': !isSelected || selectionCount <= 1,
+        'jj.canRevert': commit.parents.length > 0 && (!isSelected || selectionCount <= 1),
         'jj.canNewChild': !isSelected || selectionCount <= 1,
 
         // Rebase source must be mutable, and we rebase ONTO the current selection

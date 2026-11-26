@@ -149,6 +149,18 @@ test.describe('JJ Log Context Menu E2E', () => {
         expect(repo.getParents(merges['unselected merge'].changeId)).toEqual([commit1.changeId, initial.changeId]);
     });
 
+    test('Revert creates a direct child of the clicked commit', async () => {
+        const { initial, commit1, commit2 } = nodes;
+        const initialRow = await waitForLogCommitRow(page, 'initial');
+        await rightClickAndSelect(page, initialRow, 'Revert');
+        await waitForLogCommitRow(page, /Revert "initial"/);
+
+        const revert = `children(${initial.changeId}) ~ (${commit1.changeId} | ${commit2.changeId})`;
+        expect(repo.getParents(revert)).toEqual([initial.changeId]);
+        expect(repo.listFiles(revert)).toEqual(repo.listFiles(dummyId));
+        expect(repo.getCommitId('@')).toBe(commit2.commitId);
+    });
+
     test('Multi-select New Before', async () => {
         const webview = await getLogWebview(page);
 

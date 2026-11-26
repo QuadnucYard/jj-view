@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { TestRepo } from '../test-repo';
 import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
@@ -397,6 +398,81 @@ test.describe('Standalone Web Context Menus and Actions', () => {
         await expect(contextMenu).not.toBeVisible();
 
         await expect.poll(() => testRepo.getParents(aId), { timeout: 10000 }).toEqual([bId]);
+    });
+
+    test('should revert the clicked commit onto itself from the graph context menu', async ({
+        page,
+        server,
+        testRepo,
+    }) => {
+        testRepo.writeFile('example.txt', 'original\n');
+        testRepo.describe('Base commit');
+        testRepo.new();
+        testRepo.writeFile('example.txt', 'changed\n');
+        testRepo.describe('Change to revert');
+        const target = testRepo.getChangeAndCommitId('@');
+        testRepo.new(undefined, 'Working copy descendant');
+        const workingCopyCommitId = testRepo.getCommitId('@');
+        const jjConfigDir = path.join(server.userDataDir, 'jj');
+        await fs.mkdir(jjConfigDir, { recursive: true });
+        await fs.writeFile(
+            path.join(jjConfigDir, 'config.toml'),
+            `revset-aliases."immutable_heads()" = 'commit_id("${target.commitId}")'\n`,
+        );
+
+        await page.goto(server.serverUrl);
+        await waitForScmReady(page);
+
+        const targetRow = page.locator(`[data-change-id="${target.changeId}"]`);
+        const workingCopyRow = page.locator('.commit-row').filter({ hasText: 'Working copy descendant' });
+        const menu = page.getByTestId('context-menu');
+        const revertItem = menu.getByTestId('menu-item-jj-view.revert');
+
+        await targetRow.click();
+        await workingCopyRow.click({ modifiers: ['ControlOrMeta'] });
+        await targetRow.click({ button: 'right' });
+        await expect(menu).toBeVisible();
+        await expect(revertItem).toHaveCount(0);
+        await page.keyboard.press('Escape');
+        await expect(menu).not.toBeVisible();
+        await workingCopyRow.click();
+
+        await recordGifFlow(
+            page,
+            async (capture) => {
+                await capture();
+                await targetRow.click({ button: 'right' });
+                await expect(revertItem).toHaveText('Revert');
+                await expect(menu.getByTestId('menu-item-jj-view.abandon')).toHaveCount(0);
+                await revertItem.hover();
+                await capture();
+                await page.screenshot({ path: path.join(ARTIFACT_DIR, 'graph-revert-menu.png') });
+                await revertItem.click();
+                await expect(menu).not.toBeVisible();
+                await expect(page.getByRole('option', { name: /Revert "Change to revert"/ })).toBeVisible();
+                await capture();
+                await page.screenshot({ path: path.join(ARTIFACT_DIR, 'graph-revert-result.png') });
+            },
+            { outputPath: path.join(ARTIFACT_DIR, 'graph-revert.gif') },
+        );
+
+        const revert = `children(${target.changeId}) ~ @`;
+        expect(testRepo.getParents(revert)).toEqual([target.changeId]);
+        expect(testRepo.getFileContent(revert, 'example.txt')).toBe('original\n');
+        expect(testRepo.getCommitId(target.changeId)).toBe(target.commitId);
+        expect(testRepo.getCommitId('@')).toBe(workingCopyCommitId);
+        expect(testRepo.getParents('@')).toEqual([target.changeId]);
+
+        await page.keyboard.press('Control+Shift+P');
+        const paletteInput = page.getByTestId('quick-input-text-input');
+        await paletteInput.fill('Color Theme');
+        await page.getByTestId('quick-pick-item-workbench.action.selectTheme').click();
+        await paletteInput.fill('github-light');
+        await page.getByTestId('quick-pick-item-github-light').click();
+        await expect(page.locator('body')).toHaveClass(/\bvscode-light\b/);
+        await targetRow.click({ button: 'right' });
+        await revertItem.hover();
+        await page.screenshot({ path: path.join(ARTIFACT_DIR, 'graph-revert-menu-light.png') });
     });
 
     test('should restore file from selected revision via tab context menu', async ({ page, server, testRepo }) => {

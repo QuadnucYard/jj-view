@@ -12,6 +12,7 @@ import { setBookmarkCommand } from '../core/commands/bookmark';
 import { advanceBookmarkCommand } from '../core/commands/bookmark-advance';
 import { advanceBookmarkAndUploadCommand } from '../core/commands/bookmark-advance-upload';
 import { deleteBookmarkCommand } from '../core/commands/bookmark-delete';
+import { extractRevision } from '../core/commands/command-utils';
 import {
     ackCommentCommand,
     copyUnresolvedCommentsCommand,
@@ -53,6 +54,7 @@ import { refreshCommand } from '../core/commands/refresh';
 import { copyRemoteFileUrlCommand, openFileOnRemoteCommand } from '../core/commands/remote-file-url';
 import { restoreCommand } from '../core/commands/restore';
 import { restoreFileFromRevisionCommand } from '../core/commands/restore-file-from-revision';
+import { revertCommand } from '../core/commands/revert';
 import { simplifyParentsCommand } from '../core/commands/simplify-parents';
 import { splitFilesAfterCommand, splitFilesBeforeCommand } from '../core/commands/split-files';
 import { squashDescendantsCommand } from '../core/commands/squash-descendants';
@@ -357,6 +359,7 @@ export function registerCommands(options: RegisterCommandsOptions): void {
         registerCommand('jj-view.prev', prevCommand),
         registerCommand('jj-view.next', nextCommand),
         registerCommandWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand),
+        registerCommandWithPayload('jj-view.revert', extractRevision, revertCommand),
         registerCommandWithPayload('jj-view.edit', createEditPayload, editCommand),
         registerCommandWithPayload('jj-view.newBefore', createNewBeforePayload, newBeforeCommand),
         registerCommandWithPayload('jj-view.newAfter', createNewAfterPayload, newAfterCommand),

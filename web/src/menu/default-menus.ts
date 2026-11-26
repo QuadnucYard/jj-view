@@ -246,6 +246,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             icon: '$(copy)',
         },
         {
+            command: 'jj-view.revert',
+            title: 'Revert',
+            category: 'JJ View',
+        },
+        {
             command: 'jj-view.abandon',
             title: 'Abandon',
             category: 'JJ View',
@@ -654,6 +659,10 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
             },
             {
                 command: 'jj-view.copyRelativePath',
+                when: 'false',
+            },
+            {
+                command: 'jj-view.revert',
                 when: 'false',
             },
             {
@@ -1119,6 +1128,11 @@ export const DEFAULT_PACKAGE_JSON_CONTRIBUTES: PackageJsonContributes = {
                 command: 'jj-view.duplicate',
                 when: "webviewSection == 'commit' && jj.canDuplicate",
                 group: '4_changes@1',
+            },
+            {
+                command: 'jj-view.revert',
+                when: "webviewSection == 'commit' && jj.canRevert",
+                group: '4_changes@1.1',
             },
             {
                 command: 'jj-view.abandon',

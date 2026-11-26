@@ -12,7 +12,7 @@ import { setBookmarkCommand } from '../../../src/core/commands/bookmark';
 import { advanceBookmarkCommand } from '../../../src/core/commands/bookmark-advance';
 import { advanceBookmarkAndUploadCommand } from '../../../src/core/commands/bookmark-advance-upload';
 import { deleteBookmarkCommand } from '../../../src/core/commands/bookmark-delete';
-import { extractRevisions } from '../../../src/core/commands/command-utils';
+import { extractRevision, extractRevisions } from '../../../src/core/commands/command-utils';
 import {
     ackCommentCommand,
     copyUnresolvedCommentsCommand,
@@ -58,6 +58,7 @@ import { refreshCommand } from '../../../src/core/commands/refresh';
 import { copyRemoteFileUrlCommand, openFileOnRemoteCommand } from '../../../src/core/commands/remote-file-url';
 import { restoreCommand } from '../../../src/core/commands/restore';
 import { restoreFileFromRevisionCommand } from '../../../src/core/commands/restore-file-from-revision';
+import { revertCommand } from '../../../src/core/commands/revert';
 import { simplifyParentsCommand } from '../../../src/core/commands/simplify-parents';
 import { splitFilesAfterCommand, splitFilesBeforeCommand } from '../../../src/core/commands/split-files';
 import { squashDescendantsCommand } from '../../../src/core/commands/squash-descendants';
@@ -376,6 +377,7 @@ export function registerWebCommands(options: RegisterWebCommandsOptions): void {
     );
     registerWithPayload('jj-view.edit', createEditPayload, editCommand);
     registerWithPayload('jj-view.duplicate', createDuplicatePayload, duplicateCommand);
+    registerWithPayload('jj-view.revert', extractRevision, revertCommand, { refresh: false });
     registerWithPayload(
         'jj-view.rebaseOntoSelected',
         (args, _host, _scm, selection) => createRebaseOntoSelectedPayload(args, selection),
