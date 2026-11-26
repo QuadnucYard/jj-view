@@ -7,7 +7,7 @@ import { type DragActionModifier, type PressedKeysState, resolveActiveModifier }
 
 export type DragItem =
     | { type: 'tag'; name: string }
-    | { type: 'bookmark'; name: string; remote?: string }
+    | { type: 'bookmark'; name: string; syncedRemotes: readonly string[] }
     | (CommitDragData & { type: 'commit' });
 
 export interface DropTarget {

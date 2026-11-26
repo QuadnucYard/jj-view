@@ -178,20 +178,34 @@ const [idPart, offsetPart] = $derived(commit.change_id.split('/'));
 const shortId = $derived(commit.change_id_shortest);
 const hasShortId = $derived(shortId && idPart.startsWith(shortId));
 
-const bookmarkBadges = $derived(getRefBadges(commit.bookmarks));
 const tagBadges = $derived(getRefBadges(commit.tags));
 
 const activeTag = $derived(dragManager.activeDragItem?.type === 'tag' ? dragManager.activeDragItem.name : null);
 
-// Active dragging bookmark check
-const isDraggingBookmark = $derived(dragManager.activeDragItem?.type === 'bookmark');
 const activeBookmark = $derived(dragManager.activeDragItem?.type === 'bookmark' ? dragManager.activeDragItem : null);
-const hasActiveBookmarkAlready = $derived(
-    commit.bookmarks?.some(
-        (b) => b.name === activeBookmark?.name && (b.remote ?? null) === (activeBookmark?.remote ?? null),
-    ),
+const bookmarkDropName = $derived(
+    isOver && activeBookmark && !commit.bookmarks?.some((ref) => ref.name === activeBookmark.name && !ref.remote)
+        ? activeBookmark.name
+        : undefined,
+);
+const bookmarkBadges = $derived(
+    getRefBadges(bookmarkDropName ? [...(commit.bookmarks ?? []), { name: bookmarkDropName }] : commit.bookmarks),
 );
 </script>
+
+{#snippet renderBookmarks()}
+    {#each bookmarkBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
+        {#if !badge.ref.remote && badge.ref.name === bookmarkDropName}
+            <BookmarkPill
+                bookmark={badge.ref}
+                syncedRemotes={badge.syncedRemotes}
+                style="opacity: 0.7; background-color: transparent; border-style: dashed;"
+            />
+        {:else}
+            <DraggableBookmark bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
+        {/if}
+    {/each}
+{/snippet}
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
@@ -400,15 +414,7 @@ const hasActiveBookmarkAlready = $derived(
             <!-- Right-aligned Bookmarks & Pills -->
             <span class="pills-group">
                 {#if !codeForgeChange}
-                    {#each bookmarkBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
-                        <DraggableBookmark bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
-                    {/each}
-                    {#if isOver && isDraggingBookmark && activeBookmark && !hasActiveBookmarkAlready}
-                        <BookmarkPill
-                            bookmark={{ name: activeBookmark.name, remote: activeBookmark.remote }}
-                            style="opacity: 0.7; background-color: transparent; border: 1px dashed var(--vscode-charts-blue); box-shadow: inset 0 0 8px var(--vscode-charts-blue);"
-                        />
-                    {/if}
+                    {@render renderBookmarks()}
                 {/if}
                 {#each commit.working_copies || [] as workspace (workspace)}
                     {@const info = workspacesByName?.get(workspace)}
@@ -562,15 +568,7 @@ const hasActiveBookmarkAlready = $derived(
 
                 <!-- Right-aligned Bookmarks on second row -->
                 <span class="pills-group" style:margin-left="auto">
-                    {#each bookmarkBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
-                        <DraggableBookmark bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
-                    {/each}
-                    {#if isOver && isDraggingBookmark && activeBookmark && !hasActiveBookmarkAlready}
-                        <BookmarkPill
-                            bookmark={{ name: activeBookmark.name, remote: activeBookmark.remote }}
-                            style="opacity: 0.7; background-color: transparent; border: 1px dashed var(--vscode-charts-blue); box-shadow: inset 0 0 8px var(--vscode-charts-blue);"
-                        />
-                    {/if}
+                    {@render renderBookmarks()}
                 </span>
             </div>
         {/if}

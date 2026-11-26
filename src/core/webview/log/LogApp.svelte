@@ -124,23 +124,20 @@ const dragManager = new DragManager((item, target, modifier) => {
 
     if (item.type === 'bookmark') {
         const bookmarkName = item.name;
-        const bookmarkRemote = item.remote;
         const targetChangeId = target.changeId;
 
-        const sourceCommit = commits.find((c) =>
-            c.bookmarks?.some((b) => b.name === bookmarkName && b.remote === bookmarkRemote),
-        );
+        const sourceCommit = commits.find((c) => c.bookmarks?.some((b) => b.name === bookmarkName && !b.remote));
         if (!sourceCommit || sourceCommit.change_id === targetChangeId) {
             return;
         }
 
         commits = commits.map((commit) => {
             let newBookmarks = commit.bookmarks || [];
-            if (newBookmarks.some((b) => b.name === bookmarkName && b.remote === bookmarkRemote)) {
-                newBookmarks = newBookmarks.filter((b) => !(b.name === bookmarkName && b.remote === bookmarkRemote));
+            if (newBookmarks.some((b) => b.name === bookmarkName && !b.remote)) {
+                newBookmarks = newBookmarks.filter((b) => b.name !== bookmarkName || b.remote);
             }
             if (commit.change_id === targetChangeId) {
-                newBookmarks = [...newBookmarks, { name: bookmarkName, remote: bookmarkRemote }];
+                newBookmarks = [...newBookmarks, { name: bookmarkName }];
             }
             return { ...commit, bookmarks: newBookmarks };
         });
@@ -463,10 +460,8 @@ function handleGraphAction(action: string, payload: ActionPayload) {
                 {#if dragManager.activeDragItem.type === 'bookmark'}
                     <div class="bookmark-preview-wrapper">
                         <BookmarkPill
-                            bookmark={{
-                                name: dragManager.activeDragItem.name,
-                                remote: dragManager.activeDragItem.remote,
-                            }}
+                            bookmark={{ name: dragManager.activeDragItem.name }}
+                            syncedRemotes={dragManager.activeDragItem.syncedRemotes}
                         />
                     </div>
                 {:else if dragManager.activeDragItem.type === 'tag'}

@@ -200,6 +200,7 @@ categories:
 
 -   **Never Mock `JjService`**: Always use a real `TestRepo` and a real
     `JjService` instance in unit and integration tests.
+-   **Use Ref-Specific Revsets in Assertions**: Assert a bookmark or tag target with its ref-specific revset when fixtures reuse a name. A bare symbol can resolve to the other ref.
 -   **No Arbitrary Sleeps in Playwright Specs**: Use web-first Playwright
     assertions (`await expect(locator).toBeVisible()`,
     `await expect(locator).toHaveCount(0)`) instead of

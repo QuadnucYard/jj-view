@@ -148,7 +148,9 @@ allRevisionsTest(
         remoteRepo.describe('shared tag target');
         const sharedId = remoteRepo.getChangeId('@');
         remoteRepo.tag('release', '@');
+        remoteRepo.bookmark('remote-work', sharedId);
         testRepo.addRemote('origin', remoteRepo.path);
+        testRepo.fetchBookmarks('origin');
         testRepo.fetchTags('origin');
         testRepo.trackTag('release', 'origin');
         testRepo.bookmark('release', sharedId);
@@ -157,24 +159,58 @@ allRevisionsTest(
         testRepo.writeFile('destination.txt', 'local destination');
         testRepo.describe('local tag destination');
         const destinationId = testRepo.getChangeId('@');
+        testRepo.bookmark('draft', destinationId);
+        const pageErrors: Error[] = [];
+        page.on('pageerror', (error) => {
+            if (!error.message.includes('agentapi binary not found')) {
+                pageErrors.push(error);
+            }
+        });
         await page.goto(server.serverUrl);
         await waitForScmReady(page);
+        await page
+            .getByRole('separator', { name: 'Resize panels' })
+            .and(page.locator('[aria-orientation="horizontal"]'))
+            .press('End');
         const shared = page.locator(`.commit-row[data-change-id="${sharedId}"]`);
         const destination = page.locator(`.commit-row[data-change-id="${destinationId}"]`);
-        await expect(shared.locator('.bookmark-wrapper')).toHaveCount(1);
-        await expect(shared.locator('.draggable-bookmark')).toHaveText('release');
-        await expect(shared.locator('.bookmark-wrapper [title]')).toHaveAttribute('title', /release@origin/);
+        const logPane = page.getByTestId('log-pane');
+        const releaseBookmark = 'bookmarks(exact:"release")';
+        const sharedBookmark = shared
+            .locator('.bookmark-wrapper')
+            .filter({ has: page.getByText(/^release(?:@origin)?$/) });
+        const remoteOnly = shared
+            .locator('.bookmark-wrapper')
+            .filter({ has: page.getByText('remote-work@origin', { exact: true }) });
+        const draft = destination
+            .locator('.bookmark-wrapper')
+            .filter({ has: page.getByText('draft', { exact: true }) });
+        const releaseAtDestination = destination
+            .locator('.bookmark-wrapper')
+            .filter({ has: page.getByText('release', { exact: true }) });
+        await expect(sharedBookmark).toHaveCount(1);
+        await expect(sharedBookmark).toHaveText('release');
+        await expect(sharedBookmark.locator('.codicon-link')).toBeVisible();
+        await expect(sharedBookmark.locator('[title]')).toHaveAttribute(
+            'title',
+            'Local bookmark: release\nRemote bookmarks: release@origin',
+        );
+        await expect(draft.locator('.codicon-bookmark')).toBeVisible();
+        await expect(draft.locator('[title]')).toHaveAttribute('title', 'Local bookmark: draft');
+        await expect(remoteOnly.locator('.codicon-cloud')).toBeVisible();
+        await expect(remoteOnly.locator('[title]')).toHaveAttribute('title', 'Remote bookmark: remote-work@origin');
         await expect(shared.locator('.tag-wrapper')).toHaveCount(1);
         await expect(shared.locator('.draggable-tag')).toHaveText('release');
         await expect(shared.locator('.tag-wrapper [title]')).toHaveAttribute('title', /release@origin/);
         await recordGifFlow(
             page,
             async (capture) => {
+                await logPane.screenshot({ path: path.join(ARTIFACT_DIR, 'bookmark-pills-dark.png') });
                 await capture();
                 await shared.locator('.commit-desc').click();
                 const details = page.locator('.commit-details-container');
-                await expect(details.locator('.bookmark-wrapper')).toHaveCount(1);
-                await expect(details.locator('.bookmark-wrapper')).toHaveText('release');
+                await expect(details.locator('.bookmark-wrapper')).toHaveCount(2);
+                await expect(details.locator('.bookmark-wrapper .codicon-link')).toBeVisible();
                 await expect(details.locator('.tag-wrapper')).toHaveCount(1);
                 await expect(details.locator('.tag-wrapper')).toHaveText('release');
                 await capture();
@@ -215,10 +251,21 @@ allRevisionsTest(
                     destinationBounds.y + destinationBounds.height / 2,
                     { steps: 10 },
                 );
+                await expect(page.locator('.drag-preview-overlay .codicon-link')).toBeVisible();
+                await expect(releaseAtDestination.locator('.codicon-bookmark')).toBeVisible();
+                await expect(releaseAtDestination.locator('[title]')).toHaveCSS('border-top-style', 'dashed');
                 await page.mouse.up();
-                await expect(destination.locator('.draggable-bookmark')).toHaveText('release');
-                const remoteBookmark = shared.locator('.bookmark-wrapper').filter({ hasText: 'release@origin' });
-                await expect(remoteBookmark).toBeVisible();
+                await expect(releaseAtDestination.locator('[title]')).toHaveAttribute(
+                    'title',
+                    'Local bookmark: release',
+                );
+                await expect.poll(() => testRepo.getChangeId(releaseBookmark)).toBe(destinationId);
+                const remoteBookmark = sharedBookmark.filter({ hasText: 'release@origin' });
+                await expect(remoteBookmark.locator('.codicon-cloud')).toBeVisible();
+                await expect(remoteBookmark.locator('[title]')).toHaveAttribute(
+                    'title',
+                    'Remote bookmark: release@origin',
+                );
                 await expect(shared.locator('.draggable-bookmark')).toHaveCount(0);
                 const remoteBounds = await remoteBookmark.boundingBox();
                 if (!remoteBounds) {
@@ -236,10 +283,35 @@ allRevisionsTest(
                 );
                 await expect(page.locator('.drag-preview-overlay')).toHaveCount(0);
                 await page.mouse.up();
+
+                await capture();
+                await page.evaluate(async () => {
+                    await window.__JJ_VIEW_ENV__?.config.update?.('appearance.theme', 'pierre-light');
+                });
+                await expect(page.locator('html')).toHaveAttribute('data-theme', 'pierre-light');
+                await expect(remoteBookmark.locator('.codicon-cloud')).toBeVisible();
+                await expect(releaseAtDestination.locator('.codicon-bookmark')).toBeVisible();
+
+                await releaseAtDestination.hover();
+                await page.mouse.down();
+                await shared.locator('.commit-desc').hover();
+                await expect(sharedBookmark).toHaveCount(1);
+                await expect(sharedBookmark.locator('.codicon-link')).toBeVisible();
+                await expect(sharedBookmark.locator('[title]')).toHaveCSS('border-top-style', 'dashed');
+                await page.mouse.up();
+                await expect(sharedBookmark.locator('.codicon-link')).toBeVisible();
+                await expect(sharedBookmark).toHaveCount(1);
+                await expect(sharedBookmark.locator('[title]')).toHaveCSS('border-top-style', 'solid');
+                await expect(releaseAtDestination).toHaveCount(0);
+                await expect.poll(() => testRepo.getChangeId(releaseBookmark)).toBe(sharedId);
+                await expect(remoteOnly.locator('.codicon-cloud')).toBeVisible();
+                await expect(draft.locator('.codicon-bookmark')).toBeVisible();
+                await logPane.screenshot({ path: path.join(ARTIFACT_DIR, 'bookmark-pills-light.png') });
                 await capture();
             },
             { outputPath: path.join(ARTIFACT_DIR, 'collapsed-refs.gif') },
         );
+        expect(pageErrors).toEqual([]);
     },
 );
 

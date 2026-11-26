@@ -14,21 +14,27 @@ interface Props {
 
 let { bookmark, style = '', syncedRemotes = [] }: Props = $props();
 
-let displayName = $derived(bookmark.remote ? `${bookmark.name}@${bookmark.remote}` : bookmark.name);
-const title = $derived(
-    syncedRemotes.length > 0
-        ? `${displayName}\nRemote bookmarks: ${syncedRemotes.map((remote) => `${bookmark.name}@${remote}`).join(', ')}`
-        : displayName,
-);
-let accentColor = $derived(bookmark.remote ? 'var(--vscode-charts-purple)' : 'var(--vscode-charts-blue)');
-let backgroundColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 90%)`);
-let borderColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 50%)`);
+const isRemote = $derived(!!bookmark.remote);
+const isShared = $derived(!isRemote && syncedRemotes.length > 0);
+const displayName = $derived(isRemote ? `${bookmark.name}@${bookmark.remote}` : bookmark.name);
+const icon = $derived(isRemote ? 'cloud' : isShared ? 'link' : 'bookmark');
+const title = $derived.by(() => {
+    if (isRemote) {
+        return `Remote bookmark: ${displayName}`;
+    }
+    const localTitle = `Local bookmark: ${displayName}`;
+    if (!isShared) {
+        return localTitle;
+    }
+    const remoteNames = syncedRemotes.map((remote) => `${bookmark.name}@${remote}`).join(', ');
+    return `${localTitle}\nRemote bookmarks: ${remoteNames}`;
+});
 
 let vscodeContext = $derived(
     JSON.stringify({
         webviewSection: 'jj.bookmark',
         bookmarkName: bookmark.name,
-        isRemoteBookmark: !!bookmark.remote,
+        isRemoteBookmark: isRemote,
         preventDefaultContextMenuItems: true,
     }),
 );
@@ -37,23 +43,34 @@ let vscodeContext = $derived(
 <span
     data-vscode-context={vscodeContext}
     class="bookmark-wrapper"
+    class:remote={isRemote}
+    class:shared={isShared}
 >
     <BasePill
         copyName={displayName}
         {title}
-        style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
+        style="background-color: color-mix(in srgb, var(--bookmark-accent) 15%, transparent); color: var(--vscode-foreground); border-color: color-mix(in srgb, var(--bookmark-accent) 65%, transparent); {style}"
     >
-        <span aria-hidden="true" class="codicon codicon-bookmark"></span>
+        <span aria-hidden="true" class="codicon codicon-{icon}"></span>
         <span class="pill-label">{displayName}</span>
     </BasePill>
 </span>
 
 <style>
     .bookmark-wrapper {
+        --bookmark-accent: var(--vscode-charts-blue, var(--vscode-foreground));
         display: inline-flex;
         align-items: center;
         min-width: 22px;
         flex-shrink: 1;
+    }
+
+    .bookmark-wrapper.remote {
+        --bookmark-accent: var(--vscode-charts-purple, var(--vscode-foreground));
+    }
+
+    .bookmark-wrapper.shared {
+        --bookmark-accent: var(--vscode-charts-green, var(--vscode-foreground));
     }
 </style>
 

@@ -130,7 +130,8 @@ export const LOG_ENTRY_SCHEMA: Record<string, JjTemplateField> = {
     },
     bookmarks: {
         type: 'array',
-        expr: ['local_bookmarks', 'remote_bookmarks'],
+        // The reserved `git` remote mirrors refs in the local Git repository.
+        expr: ['local_bookmarks', 'remote_bookmarks.filter(|item| item.remote() != "git")'],
         itemSchema: {
             name: { type: 'string', expr: 'item.name()' },
             remote: { type: 'nullable', expr: 'item.remote()', valueExpr: 'item.remote()' },
@@ -138,7 +139,7 @@ export const LOG_ENTRY_SCHEMA: Record<string, JjTemplateField> = {
     },
     tags: {
         type: 'array',
-        expr: ['local_tags', 'remote_tags'],
+        expr: ['local_tags', 'remote_tags.filter(|item| item.remote() != "git")'],
         itemSchema: {
             name: { type: 'json', expr: 'item.name()' },
             remote: { type: 'nullable', expr: 'item.remote()', valueExpr: 'item.remote()' },

@@ -1705,11 +1705,16 @@ log = "none()"
         repo.describe('shared bookmark target');
         const sharedId = repo.getChangeId('@');
         repo.bookmark('release', '@');
+        const [localLog] = await jjService.getLog({ revision: sharedId });
+        expect(localLog.bookmarks).toEqual([{ name: 'release', remote: null }]);
+
         repo.addRemote('origin', remote.path);
         repo.gitPush('release');
-        const [log] = await jjService.getLog({ revision: sharedId });
-        expect(log.bookmarks).toContainEqual({ name: 'release', remote: null });
-        expect(log.bookmarks).toContainEqual({ name: 'release', remote: 'origin' });
+        const details = await jjService.getCommitDetails(sharedId);
+        expect(details?.bookmarks).toEqual([
+            { name: 'release', remote: null },
+            { name: 'release', remote: 'origin' },
+        ]);
     });
 
     test('retains synchronized local and remote tag identities for badge collapsing', async () => {
@@ -1723,8 +1728,10 @@ log = "none()"
         repo.fetchTags('origin');
         repo.trackTag('release', 'origin');
         const [log] = await jjService.getLog({ revision: sharedId });
-        expect(log.tags).toContainEqual({ name: 'release', remote: null });
-        expect(log.tags).toContainEqual({ name: 'release', remote: 'origin' });
+        expect(log.tags).toEqual([
+            { name: 'release', remote: null },
+            { name: 'release', remote: 'origin' },
+        ]);
     });
 
     test('preserves remote tag identity separately from a same-name local tag', async () => {

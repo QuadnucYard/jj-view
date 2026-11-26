@@ -611,6 +611,10 @@ export class TestRepo {
         this.exec(['tag', 'set', name, '-r', revision, '--allow-move']);
     }
 
+    fetchBookmarks(remote: string) {
+        this.exec(['git', 'fetch', '--remote', remote, '--bookmark', '*']);
+    }
+
     fetchTags(remote: string) {
         this.exec(['git', 'fetch', '--remote', remote, '--tag', '*']);
     }

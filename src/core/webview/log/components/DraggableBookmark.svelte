@@ -16,37 +16,31 @@ interface Props {
 let { bookmark, dragManager, syncedRemotes = [] }: Props = $props();
 
 const isDragging = $derived(
-    dragManager.activeDragItem?.type === 'bookmark' &&
-        dragManager.activeDragItem.name === bookmark.name &&
-        dragManager.activeDragItem.remote === bookmark.remote,
+    !bookmark.remote &&
+        dragManager.activeDragItem?.type === 'bookmark' &&
+        dragManager.activeDragItem.name === bookmark.name,
 );
 </script>
 
-{#if bookmark.remote}
-    <span use:dragManager.draggable={() => null}>
-        <BookmarkPill {bookmark} {syncedRemotes} />
-    </span>
-{:else}
-    <span
-        class="draggable-bookmark"
-        class:is-dragging={isDragging}
-        use:dragManager.draggable={() => ({
-            type: 'bookmark',
-            name: bookmark.name,
-            remote: bookmark.remote,
-        })}
-    >
-        <BookmarkPill {bookmark} {syncedRemotes} />
-    </span>
-{/if}
+<span
+    class="bookmark-drag-wrapper"
+    class:draggable-bookmark={!bookmark.remote}
+    class:is-dragging={isDragging}
+    use:dragManager.draggable={() => bookmark.remote ? null : { type: 'bookmark', name: bookmark.name, syncedRemotes }}
+>
+    <BookmarkPill {bookmark} {syncedRemotes} />
+</span>
 
 <style>
-    .draggable-bookmark {
-        cursor: grab;
+    .bookmark-drag-wrapper {
         display: inline-flex;
         align-items: center;
         min-width: 22px;
         flex-shrink: 1;
+    }
+
+    .draggable-bookmark {
+        cursor: grab;
     }
 
     .draggable-bookmark.is-dragging {
