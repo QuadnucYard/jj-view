@@ -130,6 +130,25 @@ test.describe('JJ Log Context Menu E2E', () => {
         ]);
     });
 
+    test('Simplify Parents on selected merge commits', async () => {
+        const { initial, commit1 } = nodes;
+        const merges = await buildGraph(repo, [
+            { label: 'first merge', parents: [commit1.changeId, initial.changeId] },
+            { label: 'second merge', parents: [commit1.changeId, initial.changeId] },
+            { label: 'unselected merge', parents: [commit1.changeId, initial.changeId] },
+        ]);
+        await triggerRefresh(page);
+
+        const firstMergeRow = await waitForLogCommitRow(page, 'first merge');
+        const secondMergeRow = await waitForLogCommitRow(page, 'second merge');
+        await selectCommits([firstMergeRow, secondMergeRow]);
+        await rightClickAndSelect(page, firstMergeRow, 'Simplify Parents');
+
+        await expect.poll(() => repo.getParents(merges['first merge'].changeId)).toEqual([commit1.changeId]);
+        expect(repo.getParents(merges['second merge'].changeId)).toEqual([commit1.changeId]);
+        expect(repo.getParents(merges['unselected merge'].changeId)).toEqual([commit1.changeId, initial.changeId]);
+    });
+
     test('Multi-select New Before', async () => {
         const webview = await getLogWebview(page);
 

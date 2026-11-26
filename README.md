@@ -14,6 +14,7 @@ Visualize your `jj` repo history with a clear, interactive graph.
 - **View History**: See commits, branches, and the working copy in a topological view.
 - **Inspect Changes**: Click on any node to view details and diffs.
 - **Context Actions**: Right-click nodes to perform actions like editing, squashing, or abandoning changes.
+    - Right-click a mutable merge commit or one of several selected mutable commits and choose **Simplify Parents**. This runs `jj simplify-parents` to remove redundant parent edges while preserving commit contents.
 - **Drag & Drop Workflows**:
     - **Rebase Branch (default)**: Drag a commit onto another to rebase the source commit and all of its descendants onto the target.
     - **Rebase Revision**: Press `R` while dragging to rebase only the specific revision.
