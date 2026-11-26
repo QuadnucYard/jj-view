@@ -3,6 +3,7 @@
   SPDX-License-Identifier: Apache-2.0
 -->
 <script lang="ts">
+import { onMount } from 'svelte';
 import type { ActionPayload, CommitAction } from '../../../host/ipc/log-view-schemas';
 import type { JjLogEntry, JjWorkspace } from '../../../jj-types';
 import type { DragManager } from '../drag-manager.svelte';
@@ -49,6 +50,14 @@ let {
     hiddenActions = new Set(),
     dragManager,
 }: Props = $props();
+
+let now = $state(Date.now());
+onMount(() => {
+    const timer = setInterval(() => {
+        now = Date.now();
+    }, 60_000);
+    return () => clearInterval(timer);
+});
 
 let fontSize = $state(13);
 $effect(() => {
@@ -154,6 +163,7 @@ const graphAreaWidth = $derived(computeGraphAreaWidth(layout.width, LANE_WIDTH, 
                 >
                     <CommitNode
                         commit={row}
+                        {now}
                         {workspacesByName}
                         onClick={(modifiers) =>
                             onAction('select', {

@@ -3,6 +3,7 @@
   SPDX-License-Identifier: Apache-2.0
 -->
 <script lang="ts">
+import type { PillAge } from '../utils/pill-age';
 import BasePill from './BasePill.svelte';
 
 interface Props {
@@ -10,12 +11,15 @@ interface Props {
     path?: string;
     stale?: boolean;
     style?: string;
+    age?: PillAge;
 }
 
-let { workspace, path, stale = false, style = '' }: Props = $props();
+let { workspace, path, stale = false, style = '', age }: Props = $props();
 
 const accentColor = $derived(
-    stale ? 'var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow))' : 'var(--vscode-charts-yellow)',
+    stale
+        ? 'var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, var(--vscode-foreground)))'
+        : 'var(--vscode-charts-yellow, var(--vscode-foreground))',
 );
 const backgroundColor = $derived(`color-mix(in srgb, ${accentColor}, transparent ${stale ? 78 : 90}%)`);
 const border = $derived(
@@ -42,7 +46,8 @@ let vscodeContext = $derived(
     <BasePill
         copyName={workspace}
         {title}
-        style="background-color: {backgroundColor}; color: {accentColor}; border: {border}; {style}"
+        {age}
+        style="--pill-accent: {accentColor}; background-color: {backgroundColor}; color: var(--pill-foreground, {accentColor}); border: {border}; {style}"
     >
         {#if stale}
             <span class="codicon codicon-warning" role="img" aria-label="Stale workspace"></span>

@@ -4,15 +4,17 @@
 -->
 <script lang="ts">
 import type { JjTag } from '../../../jj-types';
+import type { PillAge } from '../utils/pill-age';
 import BasePill from './BasePill.svelte';
 
 interface Props {
     tag: JjTag;
     style?: string;
     syncedRemotes?: readonly string[];
+    age?: PillAge;
 }
 
-let { tag, style = '', syncedRemotes = [] }: Props = $props();
+let { tag, style = '', syncedRemotes = [], age }: Props = $props();
 
 const displayName = $derived(tag.remote ? `${tag.name}@${tag.remote}` : tag.name);
 const title = $derived(
@@ -20,7 +22,11 @@ const title = $derived(
         ? `${displayName}\nRemote tags: ${syncedRemotes.map((remote) => `${tag.name}@${remote}`).join(', ')}`
         : displayName,
 );
-const accentColor = $derived(tag.remote ? 'var(--vscode-charts-purple)' : 'var(--vscode-charts-green)');
+const accentColor = $derived(
+    tag.remote
+        ? 'var(--vscode-charts-purple, var(--vscode-foreground))'
+        : 'var(--vscode-charts-green, var(--vscode-foreground))',
+);
 const backgroundColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 90%)`);
 const borderColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 50%)`);
 </script>
@@ -37,7 +43,8 @@ const borderColor = $derived(`color-mix(in srgb, ${accentColor}, transparent 50%
 <BasePill
     copyName={displayName}
     {title}
-    style="background-color: {backgroundColor}; color: {accentColor}; border: 1px solid {borderColor}; {style}"
+    {age}
+    style="--pill-accent: {accentColor}; background-color: {backgroundColor}; color: var(--pill-foreground, {accentColor}); border: 1px solid {borderColor}; {style}"
 >
     <span aria-hidden="true" class="codicon codicon-tag"></span>
     <span class="pill-label">{displayName}</span>

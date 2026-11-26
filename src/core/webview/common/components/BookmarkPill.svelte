@@ -4,15 +4,17 @@
 -->
 <script lang="ts">
 import type { JjBookmark } from '../../../jj-types';
+import type { PillAge } from '../utils/pill-age';
 import BasePill from './BasePill.svelte';
 
 interface Props {
     bookmark: JjBookmark;
     style?: string;
     syncedRemotes?: readonly string[];
+    age?: PillAge;
 }
 
-let { bookmark, style = '', syncedRemotes = [] }: Props = $props();
+let { bookmark, style = '', syncedRemotes = [], age }: Props = $props();
 
 const isRemote = $derived(!!bookmark.remote);
 const isShared = $derived(!isRemote && syncedRemotes.length > 0);
@@ -49,7 +51,8 @@ let vscodeContext = $derived(
     <BasePill
         copyName={displayName}
         {title}
-        style="background-color: color-mix(in srgb, var(--bookmark-accent) 15%, transparent); color: var(--vscode-foreground); border-color: color-mix(in srgb, var(--bookmark-accent) 65%, transparent); {style}"
+        {age}
+        style="background-color: color-mix(in srgb, var(--pill-accent) 15%, transparent); color: var(--vscode-foreground); border-color: color-mix(in srgb, var(--pill-accent) 65%, transparent); {style}"
     >
         <span aria-hidden="true" class="codicon codicon-{icon}"></span>
         <span class="pill-label">{displayName}</span>
@@ -58,7 +61,7 @@ let vscodeContext = $derived(
 
 <style>
     .bookmark-wrapper {
-        --bookmark-accent: var(--vscode-charts-blue, var(--vscode-foreground));
+        --pill-accent: var(--vscode-charts-blue, var(--vscode-foreground));
         display: inline-flex;
         align-items: center;
         min-width: 22px;
@@ -66,11 +69,11 @@ let vscodeContext = $derived(
     }
 
     .bookmark-wrapper.remote {
-        --bookmark-accent: var(--vscode-charts-purple, var(--vscode-foreground));
+        --pill-accent: var(--vscode-charts-purple, var(--vscode-foreground));
     }
 
     .bookmark-wrapper.shared {
-        --bookmark-accent: var(--vscode-charts-green, var(--vscode-foreground));
+        --pill-accent: var(--vscode-charts-green, var(--vscode-foreground));
     }
 </style>
 

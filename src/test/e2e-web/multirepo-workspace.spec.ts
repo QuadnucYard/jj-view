@@ -28,7 +28,7 @@ test.describe('Standalone Web Multirepo Workspace', () => {
                     await badge.hover();
                     await expect
                         .poll(async () => normalize((await badge.getAttribute('title')) ?? ''))
-                        .toBe(`${name}@\n${normalize(root)}`);
+                        .toContain(`${name}@\n${normalize(root)}\nTarget commit updated `);
                     await capture();
                 }
                 await page.screenshot({ path: path.join(ARTIFACT_DIR, 'workspace-path-tooltip.png'), fullPage: true });

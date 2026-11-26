@@ -5,22 +5,24 @@
 <script lang="ts">
 import type { JjTag } from '../../../jj-types';
 import { TagPill } from '../../common/components';
+import type { PillAge } from '../../common/utils/pill-age';
 import type { DragManager } from '../drag-manager.svelte';
 
 interface Props {
     tag: JjTag;
     dragManager: DragManager;
     syncedRemotes?: readonly string[];
+    age?: PillAge;
 }
 
-let { tag, dragManager, syncedRemotes = [] }: Props = $props();
+let { tag, dragManager, syncedRemotes = [], age }: Props = $props();
 
 const isDragging = $derived(dragManager.activeDragItem?.type === 'tag' && dragManager.activeDragItem.name === tag.name);
 </script>
 
 {#if tag.remote}
     <span use:dragManager.draggable={() => null}>
-        <TagPill {tag} {syncedRemotes} />
+        <TagPill {tag} {syncedRemotes} {age} />
     </span>
 {:else}
 <span
@@ -28,7 +30,7 @@ const isDragging = $derived(dragManager.activeDragItem?.type === 'tag' && dragMa
     class:is-dragging={isDragging}
     use:dragManager.draggable={() => ({ type: 'tag', name: tag.name })}
 >
-    <TagPill {tag} {syncedRemotes} />
+    <TagPill {tag} {syncedRemotes} {age} />
 </span>
 {/if}
 

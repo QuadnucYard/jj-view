@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
 import type { Snippet } from 'svelte';
+import type { PillAge } from '../utils/pill-age';
 
 interface Props {
     children?: Snippet;
@@ -11,16 +12,19 @@ interface Props {
     className?: string;
     style?: string;
     copyName?: string;
+    age?: PillAge;
 }
 
-let { children, title, className = '', style = '', copyName }: Props = $props();
+let { children, title, className = '', style = '', copyName, age }: Props = $props();
 </script>
 
 <span
     data-vscode-context={copyName ? JSON.stringify({ copyName, preventDefaultContextMenuItems: true }) : undefined}
-    {title}
+    title={age ? [title, age.detail].filter(Boolean).join('\n') : title}
     class="bookmark-pill {className}"
+    class:dated={age !== undefined}
     {style}
+    style:--pill-age-tint={age?.tint}
 >
     {@render children?.()}
 </span>
@@ -52,6 +56,15 @@ let { children, title, className = '', style = '', copyName }: Props = $props();
         align-items: center;
         justify-content: center;
         flex-shrink: 0;
+    }
+
+    .bookmark-pill.dated {
+        --pill-foreground: var(--vscode-foreground);
+        background-image: linear-gradient(
+            110deg,
+            color-mix(in srgb, var(--pill-accent) var(--pill-age-tint), transparent),
+            transparent 85%
+        );
     }
 
     .bookmark-pill :global(.pill-label) {

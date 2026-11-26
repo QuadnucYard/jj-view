@@ -5,15 +5,17 @@
 <script lang="ts">
 import type { JjBookmark } from '../../../jj-types';
 import { BookmarkPill } from '../../common/components';
+import type { PillAge } from '../../common/utils/pill-age';
 import type { DragManager } from '../drag-manager.svelte';
 
 interface Props {
     bookmark: JjBookmark;
     dragManager: DragManager;
     syncedRemotes?: readonly string[];
+    age?: PillAge;
 }
 
-let { bookmark, dragManager, syncedRemotes = [] }: Props = $props();
+let { bookmark, dragManager, syncedRemotes = [], age }: Props = $props();
 
 const isDragging = $derived(
     !bookmark.remote &&
@@ -28,7 +30,7 @@ const isDragging = $derived(
     class:is-dragging={isDragging}
     use:dragManager.draggable={() => bookmark.remote ? null : { type: 'bookmark', name: bookmark.name, syncedRemotes }}
 >
-    <BookmarkPill {bookmark} {syncedRemotes} />
+    <BookmarkPill {bookmark} {syncedRemotes} {age} />
 </span>
 
 <style>

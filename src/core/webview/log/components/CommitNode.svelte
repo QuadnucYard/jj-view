@@ -6,6 +6,7 @@
 import type { ActionPayload, CommitAction } from '../../../host/ipc/log-view-schemas';
 import type { JjLogEntry, JjWorkspace } from '../../../jj-types';
 import { BookmarkPill, IconButton, TagPill, WorkspacePill } from '../../common/components';
+import { getPillAge } from '../../common/utils/pill-age';
 import { getRefBadges } from '../../common/utils/ref-badges';
 import type { DragManager } from '../drag-manager.svelte';
 import { formatCommitTooltip } from '../utils/commit-tooltip';
@@ -15,6 +16,7 @@ import DraggableTag from './DraggableTag.svelte';
 
 interface Props {
     commit: JjLogEntry;
+    now: number;
     workspacesByName?: ReadonlyMap<string, JjWorkspace>;
     onClick: (modifiers: { multiSelect: boolean; preview?: boolean }) => void;
     onAction: (action: string, payload: ActionPayload) => void;
@@ -32,6 +34,7 @@ interface Props {
 
 let {
     commit,
+    now,
     workspacesByName,
     onClick,
     onAction,
@@ -172,6 +175,7 @@ const descriptionFull = $derived.by(() => {
 });
 const descriptionFirstLine = $derived(descriptionFull.split('\n')[0]);
 const commitTooltip = $derived(formatCommitTooltip(commit));
+const pillAge = $derived(getPillAge(commit.committer.timestamp, now));
 
 // Change ID parts
 const [idPart, offsetPart] = $derived(commit.change_id.split('/'));
@@ -202,7 +206,7 @@ const bookmarkBadges = $derived(
                 style="opacity: 0.7; background-color: transparent; border-style: dashed;"
             />
         {:else}
-            <DraggableBookmark bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
+            <DraggableBookmark bookmark={badge.ref} syncedRemotes={badge.syncedRemotes} age={pillAge} {dragManager} />
         {/if}
     {/each}
 {/snippet}
@@ -418,10 +422,10 @@ const bookmarkBadges = $derived(
                 {/if}
                 {#each commit.working_copies || [] as workspace (workspace)}
                     {@const info = workspacesByName?.get(workspace)}
-                    <WorkspacePill {workspace} path={info?.path} stale={info?.stale} />
+                    <WorkspacePill {workspace} path={info?.path} stale={info?.stale} age={pillAge} />
                 {/each}
                 {#each tagBadges as badge (JSON.stringify([badge.ref.name, badge.ref.remote ?? null]))}
-                    <DraggableTag tag={badge.ref} syncedRemotes={badge.syncedRemotes} {dragManager} />
+                    <DraggableTag tag={badge.ref} syncedRemotes={badge.syncedRemotes} age={pillAge} {dragManager} />
                 {/each}
 
                 {#if isOver && activeTag && !commit.tags?.some((tag) => tag.name === activeTag && !tag.remote)}

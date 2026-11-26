@@ -193,12 +193,18 @@ allRevisionsTest(
         await expect(sharedBookmark.locator('.codicon-link')).toBeVisible();
         await expect(sharedBookmark.locator('[title]')).toHaveAttribute(
             'title',
-            'Local bookmark: release\nRemote bookmarks: release@origin',
+            /^Local bookmark: release\nRemote bookmarks: release@origin\nTarget commit updated /,
         );
         await expect(draft.locator('.codicon-bookmark')).toBeVisible();
-        await expect(draft.locator('[title]')).toHaveAttribute('title', 'Local bookmark: draft');
+        await expect(draft.locator('[title]')).toHaveAttribute(
+            'title',
+            /^Local bookmark: draft\nTarget commit updated /,
+        );
         await expect(remoteOnly.locator('.codicon-cloud')).toBeVisible();
-        await expect(remoteOnly.locator('[title]')).toHaveAttribute('title', 'Remote bookmark: remote-work@origin');
+        await expect(remoteOnly.locator('[title]')).toHaveAttribute(
+            'title',
+            /^Remote bookmark: remote-work@origin\nTarget commit updated /,
+        );
         await expect(shared.locator('.tag-wrapper')).toHaveCount(1);
         await expect(shared.locator('.draggable-tag')).toHaveText('release');
         await expect(shared.locator('.tag-wrapper [title]')).toHaveAttribute('title', /release@origin/);
@@ -254,17 +260,18 @@ allRevisionsTest(
                 await expect(page.locator('.drag-preview-overlay .codicon-link')).toBeVisible();
                 await expect(releaseAtDestination.locator('.codicon-bookmark')).toBeVisible();
                 await expect(releaseAtDestination.locator('[title]')).toHaveCSS('border-top-style', 'dashed');
+                await expect(releaseAtDestination.locator('[title]')).toHaveCSS('background-image', 'none');
                 await page.mouse.up();
                 await expect(releaseAtDestination.locator('[title]')).toHaveAttribute(
                     'title',
-                    'Local bookmark: release',
+                    /^Local bookmark: release\nTarget commit updated /,
                 );
                 await expect.poll(() => testRepo.getChangeId(releaseBookmark)).toBe(destinationId);
                 const remoteBookmark = sharedBookmark.filter({ hasText: 'release@origin' });
                 await expect(remoteBookmark.locator('.codicon-cloud')).toBeVisible();
                 await expect(remoteBookmark.locator('[title]')).toHaveAttribute(
                     'title',
-                    'Remote bookmark: release@origin',
+                    /^Remote bookmark: release@origin\nTarget commit updated /,
                 );
                 await expect(shared.locator('.draggable-bookmark')).toHaveCount(0);
                 const remoteBounds = await remoteBookmark.boundingBox();
