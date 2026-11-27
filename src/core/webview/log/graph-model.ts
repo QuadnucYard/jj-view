@@ -44,7 +44,7 @@ export interface GraphEdge {
 
 export interface ElisionRow {
     type: 'elision';
-    targetId: string;
+    targetId?: string;
 }
 
 export type GraphRow = JjLogEntry | ElisionRow;

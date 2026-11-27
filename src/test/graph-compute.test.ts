@@ -802,41 +802,63 @@ describe('Graph Layout Integration Tests (Real jj output)', () => {
         expect(generatedOutput).toBe(expectedOutput);
     });
 
-    test('History Elision Marker', async () => {
-        // Setup:
-        // A -> B -> C
-        // if we log {A, C}, the edge from C -> A should be elided.
-        await buildGraph(repo, [
-            { label: 'a', description: 'A' },
-            { label: 'b', description: 'B', parents: ['a'] },
-            { label: 'c', description: 'C', parents: ['b'] },
+    test('Ends omitted history above the next disconnected commit', async () => {
+        const commits = await buildGraph(repo, [
+            { label: 'bottom', description: 'Bottom', parents: ['root()'] },
+            { label: 'top', description: 'Top', parents: ['root()'], isCurrentWorkingCopy: true },
+        ]);
+        repo.config('revsets.log', `@ | ${commits.bottom.commitId}`);
+
+        const cliGraph = repo.getLogOutput('description');
+        expect(cliGraph).toMatch(/\n~\r?\n/);
+
+        const logs = await jjService.getLog({ includeNearestVisibleAncestors: true });
+        const layout = computeGraphLayout(logs);
+        const [topNode, bottomNode] = layout.nodes;
+        const topEdge = layout.edges.find((edge) => edge.points[0].y === topNode.y);
+        const end = topEdge?.points.at(-1);
+
+        expect(topNode.commitId).toBe(commits.top.commitId);
+        expect(bottomNode.commitId).toBe(commits.bottom.commitId);
+        expect(topNode.x).toBe(bottomNode.x);
+        expect(end?.y).toBeLessThan(bottomNode.y);
+        expect(layout.terminations).toContainEqual({ x: end?.x, y: end?.y });
+    });
+
+    test('Routes an elided edge past an omitted-history termination in another lane', async () => {
+        const commits = await buildGraph(repo, [
+            { label: 'ancestor', description: 'Visible ancestor', parents: ['root()'] },
+            { label: 'hidden', description: 'Hidden parent', parents: ['ancestor'] },
+            { label: 'detached', description: 'Disconnected commit', parents: ['root()'] },
+            { label: 'child', description: 'Child', parents: ['hidden'], isCurrentWorkingCopy: true },
         ]);
 
-        const allLogs = await jjService.getLog({});
-        const aLog = allLogs.find((l) => l.description.trim() === 'A');
-        const cLog = allLogs.find((l) => l.description.trim() === 'C');
-
-        if (!aLog || !cLog) {
-            throw new Error('Logs not found');
-        }
-
-        // Manually simulate a gap by passing C and A but not B.
-        // We need to ensure C's nearest_visible_ancestors correctly points to A.
-        const cEntry = { ...cLog, nearest_visible_ancestors: [aLog.change_id] };
-        const logs = [cEntry, aLog];
-
-        const layout = computeGraphLayout(logs);
-
-        const cNode = layout.nodes.find((n) => n.changeId === cLog?.change_id);
-        const aNode = layout.nodes.find((n) => n.changeId === aLog?.change_id);
-
-        expect(cNode).toBeDefined();
-        expect(aNode).toBeDefined();
-
-        const edge = layout.edges.find(
-            (e) => Math.floor(e.points[0].y) === cNode?.y && Math.floor(e.points[e.points.length - 1].y) === aNode?.y,
+        const logs = await jjService.getLog({
+            revision: `@ | ${commits.detached.commitId} | ${commits.ancestor.commitId}`,
+            includeNearestVisibleAncestors: true,
+        });
+        // Exercise a topological order where the disconnected commit interrupts the other lane.
+        const [childLog, detachedLog, ancestorLog] = [commits.child, commits.detached, commits.ancestor].map(
+            ({ commitId }) => logs.find((entry) => entry.commit_id === commitId),
         );
-        expect(edge).toBeDefined();
-        expect(edge?.isElided).toBe(true);
+        if (!childLog || !detachedLog || !ancestorLog) {
+            throw new Error('Expected all three commits in the filtered log');
+        }
+        const layout = computeGraphLayout([childLog, detachedLog, ancestorLog]);
+        const [child, detached, ancestor] = layout.nodes;
+
+        const ancestorEdge = layout.edges.find((edge) => edge.points[0].y === child.y);
+        const detachedEdge = layout.edges.find((edge) => edge.points[0].y === detached.y);
+        const detachedMarker = { x: detached.x, y: detached.y + 1 };
+
+        expect(detachedMarker.y).toBeLessThan(ancestor.y);
+        expect(detachedEdge?.points.at(-1)).toEqual({ type: 'node', ...detachedMarker });
+        expect(layout.terminations).toContainEqual(detachedMarker);
+        expect(ancestorEdge?.isElided).toBe(true);
+        expect(ancestorEdge?.points).toEqual([
+            { type: 'node', x: child.x, y: child.y },
+            { type: 'node', x: ancestor.x, y: ancestor.y },
+        ]);
+        expect(ancestor.x).not.toBe(detachedMarker.x);
     });
 });

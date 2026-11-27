@@ -3,8 +3,55 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { ARTIFACT_DIR, expect, recordGifFlow, test, waitForScmReady } from './standalone-fixture';
+
+test('keeps an omitted-history marker clear of the next graph node', async ({ page, server, testRepo }) => {
+    testRepo.new(['root()'], 'Lower tree');
+    const lowerCommit = testRepo.getCommitId('@');
+    testRepo.new(['root()'], 'Upper tree');
+    const jjConfigDir = path.join(server.userDataDir, 'jj');
+    await fs.mkdir(jjConfigDir, { recursive: true });
+    await fs.writeFile(
+        path.join(jjConfigDir, 'config.toml'),
+        `revsets.log = '@ | ${lowerCommit}'\nrevset-aliases."immutable_heads()" = '${lowerCommit}'\n`,
+    );
+
+    await page.goto(server.serverUrl);
+    await waitForScmReady(page);
+
+    const graph = page.locator('svg.graph-svg');
+    const markers = graph.locator(':scope > g[transform]');
+    const edges = graph.locator(':scope > path');
+    const lowerNode = graph.locator(`[data-commit-id="${lowerCommit}"] polygon`);
+    await expect(markers).toHaveCount(2);
+    await expect(edges).toHaveCount(2);
+    await expect(lowerNode).toBeVisible();
+
+    await recordGifFlow(
+        page,
+        async (capture) => {
+            for (const theme of ['pierre-dark-soft', 'pierre-light']) {
+                await page.evaluate(async (theme) => {
+                    await window.__JJ_VIEW_ENV__?.config.update?.('appearance.theme', theme);
+                }, theme);
+                await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+
+                const markerBottom = await markers.first().evaluate((marker) => marker.getBoundingClientRect().bottom);
+                const edgeBottom = await edges.first().evaluate((edge) => edge.getBoundingClientRect().bottom);
+                const lowerNodeTop = await lowerNode.evaluate((node) => node.getBoundingClientRect().top);
+                expect(markerBottom).toBeLessThan(lowerNodeTop);
+                expect(edgeBottom).toBeLessThan(lowerNodeTop);
+                await page.locator('.commit-graph').screenshot({
+                    path: path.join(ARTIFACT_DIR, `graph-disconnected-${theme}.png`),
+                });
+                await capture();
+            }
+        },
+        { outputPath: path.join(ARTIFACT_DIR, 'graph-disconnected.gif') },
+    );
+});
 
 test.describe('Commit Details timestamps', () => {
     test.use({ locale: 'zh-CN', timezoneId: 'Asia/Shanghai' });
